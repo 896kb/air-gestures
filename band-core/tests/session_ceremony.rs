@@ -8,6 +8,7 @@ use band_core::proto::{ProtoFields, field_bytes as fb};
 use band_core::session::BandSession;
 use band_core::sim::SimBand;
 use band_core::{BandError, Result};
+use common::{channels, connected, device_ok, ready, status};
 use p256::ecdsa::signature::hazmat::PrehashVerifier;
 use p256::ecdsa::{Signature, SigningKey};
 use rand_core::OsRng;
@@ -287,4 +288,103 @@ fn a_link_lost_after_finish_change_owner_still_leaves_the_pending_identity() {
     let pending = peer.session.pending_identity().expect("pending identity");
     drop(peer);
     assert_eq!(pending.private_bytes(), app_key);
+}
+
+impl CeremonyPeer {
+    /// Run the whole ceremony with `band_key` as the band's identity key, up to
+    /// the host's trust proof; returns the frames the confirmation produced.
+    fn enroll(&mut self, band_key: &SigningKey) -> Vec<DataXFrame> {
+        self.claim_through_pair();
+        self.finish(band_key);
+        let (events, requests) = self.confirm();
+        assert!(completed_identity(&events).is_some());
+        requests
+    }
+}
+
+#[test]
+fn after_the_ceremony_the_session_rejoins_the_full_startup() {
+    let mut peer = CeremonyPeer::new();
+    let band_key = SigningKey::random(&mut OsRng);
+    peer.enroll(&band_key);
+    assert!(
+        peer.send(&encode_frame(2, &[0x03001000], &[]).unwrap())
+            .unwrap()
+            .1
+            .is_empty()
+    );
+    let proof = peer.band.trust_proof(&band_key).unwrap();
+    let end = peer.send(&proof).unwrap().1;
+    let end = end.last().unwrap();
+    assert!(end.channel == 0x8001 && end.words == vec![0x02001000]);
+    let end_ack = peer
+        .send(&encode_frame(0x8001, &[0x02001000], &ready()).unwrap())
+        .unwrap()
+        .1;
+    assert_eq!(channels(&end_ack), vec![0x8003]);
+    let info = peer
+        .send(&encode_frame(3, &[0x02000315], &device_ok()).unwrap())
+        .unwrap()
+        .1;
+    assert_eq!(channels(&info), vec![0x8005, 0x8005, 0x8006]);
+    let (events, _) = peer
+        .send(&encode_frame(5, &[0x02000315], &status(3)).unwrap())
+        .unwrap();
+    assert!(connected(&events));
+    assert!(peer.session.streams_enabled());
+}
+
+#[test]
+fn a_rejection_after_finish_change_owner_keeps_the_pending_identity() {
+    let mut peer = CeremonyPeer::new();
+    peer.claim_through_pair();
+    peer.finish(&SigningKey::random(&mut OsRng));
+    match peer.send(&encode_frame(2, &[0x03001044], &[]).unwrap()) {
+        Err(BandError::OwnershipRejected { code, .. }) => assert_eq!(code, 0x1044),
+        other => panic!("expected an ownership rejection, got {other:?}"),
+    }
+    assert!(peer.session.enrollment().is_none());
+    assert!(peer.session.pending_identity().is_some());
+}
+
+#[test]
+fn a_post_ceremony_band_proof_from_the_wrong_key_is_refused() {
+    let mut peer = CeremonyPeer::new();
+    peer.enroll(&SigningKey::random(&mut OsRng));
+    assert!(peer.session.band_verified());
+    assert!(
+        peer.send(&encode_frame(2, &[0x03001000], &[]).unwrap())
+            .unwrap()
+            .1
+            .is_empty()
+    );
+    let forged = peer
+        .band
+        .trust_proof(&SigningKey::random(&mut OsRng))
+        .unwrap();
+    // The error is terminal, so neither the proof ack nor EndLinkSetup is written.
+    assert!(peer.send(&forged).is_err());
+    assert!(!peer.session.streams_enabled());
+}
+
+#[test]
+fn resuming_the_ceremony_needs_a_running_ceremony() {
+    let mut session = BandSession::new(None, None, false);
+    SimBand::connect(&mut session).unwrap();
+    assert!(
+        session
+            .ceremony_pair_request_completed(&[3; 71], PENDING_RECEIPT)
+            .is_err()
+    );
+    // After `stop()` mid-ceremony the late HTTP reply is dropped quietly.
+    let mut peer = CeremonyPeer::new();
+    peer.send(&identity_response()).unwrap();
+    peer.send(&skip_challenge_response()).unwrap();
+    assert!(peer.session.stop().unwrap().is_empty());
+    assert!(
+        peer.session
+            .ceremony_pair_request_completed(&[3; 71], PENDING_RECEIPT)
+            .unwrap()
+            .is_empty()
+    );
 }
