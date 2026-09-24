@@ -28,6 +28,8 @@ use crate::transport::Transport;
 const TICK: Duration = Duration::from_millis(250);
 /// Identity result code: the band is enrolled to a different key.
 const DIFFERENT_KEY: u32 = 0x1043;
+const ALREADY_PAIRED: &str =
+    "a band is already paired — forget it first (`kinesisctl forget`, then factory reset the band)";
 const PAIRING_RUNNING: &str = "a pairing is running; wait for it to finish";
 
 struct ActiveLink {
@@ -480,6 +482,13 @@ impl<T: Transport, R: Runner, F: ClientFactory> Daemon<T, R, F> {
     }
 
     async fn start_pairing(&mut self, address: Option<String>) -> Response {
+        // Pairing strips the Bluetooth bond of the band it targets: never risk
+        // that on the band we own.
+        match self.store.load_band() {
+            Ok(None) => {}
+            Ok(Some(_)) => return Response::error(ALREADY_PAIRED),
+            Err(error) => return Response::error(format!("state: {error}")),
+        }
         let session = match self.store.load_meta_session() {
             Ok(session) => session,
             Err(error) => return Response::error(format!("state: {error}")),

@@ -415,32 +415,61 @@ impl ClientFactory for HangingFactory {
 }
 
 #[tokio::test(start_paused = true)]
-async fn a_failed_re_pair_reconnects_the_old_band_and_keeps_the_failure_visible() {
+async fn pairing_is_refused_while_a_band_is_paired() {
     let transport = SimTransport::new(SimMode::Enrolled);
     let mut daemon = start(transport.clone(), true, fake(&transport));
     daemon.connected().await;
-    // No band at that address: the pairing fails before touching the paired band.
+    let response = daemon.call(Request::Pair { address: None }).await;
+    assert!(!response.ok, "{response:?}");
+    let error = response.error.unwrap();
+    assert!(
+        error.contains("already paired") && error.contains("kinesisctl forget"),
+        "{error}"
+    );
+    // The paired band's link is untouched.
+    assert_eq!(daemon.status.borrow().state, LinkState::Connected);
+    assert_eq!(daemon.transport.opens(), 1);
+    assert!(daemon.store.load_identity().unwrap().is_some());
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_band_can_be_paired_again_after_forgetting_it() {
+    let transport = SimTransport::new(SimMode::Enrolled);
+    let mut daemon = start(transport.clone(), true, fake(&transport));
+    daemon.connected().await;
+    let old = daemon.store.load_identity().unwrap().unwrap();
+    assert!(daemon.call(Request::Forget).await.ok);
+    let response = daemon.call(Request::Pair { address: None }).await;
+    assert!(response.ok, "{response:?}");
+    daemon.connected().await;
+    let new = daemon.store.load_identity().unwrap().unwrap();
+    assert_ne!(new.private_bytes(), old.private_bytes());
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_failed_pairing_keeps_the_failure_visible() {
+    let transport = SimTransport::new(SimMode::Legacy);
+    let mut daemon = start(transport.clone(), false, fake(&transport));
+    daemon
+        .wait("the unpaired error", |s| s.error.is_some())
+        .await;
+    // No band at that address.
     let response = daemon
         .call(Request::Pair {
             address: Some("AA:BB:CC:DD:EE:FF".into()),
         })
         .await;
     assert!(response.ok, "{response:?}");
-    daemon
+    let status = daemon
         .wait("the pairing failure", |s| {
-            s.state != LinkState::Pairing && s.error.is_some()
+            s.state != LinkState::Pairing
+                && s.error
+                    .as_deref()
+                    .is_some_and(|e| e.contains("no band in pairing mode"))
         })
         .await;
-    daemon.connected().await;
-    assert_eq!(daemon.transport.opens(), 2);
-    let status = daemon.status.borrow().clone();
-    assert!(
-        status
-            .error
-            .as_deref()
-            .is_some_and(|e| e.contains("no band in pairing mode")),
-        "{status:?}"
-    );
+    assert_eq!(status.state, LinkState::Idle);
+    assert_eq!(daemon.transport.opens(), 0);
 }
 
 #[tokio::test(start_paused = true)]

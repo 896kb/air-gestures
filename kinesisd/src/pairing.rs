@@ -73,7 +73,7 @@ pub async fn pair_band<T: Transport, C: PairClient>(
         None => found.into_iter().next(),
     }
     .ok_or(PairFailure::NoBandFound)?;
-    let record = BandRecord {
+    let mut record = BandRecord {
         address: chosen.address,
         name: chosen.name,
     };
@@ -88,6 +88,15 @@ pub async fn pair_band<T: Transport, C: PairClient>(
         .open(&record.address)
         .await
         .map_err(PairFailure::Failed)?;
+    // Bonded now: learn the identity address before anything is saved, so the
+    // pending record written below already carries it. In memory only — the
+    // band record is saved once the band may commit (the later calls are a
+    // fallback for a band that resolves late).
+    let identity = transport.identity_address(&record.address).await;
+    if identity != record.address {
+        tracing::info!("the band's identity address is {identity}");
+        record.address = identity;
+    }
 
     let (commands, command_rx) = mpsc::channel(8);
     let (event_tx, mut events) = mpsc::channel(64);
@@ -118,7 +127,6 @@ pub async fn pair_band<T: Transport, C: PairClient>(
         },
     ));
 
-    let mut record = record;
     let mut failure: Option<PairFailure> = None;
     let mut saved = false;
     let mut resolved = false;

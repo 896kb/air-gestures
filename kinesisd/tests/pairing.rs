@@ -310,3 +310,57 @@ async fn a_claim_saves_the_bands_identity_address() {
     // The band answers at its identity address afterwards.
     assert!(transport.open("AA:BB:CC:DD:EE:FF").await.is_ok());
 }
+
+#[tokio::test(start_paused = true)]
+async fn a_lost_confirmation_saves_the_pending_band_under_its_identity_address() {
+    let transport = SimTransport::new(SimMode::Legacy);
+    transport.set_identity_address(Some("AA:BB:CC:DD:EE:FF".into()));
+    transport.set_drop_after_finish(true);
+    let client = FakeFactory {
+        device_point: Some(transport.band_point()),
+        fail: None,
+    }
+    .client(None)
+    .unwrap();
+    let (_dir, store) = store();
+    pair_band(
+        &transport,
+        &client,
+        &store,
+        None,
+        Clock::new(),
+        |_: &str| {},
+    )
+    .await
+    .unwrap_err();
+    assert!(store.load_pending().unwrap().is_some());
+    assert_eq!(
+        store.load_band().unwrap().unwrap().address,
+        "AA:BB:CC:DD:EE:FF",
+        "resolved right after connecting, before the band could commit"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn resolving_the_identity_address_early_saves_nothing_by_itself() {
+    let transport = SimTransport::new(SimMode::Legacy);
+    transport.set_identity_address(Some("AA:BB:CC:DD:EE:FF".into()));
+    let client = FakeFactory {
+        device_point: None,
+        fail: Some(PairError::Failed("meta said no".into())),
+    }
+    .client(None)
+    .unwrap();
+    let (_dir, store) = store();
+    pair_band(
+        &transport,
+        &client,
+        &store,
+        None,
+        Clock::new(),
+        |_: &str| {},
+    )
+    .await
+    .unwrap_err();
+    assert!(store.load_band().unwrap().is_none());
+}

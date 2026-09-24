@@ -205,7 +205,9 @@ impl Transport for BluezTransport {
                         if let Ok(Some(name)) = device.name().await
                             && is_band_name(&name)
                         {
-                            found.insert(address, Found { address: address.to_string(), name, rssi: Some(rssi) });
+                            // The identity address once bonded, else the one heard.
+                            let remote = device.remote_address().await.unwrap_or(address);
+                            found.insert(address, Found { address: remote.to_string(), name, rssi: Some(rssi) });
                         }
                     }
                     Some(_) => {}
@@ -224,10 +226,14 @@ impl Transport for BluezTransport {
             tracing::debug!("could not make the adapter pairable: {error}");
         }
         // A factory reset gives the band a new identity key; a stale bond would make pairing fail.
-        if let Ok(device) = self.adapter.device(target)
+        // Looked up like `open`/`forget`: the object may live under a private address.
+        if let Ok(Some(device)) = self.existing_device(target).await
             && device.is_paired().await.unwrap_or(false)
         {
-            self.adapter.remove_device(target).await.map_err(describe)?;
+            self.adapter
+                .remove_device(device.address())
+                .await
+                .map_err(describe)?;
         }
         let agent = Agent {
             request_default: true,
