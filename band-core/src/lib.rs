@@ -13,5 +13,7 @@ pub mod events;
 pub mod gestures;
 pub mod identity;
 pub mod proto;
+pub mod session;
+pub mod sim;
 
 pub use error::{BandError, Result};
