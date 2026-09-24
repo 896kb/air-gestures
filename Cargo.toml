@@ -5,3 +5,4 @@ members = ["band-core"]
 [workspace.package]
 edition = "2024"
 license = "MIT"
+rust-version = "1.88"
