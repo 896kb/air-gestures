@@ -186,7 +186,7 @@ fn device_key(json: &Value) -> Option<Vec<u8>> {
         .get("additional_data")?
         .get("device_ec_public_key")?
         .as_str()?;
-    B64.decode(key).ok()
+    B64.decode(key).ok().filter(|key| !key.is_empty())
 }
 
 pub fn parse_final(json: &Value) -> Result<Final, PairError> {
@@ -232,12 +232,12 @@ pub struct HttpPairClient {
 }
 
 impl HttpPairClient {
-    pub fn new(session: MetaSession) -> Self {
+    pub fn new(session: MetaSession) -> Result<Self, PairError> {
         let http = reqwest::Client::builder()
             .timeout(Duration::from_secs(30))
             .build()
-            .expect("HTTP client");
-        Self { http, session }
+            .map_err(|error| PairError::Failed(format!("could not set up HTTPS: {error}")))?;
+        Ok(Self { http, session })
     }
 
     async fn execute(
@@ -345,7 +345,7 @@ pub struct HttpFactory;
 impl ClientFactory for HttpFactory {
     type Client = HttpPairClient;
     fn client(&self, session: Option<MetaSession>) -> Result<HttpPairClient, Option<String>> {
-        session.map(HttpPairClient::new).ok_or(None)
+        HttpPairClient::new(session.ok_or(None)?).map_err(|error| Some(error.to_string()))
     }
 }
 

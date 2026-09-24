@@ -19,6 +19,7 @@ const CEREMONY_TIMEOUT: f64 = 180.0;
 const BATTERY_EVERY: f64 = 5.0;
 const QUIET_QUERY: f64 = 2.0;
 const STALL_LIVE: f64 = 8.0;
+/// Before the first input the startup deadline (30 s) normally fires first.
 const STALL_BEFORE_INPUT: f64 = 50.0;
 const STOP_WAIT: f64 = 3.0;
 
@@ -205,6 +206,14 @@ async fn drive<IO: AsyncRead + AsyncWrite + Unpin>(
                 let count = match read {
                     Ok(0) => return stopping.map_or(LinkEnd::StreamEnded, |stop| stop.reason),
                     Ok(count) => count,
+                    // A dropped channel is an ordinary end, like EOF.
+                    Err(error) if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::ConnectionReset
+                            | std::io::ErrorKind::NotConnected
+                            | std::io::ErrorKind::BrokenPipe
+                            | std::io::ErrorKind::ConnectionAborted
+                    ) => return stopping.map_or(LinkEnd::StreamEnded, |stop| stop.reason),
                     Err(error) => return LinkEnd::Failed(format!("read from the band failed: {error}")),
                 };
                 let now = clock.now();

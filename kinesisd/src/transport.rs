@@ -71,6 +71,8 @@ struct SimState {
     hand: u64,
     inject: Option<mpsc::UnboundedSender<SimInject>>,
     opens: usize,
+    /// Drop the connection right after the band commits a claim, before it confirms.
+    drop_after_finish: bool,
 }
 
 #[derive(Clone)]
@@ -96,6 +98,7 @@ impl SimTransport {
                 hand: 0,
                 inject: None,
                 opens: 0,
+                drop_after_finish: false,
             })),
         }
     }
@@ -121,6 +124,12 @@ impl SimTransport {
     pub fn set_owner(&self, identity: &EnrollmentIdentity) {
         let hash: [u8; 32] = Sha256::digest(identity.app_point()).into();
         self.lock().owner = Some(hash);
+    }
+
+    /// Test knob: when the band reads FinishChangeOwner it commits the claim,
+    /// then drops the connection without sending its confirmation.
+    pub fn set_drop_after_finish(&self, drop: bool) {
+        self.lock().drop_after_finish = drop;
     }
 
     /// The band's current owner hash (None until a claim or the first enrolled connection).
@@ -228,7 +237,11 @@ async fn serve(
                 };
                 match band.respond(&buffer[..count]) {
                     Ok(reply) => {
+                        let finished_now = band.finish_seen() && !synced.2;
                         sync_state(&band, &mut synced, &state);
+                        if finished_now && state.lock().expect("sim transport lock").drop_after_finish {
+                            return;
+                        }
                         if !reply.is_empty() && io.write_all(&reply).await.is_err() {
                             return;
                         }

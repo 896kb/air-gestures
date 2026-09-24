@@ -3,6 +3,8 @@
 //! save the new owner key — as pending before the band can commit, confirmed
 //! once it does (kinesis `BandModel.pairBand` / `performCeremony`).
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use band_core::ceremony::{CeremonyHttpRequest, OwnershipCeremony};
@@ -87,7 +89,12 @@ pub async fn pair_band<T: Transport, C: PairClient>(
 
     let (commands, command_rx) = mpsc::channel(8);
     let (event_tx, mut events) = mpsc::channel(64);
+    // The band record is saved together with the pending key (band first):
+    // once the band may commit, a later connect needs both to try the key.
     let pending_store = store.clone();
+    let pending_record = record.clone();
+    let persisted_this_run = Arc::new(AtomicBool::new(false));
+    let persisted = persisted_this_run.clone();
     let session = BandSession::new(None, Some(OwnershipCeremony::default()), false);
     let link = tokio::spawn(run_link(
         io,
@@ -95,7 +102,12 @@ pub async fn pair_band<T: Transport, C: PairClient>(
         clock,
         command_rx,
         event_tx,
-        move |identity| pending_store.save_pending(identity),
+        move |identity| {
+            pending_store.save_band(&pending_record)?;
+            pending_store.save_pending(identity)?;
+            persisted.store(true, Ordering::SeqCst);
+            Ok(())
+        },
     ));
 
     let mut failure: Option<PairFailure> = None;
@@ -135,7 +147,10 @@ pub async fn pair_band<T: Transport, C: PairClient>(
                 };
                 let _ = commands.send(next).await;
             }
-            Event::CeremonyCompleted(identity) => match store.save_identity(&identity) {
+            Event::CeremonyCompleted(identity) => match store
+                .save_band(&record)
+                .and_then(|()| store.save_identity(&identity))
+            {
                 Ok(()) => {
                     saved = true;
                     progress("the band accepted this computer as its owner");
@@ -163,9 +178,23 @@ pub async fn pair_band<T: Transport, C: PairClient>(
     {
         saved = true;
     }
-    // A pending key means the band may already be ours: keep the band so a
-    // later connect can try that key.
-    if saved || store.load_pending().ok().flatten().is_some() {
+    let persisted = persisted_this_run.load(Ordering::SeqCst);
+    // Band-record rule: band.json is kept when this run confirmed an owner, or
+    // saved a pending key the band may have committed to. A pending key from an
+    // earlier run never counts. An explicit ownership rejection means the band
+    // did not commit: drop this run's pending key, and keep band.json only if a
+    // confirmed owner identity exists.
+    if !saved && persisted && matches!(outcome.end, LinkEnd::OwnershipRejected { .. }) {
+        store.discard_pending().map_err(|error| {
+            PairFailure::Failed(format!("could not drop the rejected owner key: {error}"))
+        })?;
+        if store.load_identity().ok().flatten().is_none() {
+            store.forget_band().map_err(|error| {
+                PairFailure::Failed(format!("could not drop the band record: {error}"))
+            })?;
+        }
+    } else if saved || persisted {
+        // Belt and braces: the closure / completion paths already saved it.
         store.save_band(&record).map_err(|error| {
             PairFailure::Failed(format!("could not save the band record: {error}"))
         })?;

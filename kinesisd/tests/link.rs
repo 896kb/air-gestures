@@ -284,3 +284,69 @@ async fn failing_to_persist_the_pending_identity_aborts_before_finishing() {
     assert!(matches!(outcome.end, LinkEnd::Failed(message) if message.contains("disk full")));
     assert!(outcome.enrollment.is_none());
 }
+
+/// Wraps the simulated channel; once `reset` is set every read fails with
+/// `ConnectionReset`, the way a dropped BLE L2CAP channel reports it.
+struct Resettable {
+    inner: tokio::io::DuplexStream,
+    reset: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl tokio::io::AsyncRead for Resettable {
+    fn poll_read(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        if self.reset.load(std::sync::atomic::Ordering::SeqCst) {
+            return std::task::Poll::Ready(Err(std::io::ErrorKind::ConnectionReset.into()));
+        }
+        std::pin::Pin::new(&mut self.inner).poll_read(cx, buf)
+    }
+}
+
+impl tokio::io::AsyncWrite for Resettable {
+    fn poll_write(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        std::pin::Pin::new(&mut self.inner).poll_write(cx, buf)
+    }
+    fn poll_flush(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.inner).poll_flush(cx)
+    }
+    fn poll_shutdown(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.inner).poll_shutdown(cx)
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_reset_connection_ends_the_link_like_a_close() {
+    let transport = SimTransport::new(SimMode::Legacy);
+    let reset = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let io = Resettable {
+        inner: transport.open(SIM_ADDRESS).await.unwrap(),
+        reset: reset.clone(),
+    };
+    let (_commands, command_rx) = mpsc::channel(4);
+    let (event_tx, mut events) = mpsc::channel(256);
+    let session = BandSession::new(None, None, false);
+    let task = tokio::spawn(run_link(
+        io,
+        session,
+        Clock::new(),
+        command_rx,
+        event_tx,
+        |_| Ok(()),
+    ));
+    wait_for(&mut events, |e| band(e, |e| matches!(e, Event::Connected))).await;
+    reset.store(true, std::sync::atomic::Ordering::SeqCst);
+    assert_eq!(task.await.unwrap().end, LinkEnd::StreamEnded);
+}

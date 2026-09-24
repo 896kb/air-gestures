@@ -191,6 +191,11 @@ impl Store {
         }
     }
 
+    /// Remove the band record only.
+    pub fn forget_band(&self) -> io::Result<()> {
+        self.remove(BAND)
+    }
+
     /// Remove every stored key, the band record and the Meta session.
     pub fn forget(&self) -> io::Result<()> {
         for name in [

@@ -155,3 +155,88 @@ async fn a_band_that_isnt_there_is_not_found() {
     .unwrap_err();
     assert_eq!(failure, PairFailure::NoBandFound);
 }
+
+#[tokio::test(start_paused = true)]
+async fn a_lost_confirmation_keeps_the_pending_key_and_band() {
+    let transport = SimTransport::new(SimMode::Legacy);
+    transport.set_drop_after_finish(true);
+    let client = FakeFactory {
+        device_point: Some(transport.band_point()),
+        fail: None,
+    }
+    .client(None)
+    .unwrap();
+    let (_dir, store) = store();
+    let failure = pair_band(
+        &transport,
+        &client,
+        &store,
+        None,
+        Clock::new(),
+        |_: &str| {},
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        !matches!(failure, PairFailure::WrongAccount(_)),
+        "{failure:?}"
+    );
+    let pending = store.load_pending().unwrap().expect("pending key kept");
+    assert!(store.load_band().unwrap().is_some());
+    assert!(store.load_identity().unwrap().is_none());
+
+    // The band committed the claim: the pending key connects as its owner.
+    let io = transport.open(SIM_ADDRESS).await.unwrap();
+    let (_commands, command_rx) = mpsc::channel(4);
+    let (event_tx, mut events) = mpsc::channel(64);
+    tokio::spawn(run_link(
+        io,
+        BandSession::new(Some(pending), None, false),
+        Clock::new(),
+        command_rx,
+        event_tx,
+        |_| Ok(()),
+    ));
+    tokio::time::timeout(Duration::from_secs(30), async {
+        while let Some(event) = events.recv().await {
+            if matches!(event, LinkEvent::Band(Event::Connected)) {
+                return;
+            }
+        }
+        panic!("link ended");
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_stale_pending_key_does_not_keep_a_failed_claims_band() {
+    let transport = SimTransport::new(SimMode::Legacy);
+    let fail = Some(PairError::SessionInvalid(
+        "your meta session expired.".into(),
+    ));
+    let client = FakeFactory {
+        device_point: None,
+        fail,
+    }
+    .client(None)
+    .unwrap();
+    let (_dir, store) = store();
+    let stale = band_core::identity::EnrollmentIdentity::new(
+        p256::ecdsa::SigningKey::random(&mut rand_core::OsRng),
+        None,
+    );
+    store.save_pending(&stale).unwrap();
+    let failure = pair_band(
+        &transport,
+        &client,
+        &store,
+        None,
+        Clock::new(),
+        |_: &str| {},
+    )
+    .await
+    .unwrap_err();
+    assert!(matches!(failure, PairFailure::SessionExpired(_)));
+    assert!(store.load_band().unwrap().is_none());
+}

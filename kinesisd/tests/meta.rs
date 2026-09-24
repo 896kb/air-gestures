@@ -186,3 +186,29 @@ async fn the_fake_client_answers_both_steps() {
         .unwrap();
     assert_eq!(final_.device_public_key, Some(vec![7; 64]));
 }
+
+#[test]
+fn an_empty_band_key_falls_back_to_the_receipt_or_none() {
+    let point: Vec<u8> = (0..64).collect();
+    let receipt = format!(
+        "{{\"additional_data\":{{\"device_ec_public_key\":\"{}\"}}}}",
+        B64.encode(&point)
+    );
+    let embedded = parse_final(&json!({
+        "final_ownership_receipt": receipt,
+        "receipt_signature": "AAAA",
+        "additional_data": { "device_ec_public_key": "" },
+    }))
+    .unwrap();
+    assert_eq!(
+        embedded.device_public_key.as_deref(),
+        Some(point.as_slice())
+    );
+    let empty = parse_final(&json!({
+        "final_ownership_receipt": "{\"additional_data\":{\"device_ec_public_key\":\"\"}}",
+        "receipt_signature": "AAAA",
+        "additional_data": { "device_ec_public_key": "" },
+    }))
+    .unwrap();
+    assert!(empty.device_public_key.is_none());
+}
