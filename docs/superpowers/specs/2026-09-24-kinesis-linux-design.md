@@ -32,7 +32,7 @@ Standalone repo `~/Projects/kinesis-linux`, Cargo workspace with three crates.
 | crate | kind | responsibility | main deps |
 |---|---|---|---|
 | `band-core` | lib, no I/O | sans-IO protocol: AirShield crypto (P-256 ECDH, HKDF, HMAC, AES-CBC, MAC-before-plaintext), datax framing + protobuf fields, session state machine (handshake, EnableTrust, subscription, handedness, battery, shutdown), gesture decoding + dedup, pinch dial, ownership-ceremony state machine, sEMG batch parsing | `p256`, `ecdsa`, `hkdf`, `hmac`, `sha2`, `aes`, `cbc` |
-| `kinesisd` | bin, tokio | BlueZ transport via `bluer` (discovery on service `0xFD5F`, GATT battery + PSM characteristic, LE L2CAP CoC on PSM 255), reconnect/heartbeat, action runner, config load + hot reload, control socket, scoped pairing agent, ceremony HTTP calls | `band-core`, `bluer`, `tokio`, `toml`, `serde`, `reqwest` |
+| `kinesisd` | bin, tokio | BlueZ transport via `bluer` (scan for names starting "Meta Band", GATT service `FEB8` → PSM characteristic `2d41da7c-82b6-42aa-b34e-e2e01df8cc1a` (reads `ff 00` = PSM 255; the first read triggers bonding), LE L2CAP CoC on that PSM), reconnect/heartbeat, action runner, config load + hot reload, control socket, scoped pairing agent, ceremony HTTP calls | `band-core`, `bluer`, `tokio`, `toml`, `serde`, `reqwest` |
 | `kinesisctl` | bin | CLI over the control socket; Meta sign-in window (writes `meta-session.json`); sEMG TUI | `wry`/`tao` (WebKitGTK 4.1), `ratatui`, `reqwest` |
 
 `band-core` exposes an interface of the form: feed inbound bytes / timer ticks →
@@ -65,7 +65,7 @@ requests/responses plus a subscribe mode that streams status and events.
 
 1. Remove any stale BlueZ bond for the band (a factory reset rotates the IRK and a
    stale bond breaks pairing).
-2. Scan for a band in pairing mode; pick it (prompt if several).
+2. Scan for a band in pairing mode (advertised name starts with "Meta Band"); pick it (prompt if several).
 3. Register a BlueZ agent that auto-accepts Just Works pairing **only for that
    address and only for the duration of `pair`**.
 4. If no stored Meta session: open a WebKitGTK window running kinesis's
@@ -125,9 +125,10 @@ sensitivity = 1.0        # 1.0 = 2° relative wrist rotation per step
 ```
 
 - Actions run detached with a 5 s timeout; they never block the transport.
-- Built-in dial targets: volume = `wpctl set-volume -l 1.0 @DEFAULT_AUDIO_SINK@ 2%±`
-  then `~/.local/bin/osd vol "󰕾  N%" N`; brightness = `brightnessctl set 2%±` then
-  `osd bri …`.
+- Dial targets are command pairs in `[dial]` (`volume_up`/`volume_down`,
+  `brightness_up`/`brightness_down`) so any rice can plug in its own OSD. Defaults are
+  generic: `wpctl set-volume -l 1.0 @DEFAULT_AUDIO_SINK@ 2%±` and `brightnessctl -q set 2%±`;
+  the arch_rice config overrides them with its `osd`/`rocker` scripts.
 - Dial behaviour (kinesis `PinchDial`): arms after ~200 ms of held index pinch;
   ≤ 1 step per 80 ms, excess flick steps discarded; release / reversal / stale
   motion clears pending movement; direction reversed for a *confirmed* left hand;
@@ -166,8 +167,9 @@ a viewer/recorder is attached and disables it on detach, waiting ≤ 3 s for the
 ack. Config read on `0x8007`; supported config: 2048 Hz, 8 ch, 16-bit, 16
 samples/batch, encoding 0; payload `0x0200020a`. Values are unscaled ADC counts.
 
-**Battery**: GATT battery characteristic (read + notify) and `BatteryInfoReq` on
-`0x8008` every 5 s while streaming; charging unknown unless reported.
+**Battery**: `BatteryInfoReq` on `0x8008` every 5 s while streaming (level + charging;
+charging unknown unless reported). The GATT battery characteristic is not used — the
+band's own report carries the same level.
 
 ## Testing
 
