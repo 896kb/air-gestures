@@ -179,14 +179,20 @@ fn print_status_of(response: kinesisd::ipc::Response) {
     }
 }
 
+/// Whether a Meta sign-in is already saved (never touches whether it's still valid).
+fn has_meta_session(store_dir: &std::path::Path) -> bool {
+    kinesisd::store::Store::open(store_dir)
+        .and_then(|store| store.load_meta_session())
+        .is_ok_and(|session| session.is_some())
+}
+
 fn pair(
     socket: &std::path::Path,
     address: Option<String>,
     replace: bool,
     dry_run: bool,
 ) -> ExitCode {
-    let rt = runtime();
-    let paired = rt
+    let paired = runtime()
         .block_on(kinesisctl::client::status(socket))
         .map(|s| s.band.is_some());
     match paired {
@@ -201,7 +207,17 @@ fn pair(
             return ExitCode::FAILURE;
         }
         Ok(true) => {
-            if let Err(error) = rt.block_on(kinesisctl::client::request(socket, &Request::Forget)) {
+            // Sign in *before* forgetting the old band: if the sign-in window
+            // is cancelled, the user still has a paired band afterwards.
+            if !has_meta_session(&store_dir(dry_run))
+                && let Err(error) = sign_in(&store_dir(dry_run))
+            {
+                eprintln!("{error}");
+                return ExitCode::FAILURE;
+            }
+            if let Err(error) =
+                runtime().block_on(kinesisctl::client::request(socket, &Request::Forget))
+            {
                 eprintln!("{error}");
                 return ExitCode::FAILURE;
             }
@@ -220,35 +236,62 @@ fn pair(
             );
         }
     }
-    let mut started = rt.block_on(kinesisctl::pair::start_pairing(socket, address.clone()));
-    if let Err(error) = &started
-        && kinesisctl::pair::needs_sign_in(error)
-    {
-        drop(rt);
-        if let Err(error) = sign_in(&store_dir(dry_run)) {
+
+    // At most one sign-in-and-retry: either the daemon refuses the initial
+    // `Pair` outright (no session at all), or the pairing itself later fails
+    // because the session it had turned out to be expired.
+    let mut signed_in_already = false;
+    loop {
+        if let Err(error) =
+            runtime().block_on(kinesisctl::pair::start_pairing(socket, address.clone()))
+        {
+            if !signed_in_already
+                && error.code.as_deref() == Some(kinesisd::ipc::CODE_NEEDS_SIGN_IN)
+            {
+                signed_in_already = true;
+                if let Err(error) = sign_in(&store_dir(dry_run)) {
+                    eprintln!("{error}");
+                    return ExitCode::FAILURE;
+                }
+                continue;
+            }
             eprintln!("{error}");
             return ExitCode::FAILURE;
         }
-        started = runtime().block_on(kinesisctl::pair::start_pairing(socket, address));
-    }
-    if let Err(error) = started {
-        eprintln!("{error}");
-        return ExitCode::FAILURE;
-    }
-    match runtime().block_on(kinesisctl::pair::follow_pairing(socket, |stage| {
-        println!("… {stage}");
-    })) {
-        Ok(kinesisctl::pair::Outcome::Paired { band }) => {
-            println!("Paired with {band}. It's yours now — try a swipe.");
-            ExitCode::SUCCESS
-        }
-        Ok(kinesisctl::pair::Outcome::Failed { message }) => {
-            eprintln!("pairing failed: {message}");
-            ExitCode::FAILURE
-        }
-        Err(error) => {
-            eprintln!("{error}");
-            ExitCode::FAILURE
+        match runtime().block_on(kinesisctl::pair::follow_pairing(socket, |stage| {
+            println!("… {stage}");
+        })) {
+            Ok(kinesisctl::pair::Outcome::Paired { band }) => {
+                println!("Paired with {band}. It's yours now — try a swipe.");
+                return ExitCode::SUCCESS;
+            }
+            Ok(kinesisctl::pair::Outcome::PairedNotConnected { band }) => {
+                println!(
+                    "claimed {band}; it hasn't connected yet — kinesisd keeps retrying (kinesisctl status)"
+                );
+                return ExitCode::SUCCESS;
+            }
+            Ok(kinesisctl::pair::Outcome::NeedsSignIn) if !signed_in_already => {
+                signed_in_already = true;
+                if let Err(error) = sign_in(&store_dir(dry_run)) {
+                    eprintln!("{error}");
+                    return ExitCode::FAILURE;
+                }
+            }
+            Ok(kinesisctl::pair::Outcome::NeedsSignIn) => {
+                eprintln!(
+                    "pairing failed: the meta session expired again; sign in and try `kinesisctl pair` again"
+                );
+                return ExitCode::FAILURE;
+            }
+            Ok(kinesisctl::pair::Outcome::Failed { message }) => {
+                eprintln!("pairing failed: {message}");
+                return ExitCode::FAILURE;
+            }
+            Err(error) => {
+                eprintln!("{error}");
+                return ExitCode::FAILURE;
+            }
         }
     }
 }

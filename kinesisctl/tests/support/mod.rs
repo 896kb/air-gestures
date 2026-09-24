@@ -9,7 +9,7 @@ use band_core::responder::SimMode;
 use kinesisd::actions::RecordingRunner;
 use kinesisd::daemon::Daemon;
 use kinesisd::ipc::{self, Handles};
-use kinesisd::meta::FakeFactory;
+use kinesisd::meta::{FakeFactory, PairError};
 use kinesisd::store::{BandRecord, Store};
 use kinesisd::transport::{SIM_ADDRESS, SIM_NAME, SimTransport};
 use p256::ecdsa::SigningKey;
@@ -27,9 +27,15 @@ pub struct TestDaemon {
 /// A kinesisd on a simulated band, serving a socket in a temp dir.
 /// `paired` pre-claims the band (store + sim owner).
 pub async fn start(mode: SimMode, paired: bool) -> TestDaemon {
+    start_failing(mode, paired, None).await
+}
+
+/// Like `start`, but a claim's Meta HTTP steps answer with `fail` instead of
+/// succeeding (e.g. `PairError::SessionInvalid` for a "needs sign-in" pairing).
+pub async fn start_failing(mode: SimMode, paired: bool, fail: Option<PairError>) -> TestDaemon {
     let dir = tempfile::tempdir().unwrap();
     let socket = dir.path().join("kinesis.sock");
-    let (transport, runner, store) = spawn(&socket, dir.path(), mode, paired).await;
+    let (transport, runner, store) = spawn(&socket, dir.path(), mode, paired, fail).await;
     TestDaemon {
         socket,
         transport,
@@ -47,7 +53,7 @@ pub async fn start(mode: SimMode, paired: bool) -> TestDaemon {
 /// `TestDaemon` so it isn't cleaned up while the daemon is still running.
 pub async fn start_at(socket: PathBuf, mode: SimMode, paired: bool) -> TestDaemon {
     let dir = tempfile::tempdir().unwrap();
-    let (transport, runner, store) = spawn(&socket, dir.path(), mode, paired).await;
+    let (transport, runner, store) = spawn(&socket, dir.path(), mode, paired, None).await;
     TestDaemon {
         socket,
         transport,
@@ -64,6 +70,7 @@ async fn spawn(
     state_dir: &std::path::Path,
     mode: SimMode,
     paired: bool,
+    fail: Option<PairError>,
 ) -> (SimTransport, RecordingRunner, Store) {
     let store = Store::open(state_dir.join("state")).unwrap();
     let transport = SimTransport::new(mode);
@@ -82,7 +89,7 @@ async fn spawn(
     let runner = RecordingRunner::default();
     let factory = FakeFactory {
         device_point: Some(transport.band_point()),
-        fail: None,
+        fail,
     };
     let daemon = Daemon::new(
         Arc::new(transport.clone()),

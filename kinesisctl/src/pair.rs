@@ -4,25 +4,46 @@ use std::path::Path;
 use std::time::Duration;
 
 use kinesisd::ipc::Request;
-use kinesisd::status::LinkState;
+use kinesisd::status::{LinkState, Status};
 
-use crate::client::{self, Subscription};
+use crate::client::{self, RequestError, Subscription};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Outcome {
-    Paired { band: String },
-    Failed { message: String },
+    Paired {
+        band: String,
+    },
+    /// Claimed, but not connected within the wait: kinesisd keeps retrying.
+    PairedNotConnected {
+        band: String,
+    },
+    Failed {
+        message: String,
+    },
+    /// The pairing failed because the Meta session is missing or expired
+    /// (`PairResult::needs_sign_in`): sign in and pair again.
+    NeedsSignIn,
 }
 
-/// The daemon asks for a Meta sign-in with this wording (kinesisd `start_pairing`).
-pub fn needs_sign_in(error: &str) -> bool {
-    error.to_ascii_lowercase().contains("sign in to meta")
-}
-
-pub async fn start_pairing(socket: &Path, address: Option<String>) -> Result<(), String> {
+pub async fn start_pairing(socket: &Path, address: Option<String>) -> Result<(), RequestError> {
     client::request(socket, &Request::Pair { address })
         .await
         .map(|_| ())
+}
+
+fn outcome_of(status: &Status) -> Option<Outcome> {
+    let result = status.last_pair.as_ref()?;
+    Some(if result.needs_sign_in {
+        Outcome::NeedsSignIn
+    } else if result.ok {
+        Outcome::Paired {
+            band: status.band.clone().unwrap_or_else(|| "the band".into()),
+        }
+    } else {
+        Outcome::Failed {
+            message: result.message.clone(),
+        }
+    })
 }
 
 /// Follow the status until the pairing ends; on success also wait for the owner connection.
@@ -32,7 +53,7 @@ pub async fn follow_pairing(
 ) -> Result<Outcome, String> {
     let mut subscription = Subscription::status(socket).await?;
     let mut last_stage = String::new();
-    let outcome = loop {
+    let (status, outcome) = loop {
         let status = tokio::time::timeout(Duration::from_secs(240), subscription.next_status())
             .await
             .map_err(|_| "the pairing took too long".to_string())?
@@ -46,19 +67,17 @@ pub async fn follow_pairing(
             }
             continue;
         }
-        if let Some(result) = &status.last_pair {
-            break if result.ok {
-                Outcome::Paired {
-                    band: status.band.clone().unwrap_or_else(|| "the band".into()),
-                }
-            } else {
-                Outcome::Failed {
-                    message: result.message.clone(),
-                }
-            };
+        if let Some(outcome) = outcome_of(&status) {
+            break (status, outcome);
         }
     };
-    if let Outcome::Paired { .. } = &outcome {
+    if let Outcome::Paired { band } = &outcome {
+        // The status that ended the loop may already show the settling
+        // reconnect as done (a fast, e.g. simulated, pairing easily beats a
+        // fresh subscriber to the punch): nothing left to wait for then.
+        if status.state == LinkState::Connected {
+            return Ok(Outcome::Paired { band: band.clone() });
+        }
         on_stage("connecting as the new owner");
         let connected = tokio::time::timeout(Duration::from_secs(60), async {
             while let Some(status) = subscription.next_status().await {
@@ -71,9 +90,7 @@ pub async fn follow_pairing(
         .await
         .unwrap_or(false);
         if !connected {
-            return Ok(Outcome::Failed {
-                message: "the band was claimed but didn't connect yet; kinesisd keeps retrying (see `kinesisctl status`)".into(),
-            });
+            return Ok(Outcome::PairedNotConnected { band: band.clone() });
         }
     }
     Ok(outcome)

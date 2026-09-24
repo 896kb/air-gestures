@@ -85,6 +85,7 @@ fn idle_or_missing_daemon_is_off_and_errors_go_in_the_tooltip() {
         last_pair: Some(PairResult {
             ok: false,
             message: "no band found".into(),
+            needs_sign_in: false,
         }),
         pairing_error: Some("no band found".into()),
         ..Status::default()

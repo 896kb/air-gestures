@@ -11,6 +11,40 @@ use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
 
 const CALL_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// A request refused (or otherwise failed) over the control socket.
+///
+/// Carries the daemon's `code`, if any (e.g. [`kinesisd::ipc::CODE_NEEDS_SIGN_IN`]),
+/// alongside the human-readable `message`, so a caller can react to *why* a
+/// request failed without matching on that text.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RequestError {
+    pub message: String,
+    pub code: Option<String>,
+}
+
+impl std::fmt::Display for RequestError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for RequestError {}
+
+impl From<String> for RequestError {
+    fn from(message: String) -> Self {
+        Self {
+            message,
+            code: None,
+        }
+    }
+}
+
+impl From<RequestError> for String {
+    fn from(error: RequestError) -> Self {
+        error.message
+    }
+}
+
 fn not_running(path: &Path, error: std::io::Error) -> String {
     format!(
         "kinesisd isn't running ({}: {error}). start it with `systemctl --user start kinesisd`",
@@ -33,8 +67,10 @@ async fn send(write: &mut OwnedWriteHalf, request: &Request) -> Result<(), Strin
         .map_err(|error| format!("writing to kinesisd failed: {error}"))
 }
 
-/// One request, one response. `Err` carries the daemon's error text (or a transport problem).
-pub async fn request(path: &Path, request: &Request) -> Result<Response, String> {
+/// One request, one response. `Err` carries the daemon's error text (and,
+/// where the daemon sent one, its stable [`RequestError::code`]) or reports a
+/// transport problem (never carries a code).
+pub async fn request(path: &Path, request: &Request) -> Result<Response, RequestError> {
     let stream = connect(path).await?;
     let (read, mut write) = stream.into_split();
     send(&mut write, request).await?;
@@ -49,9 +85,12 @@ pub async fn request(path: &Path, request: &Request) -> Result<Response, String>
     if response.ok {
         Ok(response)
     } else {
-        Err(response
-            .error
-            .unwrap_or_else(|| "kinesisd refused the request".into()))
+        Err(RequestError {
+            message: response
+                .error
+                .unwrap_or_else(|| "kinesisd refused the request".into()),
+            code: response.code,
+        })
     }
 }
 

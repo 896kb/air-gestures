@@ -9,6 +9,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use band_core::events::{EmgBatch, EmgConfig};
 use base64::Engine;
 use kinesisd::ipc::Request;
+use kinesisd::status::LinkState;
 
 use crate::client::{self, Subscription};
 
@@ -80,16 +81,42 @@ fn now_ms() -> u64 {
         .map_or(0, |d| d.as_millis() as u64)
 }
 
-/// Record frames to `path` (JSONL) until Ctrl-C or `limit`; returns the frame count.
+/// Record frames to `path` until Ctrl-C or `limit`; returns the frame count.
+///
+/// `path` is written as JSONL, one object per raw sEMG frame:
+/// `{"t_ms": <host receive time, unix ms>, "payload": "<base64>"}`, where
+/// `payload` is the raw sEMG batch protobuf as the band sent it (field 1: the
+/// batch sequence number, field 2: the band's own `timestamp_us`, field 3:
+/// 256 bytes = 16 samples × 8 channels, little-endian `u16`, interleaved by
+/// sample then channel — see [`EmgBatch::parse`]).
 pub async fn record(socket: &Path, path: &Path, limit: Option<Duration>) -> Result<u64, String> {
-    let mut file = std::io::BufWriter::new(
-        std::fs::File::create(path).map_err(|e| format!("{}: {e}", path.display()))?,
-    );
+    let status = client::status(socket).await?;
+    if status.state != LinkState::Connected {
+        return Err("connect the band first".into());
+    }
     let mut subscription = Subscription::semg(socket).await?;
+    // Only turn sEMG on (and only then create the output file) once we know
+    // the daemon accepted it: an error here must leave nothing behind.
     client::request(socket, &Request::Semg { on: true }).await?;
+    let outcome = record_frames(path, limit, &mut subscription).await;
+    let _ = client::request(socket, &Request::Semg { on: false }).await;
+    outcome
+}
+
+async fn record_frames(
+    path: &Path,
+    limit: Option<Duration>,
+    subscription: &mut Subscription,
+) -> Result<u64, String> {
+    let mut file = std::io::BufWriter::new(
+        std::fs::File::create(path).map_err(|error| format!("{}: {error}", path.display()))?,
+    );
     let deadline = limit.map(|limit| tokio::time::Instant::now() + limit);
+    // Created once and pinned so the same `ctrl_c` registration is polled
+    // (and, once fired, kept satisfied) across every loop iteration.
+    let mut ctrl_c = Box::pin(tokio::signal::ctrl_c());
     let mut frames = 0u64;
-    let result = loop {
+    loop {
         let stop = async {
             match deadline {
                 Some(deadline) => tokio::time::sleep_until(deadline).await,
@@ -97,8 +124,8 @@ pub async fn record(socket: &Path, path: &Path, limit: Option<Duration>) -> Resu
             }
         };
         tokio::select! {
-            () = stop => break Ok(()),
-            result = tokio::signal::ctrl_c() => break result.map_err(|error| error.to_string()),
+            () = stop => break Ok(frames),
+            result = &mut ctrl_c => break result.map(|()| frames).map_err(|error| error.to_string()),
             frame = subscription.next_semg() => match frame {
                 Some(payload) => {
                     let line = serde_json::json!({
@@ -106,30 +133,86 @@ pub async fn record(socket: &Path, path: &Path, limit: Option<Duration>) -> Resu
                         "payload": base64::engine::general_purpose::STANDARD.encode(&payload),
                     });
                     if let Err(error) = writeln!(file, "{line}") {
-                        break Err(format!("{}: {error}", path.display()));
+                        break Err(format!(
+                            "{}: {error} ({frames} frames written)",
+                            path.display()
+                        ));
                     }
                     frames += 1;
                 }
-                None => break Err("kinesisd went away".to_string()),
+                None => break Err(format!("kinesisd went away ({frames} frames written)")),
             },
         }
-    };
-    let _ = client::request(socket, &Request::Semg { on: false }).await;
-    file.flush()
-        .map_err(|e| format!("{}: {e}", path.display()))?;
-    result.map(|()| frames)
+    }
+    .and_then(|frames| {
+        file.flush()
+            .map(|()| frames)
+            .map_err(|error| format!("{}: {error} ({frames} frames written)", path.display()))
+    })
 }
 
-/// The live view (runs until `q`/`Esc`/Ctrl-C).
-pub async fn view(socket: &Path) -> Result<(), String> {
-    use ratatui::crossterm::event::{self, Event, KeyCode};
+/// Decimate `samples` to at most `width` points, each the peak-to-peak
+/// (max − min) of its chunk. This throws away the ADC's DC offset and shows
+/// where the signal is actually active, rather than just its raw level.
+pub fn decimate(samples: &[u16], width: usize) -> Vec<u64> {
+    if width == 0 {
+        return Vec::new();
+    }
+    if samples.len() < 2 {
+        return vec![0; width];
+    }
+    // At least 2 samples per chunk: a lone sample's "peak-to-peak" is always
+    // zero, which would flatten the whole display whenever there are fewer
+    // samples than columns (e.g. the first couple of seconds after `view`
+    // starts, before the rolling buffer has filled up).
+    let chunk = samples.len().div_ceil(width).max(2);
+    samples
+        .chunks(chunk)
+        .map(|chunk| {
+            let min = chunk.iter().copied().min().unwrap_or(0);
+            let max = chunk.iter().copied().max().unwrap_or(0);
+            u64::from(max - min)
+        })
+        .collect()
+}
+
+/// Render one frame: a one-line header, then 8 channel rows (a short label
+/// plus that channel's sparkline), each getting an equal share of the rest of
+/// the screen. A `Sparkline` needs at least one full line for its bars, so
+/// each channel's label and sparkline sit side by side rather than a label
+/// consuming its channel's only line (as a `Block` title would).
+pub fn draw(frame: &mut ratatui::Frame, channels: &Channels, header: &str) {
     use ratatui::layout::{Constraint, Layout};
-    use ratatui::widgets::{Block, Paragraph, Sparkline};
+    use ratatui::widgets::{Paragraph, Sparkline};
+
+    let mut constraints = vec![Constraint::Length(1)];
+    constraints.extend(std::iter::repeat_n(Constraint::Ratio(1, 8), 8));
+    let rows = Layout::vertical(constraints).split(frame.area());
+    frame.render_widget(Paragraph::new(header.to_string()), rows[0]);
+    for index in 0..8 {
+        let columns =
+            Layout::horizontal([Constraint::Length(3), Constraint::Min(1)]).split(rows[index + 1]);
+        frame.render_widget(Paragraph::new(format!("{index:>2}")), columns[0]);
+        let width = usize::from(columns[1].width).max(1);
+        let data = decimate(&channels.channel(index), width);
+        frame.render_widget(Sparkline::default().data(&data), columns[1]);
+    }
+}
+
+/// The live view (runs until `q`/`Esc`/Ctrl-C quits it).
+pub async fn view(socket: &Path) -> Result<(), String> {
+    use ratatui::crossterm::event::{self, Event, KeyCode, KeyModifiers};
 
     let mut subscription = Subscription::semg(socket).await?;
     client::request(socket, &Request::Semg { on: true }).await?;
     let mut channels = Channels::new(4096);
-    let mut terminal = ratatui::init();
+    let mut terminal = match ratatui::try_init() {
+        Ok(terminal) => terminal,
+        Err(error) => {
+            let _ = client::request(socket, &Request::Semg { on: false }).await;
+            return Err(format!("could not use this terminal: {error}"));
+        }
+    };
     let started = tokio::time::Instant::now();
     let mut redraw = tokio::time::interval(Duration::from_millis(50));
     let result: Result<(), String> = loop {
@@ -141,36 +224,18 @@ pub async fn view(socket: &Path) -> Result<(), String> {
             _ = redraw.tick() => {
                 if event::poll(Duration::ZERO).unwrap_or(false)
                     && let Ok(Event::Key(key)) = event::read()
-                    && matches!(key.code, KeyCode::Char('q') | KeyCode::Esc)
+                    && (matches!(key.code, KeyCode::Char('q') | KeyCode::Esc)
+                        || (key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL)))
                 {
                     break Ok(());
                 }
                 let elapsed = started.elapsed().as_secs_f64().max(0.001);
-                let draw = terminal.draw(|frame| {
-                    let rows = Layout::vertical([Constraint::Length(1); 9]).split(frame.area());
-                    let header = format!(
-                        "raw sEMG · {:.0} frames/s · {} dropped · q to quit",
-                        channels.frames() as f64 / elapsed,
-                        channels.dropped()
-                    );
-                    frame.render_widget(Paragraph::new(header), rows[0]);
-                    let width = usize::from(frame.area().width.saturating_sub(6)).max(1);
-                    for index in 0..8 {
-                        let data: Vec<u64> = channels
-                            .channel(index)
-                            .iter()
-                            .rev()
-                            .take(width)
-                            .rev()
-                            .map(|v| u64::from(*v))
-                            .collect();
-                        frame.render_widget(
-                            Sparkline::default().block(Block::new().title(format!("{index} "))).data(&data),
-                            rows[index + 1],
-                        );
-                    }
-                });
-                if let Err(error) = draw {
+                let header = format!(
+                    "raw sEMG · {:.0} frames/s · {} dropped · q to quit",
+                    channels.frames() as f64 / elapsed,
+                    channels.dropped()
+                );
+                if let Err(error) = terminal.draw(|frame| draw(frame, &channels, &header)) {
                     break Err(error.to_string());
                 }
             }

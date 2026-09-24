@@ -64,7 +64,7 @@ async fn a_daemon_error_is_returned_as_err() {
     let error = client::request(&daemon.socket, &Request::Connect)
         .await
         .unwrap_err();
-    assert!(error.contains("kinesisctl pair"), "{error}");
+    assert!(error.message.contains("kinesisctl pair"), "{error}");
 }
 
 #[tokio::test]
