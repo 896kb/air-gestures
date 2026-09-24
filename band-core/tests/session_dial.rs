@@ -8,11 +8,16 @@ fn encrypted_input_drives_the_dial_and_releases_on_motion_loss() {
     let mut peer = Peer::legacy(true, false);
     let first = peer.gyro(1_000_000, 0.0).unwrap();
     assert!(connected(&first) && heartbeat(&first));
-    assert!(engagement(&peer.gesture_with(1, 2, 0, 1, 0.01).unwrap()).is_empty(), "synthetic press");
+    assert!(
+        engagement(&peer.gesture_with(1, 2, 0, 1, 0.01).unwrap()).is_empty(),
+        "synthetic press"
+    );
     let press = peer.gesture(1, 0.02).unwrap();
     // A press alone never arms the dial. A tap is over before a hold begins.
     assert!(engagement(&press).is_empty());
-    let Event::Gesture(gesture) = &press[0] else { panic!("missing gesture") };
+    let Event::Gesture(gesture) = &press[0] else {
+        panic!("missing gesture")
+    };
     assert!(gesture.finger == "index" && gesture.action == "press" && !gesture.synthetic);
     assert!(gesture.sequence == 10 && gesture.timestamp_us == 20);
     assert_eq!(gesture.received_at, 100.0 + 0.02);

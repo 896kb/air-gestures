@@ -7,21 +7,21 @@
 
 use std::collections::HashMap;
 
-use p256::ecdsa::signature::hazmat::{PrehashSigner, PrehashVerifier};
 use p256::ecdsa::Signature;
+use p256::ecdsa::signature::hazmat::{PrehashSigner, PrehashVerifier};
 use p256::elliptic_curve::sec1::ToEncodedPoint;
-use p256::{ecdh, PublicKey, SecretKey};
+use p256::{PublicKey, SecretKey, ecdh};
 use rand_core::{OsRng, RngCore};
 use sha2::{Digest, Sha256};
 
 use crate::airshield::{AirShieldCipher, AirShieldKeys, AirShieldReceiver};
-use crate::ceremony::{failure_message, CeremonyHttpRequest, OwnershipCeremony};
-use crate::datax::{be16, be32, encode_frame, DataXFrame, DataXReceiver};
+use crate::ceremony::{CeremonyHttpRequest, OwnershipCeremony, failure_message};
+use crate::datax::{DataXFrame, DataXReceiver, be16, be32, encode_frame};
 use crate::dial::PinchDial;
-use crate::error::{perr, BandError, Result};
+use crate::error::{BandError, Result, perr};
 use crate::events::{BatteryStatus, EmgConfig, Event, GestureMessage, Hand};
-use crate::identity::{trust_digest, EnrollmentIdentity};
-use crate::proto::{field_bytes, field_int, ProtoFields};
+use crate::identity::{EnrollmentIdentity, trust_digest};
+use crate::proto::{ProtoFields, field_bytes, field_int};
 
 const STREAM_FIELDS: [u32; 3] = [3, 6, 8];
 const STREAM_CHANNEL: u16 = 0x8005;
@@ -40,20 +40,50 @@ const LINK_SETUP: u32 = 0x02001000;
 
 const FINGERS: [&str; 5] = ["unknown", "thumb", "index", "middle", "notApplicable"];
 const ACTIONS: [&str; 21] = [
-    "unknown", "press", "release", "tap", "doubletap", "click", "up", "down", "left", "right", "wake",
-    "swipeIn", "swipeOut", "ia", "partialPress", "partialRelease", "partialClick", "partialUp",
-    "partialDown", "partialLeft", "partialRight",
+    "unknown",
+    "press",
+    "release",
+    "tap",
+    "doubletap",
+    "click",
+    "up",
+    "down",
+    "left",
+    "right",
+    "wake",
+    "swipeIn",
+    "swipeOut",
+    "ia",
+    "partialPress",
+    "partialRelease",
+    "partialClick",
+    "partialUp",
+    "partialDown",
+    "partialLeft",
+    "partialRight",
 ];
 const DERIVED: [&str; 11] = [
-    "unknown", "singleTap", "doubleTap", "buttonHold", "buttonRelease", "buttonUp", "buttonDown",
-    "buttonLeft", "buttonRight", "buttonPress", "buttonHoldRelease",
+    "unknown",
+    "singleTap",
+    "doubleTap",
+    "buttonHold",
+    "buttonRelease",
+    "buttonUp",
+    "buttonDown",
+    "buttonLeft",
+    "buttonRight",
+    "buttonPress",
+    "buttonHoldRelease",
 ];
 
 fn table_name(table: &[&str], value: u64) -> String {
     usize::try_from(value)
         .ok()
         .and_then(|index| table.get(index))
-        .map_or_else(|| format!("unrecognized:{value}"), |name| (*name).to_owned())
+        .map_or_else(
+            || format!("unrecognized:{value}"),
+            |name| (*name).to_owned(),
+        )
 }
 
 /// Swift `allSatisfy { flags.contains($0) && flags.integer($0) == value }`: stops at the first miss.
@@ -163,7 +193,11 @@ impl BandSession {
     /// `enrollment`: connect as the stored owner. `ceremony`: claim a band in
     /// pairing mode. Neither: the legacy startup (bands in pairing mode only).
     /// `raw_emg`: request raw sEMG right after the gesture subscription.
-    pub fn new(enrollment: Option<EnrollmentIdentity>, ceremony: Option<OwnershipCeremony>, raw_emg: bool) -> Self {
+    pub fn new(
+        enrollment: Option<EnrollmentIdentity>,
+        ceremony: Option<OwnershipCeremony>,
+        raw_emg: bool,
+    ) -> Self {
         let secret = SecretKey::random(&mut OsRng);
         let public = secret.public_key().to_encoded_point(false).as_bytes()[1..].to_vec();
         Self {
@@ -244,7 +278,9 @@ impl BandSession {
     }
     /// Whether the band's trust proof is checked: the enrollment knows the band's key.
     pub fn band_verified(&self) -> bool {
-        self.enrollment.as_ref().is_some_and(|identity| identity.band_public_key.is_some())
+        self.enrollment
+            .as_ref()
+            .is_some_and(|identity| identity.band_public_key.is_some())
     }
 
     /// The first bytes to write after the L2CAP channel opens: RequestEncryption.
@@ -252,8 +288,14 @@ impl BandSession {
         encode_frame(
             0x8001,
             &[0x81000005, 0x02000001],
-            &[field_bytes(1, &self.public), field_bytes(2, &self.challenge), field_int(3, 0), field_int(4, 31), field_int(7, 16)]
-                .concat(),
+            &[
+                field_bytes(1, &self.public),
+                field_bytes(2, &self.challenge),
+                field_int(3, 0),
+                field_int(4, 31),
+                field_int(7, 16),
+            ]
+            .concat(),
         )
     }
 
@@ -265,11 +307,19 @@ impl BandSession {
     }
 
     fn end_link_setup(&self) -> Result<Vec<u8>> {
-        encode_frame(0x8001, &[LINK_SETUP], &[field_int(1, 1), field_bytes(2, &random::<16>())].concat())
+        encode_frame(
+            0x8001,
+            &[LINK_SETUP],
+            &[field_int(1, 1), field_bytes(2, &random::<16>())].concat(),
+        )
     }
 
     fn device_info_request(&self) -> Result<Vec<u8>> {
-        encode_frame(0x8003, &SERVICE_OPEN, &[field_int(1, 1), field_bytes(3, &[])].concat())
+        encode_frame(
+            0x8003,
+            &SERVICE_OPEN,
+            &[field_int(1, 1), field_bytes(3, &[])].concat(),
+        )
     }
 
     /// Feed bytes read from the band's L2CAP channel at monotonic `time` (seconds).
@@ -304,7 +354,8 @@ impl BandSession {
                 .map_err(|_| perr("Invalid band public key"))?;
             match kind {
                 0x02000001 => {
-                    if self.peer_key.is_some() || fields.integer(3)? != 0 || fields.integer(4)? != 3 {
+                    if self.peer_key.is_some() || fields.integer(3)? != 0 || fields.integer(4)? != 3
+                    {
                         return Err(perr("Unsupported band encryption parameters"));
                     }
                     self.peer_challenge = Some(fields.bytes_len(2, 16)?.to_vec());
@@ -325,14 +376,19 @@ impl BandSession {
                 0x02000002 => {
                     let parameters = fields.integer(5)?;
                     let peer_challenge = match (&self.peer_key, &self.peer_challenge) {
-                        (Some(key), Some(challenge)) if *key == point && parameters == 3 => challenge.clone(),
+                        (Some(key), Some(challenge)) if *key == point && parameters == 3 => {
+                            challenge.clone()
+                        }
                         _ => return Err(perr("Unexpected band encryption response")),
                     };
-                    let shared = ecdh::diffie_hellman(self.secret.to_nonzero_scalar(), peer.as_affine());
+                    let shared =
+                        ecdh::diffie_hellman(self.secret.to_nonzero_scalar(), peer.as_affine());
                     let secret = shared.raw_secret_bytes().as_slice();
                     let peer_seed = fields.bytes_len(2, 32)?.to_vec();
-                    let peer_iv: [u8; 16] = fields.bytes_len(3, 16)?.try_into().expect("length checked");
-                    let peer_counter = u32::try_from(fields.integer(4)?).map_err(|_| perr("Invalid band packet counter"))?;
+                    let peer_iv: [u8; 16] =
+                        fields.bytes_len(3, 16)?.try_into().expect("length checked");
+                    let peer_counter = u32::try_from(fields.integer(4)?)
+                        .map_err(|_| perr("Invalid band packet counter"))?;
                     self.transmitter = Some(AirShieldCipher::new(
                         AirShieldKeys::derive(secret, &peer_challenge, &self.seed)?,
                         self.iv,
@@ -368,7 +424,11 @@ impl BandSession {
             }
         }
         if self.receiver.is_some() {
-            let records = self.receiver.as_mut().expect("checked").feed(&self.pending)?;
+            let records = self
+                .receiver
+                .as_mut()
+                .expect("checked")
+                .feed(&self.pending)?;
             self.pending.clear();
             for plaintext in records {
                 self.authenticated_packets += 1;
@@ -389,16 +449,30 @@ impl BandSession {
     pub fn tick(&mut self, time: f64) -> Vec<Event> {
         self.dial.tick(time);
         let mut events = self.engagement_events();
-        if !self.stopping && self.hand_request.is_some_and(|request| time >= request.deadline) {
+        if !self.stopping
+            && self
+                .hand_request
+                .is_some_and(|request| time >= request.deadline)
+        {
             self.hand_request = None;
             self.hand = None;
-            events.push(Event::HandednessFailure("Couldn't confirm the band hand. Reconnect and try again.".into()));
+            events.push(Event::HandednessFailure(
+                "Couldn't confirm the band hand. Reconnect and try again.".into(),
+            ));
         }
-        if !self.stopping && self.battery_request.is_some_and(|(_, deadline)| time >= deadline) {
+        if !self.stopping
+            && self
+                .battery_request
+                .is_some_and(|(_, deadline)| time >= deadline)
+        {
             self.battery_request = None;
             events.push(Event::BatteryStatus(None));
         }
-        if !self.stopping && self.raw_request.is_some_and(|request| time >= request.deadline) {
+        if !self.stopping
+            && self
+                .raw_request
+                .is_some_and(|request| time >= request.deadline)
+        {
             self.raw_request = None;
             events.push(Event::RawEmgFailure(
                 "The band didn't confirm the EMG change. Turn readings off, then try again.".into(),
@@ -410,10 +484,14 @@ impl BandSession {
     /// Update the existing input subscription. Gesture and motion flags stay on.
     pub fn set_raw_emg_enabled(&mut self, enabled: bool, time: f64) -> Result<Vec<u8>> {
         if self.stopping {
-            return Err(BandError::Busy("Wait for the band to reconnect before changing readings.".into()));
+            return Err(BandError::Busy(
+                "Wait for the band to reconnect before changing readings.".into(),
+            ));
         }
         if self.raw_request.is_some() {
-            return Err(BandError::Busy("Wait for the current EMG change to finish.".into()));
+            return Err(BandError::Busy(
+                "Wait for the current EMG change to finish.".into(),
+            ));
         }
         self.raw_emg = enabled;
         if !self.streams_enabled {
@@ -423,14 +501,26 @@ impl BandSession {
         let id = self.raw_request_id;
         self.raw_request = Some(RawRequest {
             enabled,
-            stage: if enabled { RawStage::Config } else { RawStage::Update },
+            stage: if enabled {
+                RawStage::Config
+            } else {
+                RawStage::Update
+            },
             id,
             deadline: time + 8.0,
         });
         if enabled {
-            let words: &[u32] = if self.config_service_opened { &[] } else { &SERVICE_OPEN };
+            let words: &[u32] = if self.config_service_opened {
+                &[]
+            } else {
+                &SERVICE_OPEN
+            };
             self.config_service_opened = true;
-            let frame = encode_frame(CONFIG_SERVICE_CHANNEL, words, &[field_int(1, id), field_bytes(5, &[])].concat())?;
+            let frame = encode_frame(
+                CONFIG_SERVICE_CHANNEL,
+                words,
+                &[field_int(1, id), field_bytes(5, &[])].concat(),
+            )?;
             return self.encrypt(&frame);
         }
         self.raw_stream_update(id, false)
@@ -442,14 +532,24 @@ impl BandSession {
             .chain(STREAM_FIELDS.iter().map(|&field| field_int(field, 1)))
             .flatten()
             .collect();
-        let frame = encode_frame(STREAM_CHANNEL, &[], &[field_int(1, id), field_bytes(4, &control)].concat())?;
+        let frame = encode_frame(
+            STREAM_CHANNEL,
+            &[],
+            &[field_int(1, id), field_bytes(4, &control)].concat(),
+        )?;
         self.encrypt(&frame)
     }
 
     /// Write the band's hand setting, then confirm it with an independent read.
     pub fn set_handedness(&mut self, hand: Hand, time: f64) -> Result<Vec<u8>> {
-        if !self.streams_enabled || self.stopping || self.hand.is_none() || self.hand_request.is_some() {
-            return Err(BandError::Busy("Wait for the band to report its hand before changing it.".into()));
+        if !self.streams_enabled
+            || self.stopping
+            || self.hand.is_none()
+            || self.hand_request.is_some()
+        {
+            return Err(BandError::Busy(
+                "Wait for the band to report its hand before changing it.".into(),
+            ));
         }
         self.dial = PinchDial::default();
         self.request_hand(Some(hand), false, time)
@@ -458,17 +558,41 @@ impl BandSession {
     fn request_hand(&mut self, hand: Option<Hand>, reading: bool, time: f64) -> Result<Vec<u8>> {
         let id = self.configuration_id + 1;
         // ConfigReq.is_left_handed is field 10. An empty ConfigReq reads current settings.
-        let config = if reading { Vec::new() } else { field_int(10, u64::from(hand == Some(Hand::Left))) };
-        let words: &[u32] = if self.configuration_id == 0 { &SERVICE_OPEN } else { &[] };
-        let frame = encode_frame(CONFIGURATION_CHANNEL, words, &[field_int(1, id), field_bytes(5, &config)].concat())?;
+        let config = if reading {
+            Vec::new()
+        } else {
+            field_int(10, u64::from(hand == Some(Hand::Left)))
+        };
+        let words: &[u32] = if self.configuration_id == 0 {
+            &SERVICE_OPEN
+        } else {
+            &[]
+        };
+        let frame = encode_frame(
+            CONFIGURATION_CHANNEL,
+            words,
+            &[field_int(1, id), field_bytes(5, &config)].concat(),
+        )?;
         let bytes = self.encrypt(&frame)?;
         self.configuration_id = id;
-        self.hand_request = Some(HandRequest { id, hand, reading, deadline: time + 5.0 });
+        self.hand_request = Some(HandRequest {
+            id,
+            hand,
+            reading,
+            deadline: time + 5.0,
+        });
         Ok(bytes)
     }
 
-    fn receive_hand(&mut self, fields: &ProtoFields, time: f64, outgoing: &mut Vec<u8>) -> Result<Vec<Event>> {
-        let Some(request) = self.hand_request else { return Ok(Vec::new()) };
+    fn receive_hand(
+        &mut self,
+        fields: &ProtoFields,
+        time: f64,
+        outgoing: &mut Vec<u8>,
+    ) -> Result<Vec<Event>> {
+        let Some(request) = self.hand_request else {
+            return Ok(Vec::new());
+        };
         if fields.integer(1)? != request.id {
             return Ok(Vec::new());
         }
@@ -476,11 +600,15 @@ impl BandSession {
         let failure = |message: &str| vec![Event::HandednessFailure(message.to_owned())];
         if time >= request.deadline {
             self.hand = None;
-            return Ok(failure("Couldn't confirm the band hand. Reconnect and try again."));
+            return Ok(failure(
+                "Couldn't confirm the band hand. Reconnect and try again.",
+            ));
         }
         if fields.integer(2)? != 1 {
             self.hand = None;
-            return Ok(failure("The band couldn't apply its hand setting. Reconnect and try again."));
+            return Ok(failure(
+                "The band couldn't apply its hand setting. Reconnect and try again.",
+            ));
         }
         if !request.reading {
             // Read it again independently; a successful write status alone isn't confirmation.
@@ -497,7 +625,11 @@ impl BandSession {
             self.hand = None;
             return Ok(failure("This band didn't report its hand setting."));
         }
-        let reported = if config.integer(10)? == 1 { Hand::Left } else { Hand::Right };
+        let reported = if config.integer(10)? == 1 {
+            Hand::Left
+        } else {
+            Hand::Right
+        };
         self.hand = Some(reported);
         let mut events = vec![Event::Handedness(reported)];
         if request.hand.is_some_and(|expected| expected != reported) {
@@ -510,15 +642,27 @@ impl BandSession {
 
     /// BatteryInfoReq: an empty read request, separate from sensor subscriptions.
     pub fn query_battery_status(&mut self, time: f64) -> Result<Vec<u8>> {
-        if !self.streams_enabled || self.stopping || self.battery_unavailable || self.battery_request.is_some() {
+        if !self.streams_enabled
+            || self.stopping
+            || self.battery_unavailable
+            || self.battery_request.is_some()
+        {
             return Ok(Vec::new());
         }
         self.battery_request_id += 1;
         let id = self.battery_request_id;
         self.battery_request = Some((id, time + 3.0));
-        let words: &[u32] = if self.battery_channel_opened { &[] } else { &SERVICE_OPEN };
+        let words: &[u32] = if self.battery_channel_opened {
+            &[]
+        } else {
+            &SERVICE_OPEN
+        };
         self.battery_channel_opened = true;
-        let frame = encode_frame(BATTERY_CHANNEL, words, &[field_int(1, id), field_bytes(2, &[])].concat())?;
+        let frame = encode_frame(
+            BATTERY_CHANNEL,
+            words,
+            &[field_int(1, id), field_bytes(2, &[])].concat(),
+        )?;
         self.encrypt(&frame)
     }
 
@@ -549,7 +693,11 @@ impl BandSession {
     }
 
     /// Resume the ceremony after the `pair_request` HTTP exchange.
-    pub fn ceremony_pair_request_completed(&mut self, signature: &[u8], receipt: &str) -> Result<Vec<u8>> {
+    pub fn ceremony_pair_request_completed(
+        &mut self,
+        signature: &[u8],
+        receipt: &str,
+    ) -> Result<Vec<u8>> {
         if self.stopping {
             return Ok(Vec::new());
         }
@@ -562,7 +710,12 @@ impl BandSession {
     }
 
     /// Resume the ceremony after the `pair` HTTP exchange.
-    pub fn ceremony_pair_completed(&mut self, signature: &[u8], receipt: &str, device_public_key: Option<&[u8]>) -> Result<Vec<u8>> {
+    pub fn ceremony_pair_completed(
+        &mut self,
+        signature: &[u8],
+        receipt: &str,
+        device_public_key: Option<&[u8]>,
+    ) -> Result<Vec<u8>> {
         if self.stopping {
             return Ok(Vec::new());
         }
@@ -577,7 +730,10 @@ impl BandSession {
     /// Host EnableTrust on the identity service channel. The service-open word
     /// is only needed before the first identity exchange on the channel.
     fn enable_trust(&self, service_open: bool) -> Result<Vec<u8>> {
-        let identity = self.enrollment.as_ref().ok_or_else(|| perr("No owner identity is stored"))?;
+        let identity = self
+            .enrollment
+            .as_ref()
+            .ok_or_else(|| perr("No owner identity is stored"))?;
         let (Some(peer_key), Some(peer_challenge)) = (&self.peer_key, &self.peer_challenge) else {
             return Err(perr("Band encryption is not ready"));
         };
@@ -586,27 +742,46 @@ impl BandSession {
             .private_key
             .sign_prehash(&digest)
             .map_err(|_| perr("Could not sign the band trust proof"))?;
-        let words: &[u32] = if service_open { &[0x02001000] } else { &[0x81000024, 0x02001000] };
+        let words: &[u32] = if service_open {
+            &[0x02001000]
+        } else {
+            &[0x81000024, 0x02001000]
+        };
         encode_frame(
             0x8002,
             words,
-            &[field_bytes(1, &Sha256::digest(identity.app_point())), field_bytes(2, &signature.to_bytes())].concat(),
+            &[
+                field_bytes(1, &Sha256::digest(identity.app_point())),
+                field_bytes(2, &signature.to_bytes()),
+            ]
+            .concat(),
         )
     }
 
     /// Drive one ownership ceremony response. HTTP steps pause the wire flow and
     /// surface `Event::CeremonyHttp`; the caller resumes with the server's reply.
-    fn receive_ceremony(&mut self, frame: &DataXFrame, outgoing: &mut Vec<u8>) -> Result<Vec<Event>> {
-        let Some(&kind) = frame.words.last() else { return Ok(Vec::new()) };
+    fn receive_ceremony(
+        &mut self,
+        frame: &DataXFrame,
+        outgoing: &mut Vec<u8>,
+    ) -> Result<Vec<Event>> {
+        let Some(&kind) = frame.words.last() else {
+            return Ok(Vec::new());
+        };
         if kind & 0xff00_0000 == 0x0300_0000 {
             return Err(perr(failure_message(kind & 0x00ff_ffff)));
         }
-        let ceremony = self.ceremony.as_mut().expect("ceremony stage implies a ceremony");
+        let ceremony = self
+            .ceremony
+            .as_mut()
+            .expect("ceremony stage implies a ceremony");
         match kind {
             0x02003001 => {
                 let next = ceremony.identity_read(&frame.payload)?;
                 outgoing.extend(self.encrypt(&next)?);
-                Ok(vec![Event::CeremonyStage("reading the band identity".into())])
+                Ok(vec![Event::CeremonyStage(
+                    "reading the band identity".into(),
+                )])
             }
             0x02002001 => {
                 let request = ceremony.skip_challenge(&frame.payload)?;
@@ -633,7 +808,10 @@ impl BandSession {
                 self.setup_stage = SetupStage::Identity;
                 let proof = self.enable_trust(true)?;
                 outgoing.extend(self.encrypt(&proof)?);
-                Ok(vec![Event::CeremonyCompleted(identity), Event::CeremonyStage("establishing trust".into())])
+                Ok(vec![
+                    Event::CeremonyCompleted(identity),
+                    Event::CeremonyStage("establishing trust".into()),
+                ])
             }
             _ => Ok(Vec::new()),
         }
@@ -641,8 +819,14 @@ impl BandSession {
 
     /// Handle the enrolled identity exchange until both directions trust each
     /// other, then rejoin the shared EndLinkSetup flow.
-    fn receive_identity(&mut self, frame: &DataXFrame, outgoing: &mut Vec<u8>) -> Result<Vec<Event>> {
-        let Some(&kind) = frame.words.last() else { return Ok(Vec::new()) };
+    fn receive_identity(
+        &mut self,
+        frame: &DataXFrame,
+        outgoing: &mut Vec<u8>,
+    ) -> Result<Vec<Event>> {
+        let Some(&kind) = frame.words.last() else {
+            return Ok(Vec::new());
+        };
         if kind & 0xff00_0000 == 0x0300_0000 && frame.channel == 2 {
             if kind != 0x03001000 {
                 if kind == 0x03001043 {
@@ -664,12 +848,18 @@ impl BandSession {
                 return Err(perr("Band encryption is not ready"));
             };
             let signature = fields.bytes_len(2, 64)?;
-            if let Some(band_key) = self.enrollment.as_ref().and_then(|identity| identity.band_public_key.as_ref()) {
+            if let Some(band_key) = self
+                .enrollment
+                .as_ref()
+                .and_then(|identity| identity.band_public_key.as_ref())
+            {
                 let digest = trust_digest(&self.challenge, &self.public, peer_seed, peer_key);
                 let valid = Signature::from_slice(signature)
                     .is_ok_and(|proof| band_key.verify_prehash(&digest, &proof).is_ok());
                 if !valid {
-                    return Err(perr("The band's identity proof didn't verify. Try reconnecting."));
+                    return Err(perr(
+                        "The band's identity proof didn't verify. Try reconnecting.",
+                    ));
                 }
             }
             self.band_trusted = true;
@@ -701,11 +891,18 @@ impl BandSession {
             selected.insert(0, 2);
         }
         let control: Vec<u8> = match enabled {
-            Some(on) => selected.iter().flat_map(|&field| field_int(field, u64::from(on))).collect(),
+            Some(on) => selected
+                .iter()
+                .flat_map(|&field| field_int(field, u64::from(on)))
+                .collect(),
             None => Vec::new(),
         };
         let words: &[u32] = if id == 2 { &SERVICE_OPEN } else { &[] };
-        let frame = encode_frame(STREAM_CHANNEL, words, &[field_int(1, id), field_bytes(4, &control)].concat())?;
+        let frame = encode_frame(
+            STREAM_CHANNEL,
+            words,
+            &[field_int(1, id), field_bytes(4, &control)].concat(),
+        )?;
         self.encrypt(&frame)
     }
 
@@ -719,24 +916,38 @@ impl BandSession {
         vec![Event::DialState(self.emitted_engagement)]
     }
 
-    fn input(&mut self, frame: &DataXFrame, time: f64, outgoing: &mut Vec<u8>) -> Result<Vec<Event>> {
+    fn input(
+        &mut self,
+        frame: &DataXFrame,
+        time: f64,
+        outgoing: &mut Vec<u8>,
+    ) -> Result<Vec<Event>> {
         if let Some(&kind) = frame.words.last() {
-            if self.channel_types.len() >= 1024 && !self.channel_types.contains_key(&frame.channel) {
+            if self.channel_types.len() >= 1024 && !self.channel_types.contains_key(&frame.channel)
+            {
                 return Err(perr("Too many band input channels"));
             }
             self.channel_types.insert(frame.channel, kind);
         }
-        let Some(&kind) = self.channel_types.get(&frame.channel) else { return Ok(Vec::new()) };
+        let Some(&kind) = self.channel_types.get(&frame.channel) else {
+            return Ok(Vec::new());
+        };
         if self.ceremony.is_some() && self.setup_stage == SetupStage::Ceremony && !self.stopping {
             return self.receive_ceremony(frame, outgoing);
         }
         if self.enrollment.is_some() && self.setup_stage == SetupStage::Identity && !self.stopping {
             return self.receive_identity(frame, outgoing);
         }
-        if kind == LINK_SETUP && frame.channel == 0x8001 && self.setup_stage == SetupStage::Link && !self.stopping {
+        if kind == LINK_SETUP
+            && frame.channel == 0x8001
+            && self.setup_stage == SetupStage::Link
+            && !self.stopping
+        {
             let fields = ProtoFields::parse(&frame.payload)?;
             if fields.required_integer(1)? != 1 {
-                return Err(perr("The band couldn't finish setting up the connection. Try reconnecting."));
+                return Err(perr(
+                    "The band couldn't finish setting up the connection. Try reconnecting.",
+                ));
             }
             self.setup_stage = SetupStage::DeviceInfo;
             let info = self.device_info_request()?;
@@ -761,7 +972,9 @@ impl BandSession {
                     return Ok(Vec::new());
                 }
                 self.battery_request = None;
-                return Ok(vec![Event::BatteryStatus(BatteryStatus::from_response(&frame.payload).ok())]);
+                return Ok(vec![Event::BatteryStatus(
+                    BatteryStatus::from_response(&frame.payload).ok(),
+                )]);
             }
             return Ok(Vec::new());
         }
@@ -773,10 +986,14 @@ impl BandSession {
                 && (frame.channel == 7 || (frame.channel == 5 && raw.stage != RawStage::Config))
             {
                 self.raw_request = None;
-                return Ok(vec![Event::RawEmgFailure("The band rejected the EMG request.".into())]);
+                return Ok(vec![Event::RawEmgFailure(
+                    "The band rejected the EMG request.".into(),
+                )]);
             }
             if frame.channel == 5 && self.setup_stage == SetupStage::Input {
-                return Err(perr("The band rejected the input subscription. Try reconnecting."));
+                return Err(perr(
+                    "The band rejected the input subscription. Try reconnecting.",
+                ));
             }
             if frame.channel == 6 && self.hand_request.is_some() {
                 self.hand_request = None;
@@ -791,7 +1008,11 @@ impl BandSession {
         if ![RPC_RESPONSE, RAW_EMG, GESTURE, GYRO, ORIENTATION].contains(&kind) {
             return Ok(Vec::new());
         }
-        if kind == RPC_RESPONSE && frame.channel == 3 && self.setup_stage == SetupStage::DeviceInfo && !self.stopping {
+        if kind == RPC_RESPONSE
+            && frame.channel == 3
+            && self.setup_stage == SetupStage::DeviceInfo
+            && !self.stopping
+        {
             let fields = ProtoFields::parse(&frame.payload)?;
             if fields.required_integer(1)? != 1 {
                 return Ok(Vec::new());
@@ -897,7 +1118,9 @@ impl BandSession {
             events.push(Event::Gesture(gesture));
             events.extend(self.engagement_events());
         } else {
-            let bytes = fields.bytes_len(3, if kind == GYRO { 6 } else { 16 })?.to_vec();
+            let bytes = fields
+                .bytes_len(3, if kind == GYRO { 6 } else { 16 })?
+                .to_vec();
             self.motion_messages += 1;
             if !self.streaming {
                 self.streaming = true;
@@ -906,8 +1129,9 @@ impl BandSession {
                 self.last_heartbeat = time;
             }
             if kind == GYRO {
-                let values: [f64; 3] =
-                    std::array::from_fn(|i| f64::from(i16::from_le_bytes([bytes[i * 2], bytes[i * 2 + 1]])));
+                let values: [f64; 3] = std::array::from_fn(|i| {
+                    f64::from(i16::from_le_bytes([bytes[i * 2], bytes[i * 2 + 1]]))
+                });
                 let delta = self.dial.gyro(timestamp, values, time);
                 events.extend(self.engagement_events());
                 if let Some(delta) = delta {
@@ -920,7 +1144,12 @@ impl BandSession {
                 }
             } else {
                 let values: [f32; 4] = std::array::from_fn(|i| {
-                    f32::from_le_bytes([bytes[i * 4], bytes[i * 4 + 1], bytes[i * 4 + 2], bytes[i * 4 + 3]])
+                    f32::from_le_bytes([
+                        bytes[i * 4],
+                        bytes[i * 4 + 1],
+                        bytes[i * 4 + 2],
+                        bytes[i * 4 + 3],
+                    ])
                 });
                 let norm: f32 = values.iter().map(|v| v * v).sum();
                 if !values.iter().all(|v| v.is_finite()) || !(0.9..=1.1).contains(&norm) {
@@ -934,9 +1163,18 @@ impl BandSession {
 
     /// The staged raw-sEMG change: config read (0x8007) → status query → update.
     /// Returns `None` when the frame isn't the pending reply.
-    fn receive_raw(&mut self, frame: &DataXFrame, pending: RawRequest, outgoing: &mut Vec<u8>) -> Result<Option<Vec<Event>>> {
+    fn receive_raw(
+        &mut self,
+        frame: &DataXFrame,
+        pending: RawRequest,
+        outgoing: &mut Vec<u8>,
+    ) -> Result<Option<Vec<Event>>> {
         let fields = ProtoFields::parse(&frame.payload)?;
-        let expected = if pending.stage == RawStage::Config { CONFIG_SERVICE_CHANNEL } else { STREAM_CHANNEL };
+        let expected = if pending.stage == RawStage::Config {
+            CONFIG_SERVICE_CHANNEL
+        } else {
+            STREAM_CHANNEL
+        };
         if frame.channel & 0x7fff != expected & 0x7fff || fields.integer(1)? != pending.id {
             return Ok(None);
         }
@@ -956,7 +1194,11 @@ impl BandSession {
                 };
                 self.raw_request_id += 1;
                 let id = self.raw_request_id;
-                self.raw_request = Some(RawRequest { stage: RawStage::Query, id, ..pending });
+                self.raw_request = Some(RawRequest {
+                    stage: RawStage::Query,
+                    id,
+                    ..pending
+                });
                 let query = self.stream_request(id, None)?;
                 outgoing.extend(query);
                 Ok(Some(vec![Event::RawEmgConfiguration(config)]))
@@ -964,7 +1206,11 @@ impl BandSession {
             RawStage::Query => {
                 self.raw_request_id += 1;
                 let id = self.raw_request_id;
-                self.raw_request = Some(RawRequest { stage: RawStage::Update, id, ..pending });
+                self.raw_request = Some(RawRequest {
+                    stage: RawStage::Update,
+                    id,
+                    ..pending
+                });
                 let update = self.raw_stream_update(id, pending.enabled)?;
                 outgoing.extend(update);
                 Ok(Some(Vec::new()))

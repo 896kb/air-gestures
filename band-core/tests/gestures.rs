@@ -1,7 +1,14 @@
 use band_core::events::GestureMessage;
 use band_core::gestures::{ActionGate, DialRouter, GestureRouter, Recognized, Swipe, Tap};
 
-fn gesture(sequence: u64, time: f64, action: &str, derived: &str, finger: &str, synthetic: bool) -> GestureMessage {
+fn gesture(
+    sequence: u64,
+    time: f64,
+    action: &str,
+    derived: &str,
+    finger: &str,
+    synthetic: bool,
+) -> GestureMessage {
     GestureMessage {
         sequence,
         timestamp_us: sequence * 1000,
@@ -26,31 +33,76 @@ fn one_swipe_produces_one_action_across_raw_derived_and_repeated_messages() {
     let raw = g(1);
     assert_eq!(router.gesture(&raw, 100.01), LEFT);
     assert_eq!(router.gesture(&raw, 100.02), None);
-    assert_eq!(router.gesture(&gesture(2, 100.03, "unknown", "buttonLeft", "thumb", false), 100.04), None);
-    assert_eq!(router.gesture(&gesture(3, 100.5, "left", "unknown", "thumb", false), 100.51), LEFT);
+    assert_eq!(
+        router.gesture(
+            &gesture(2, 100.03, "unknown", "buttonLeft", "thumb", false),
+            100.04
+        ),
+        None
+    );
+    assert_eq!(
+        router.gesture(
+            &gesture(3, 100.5, "left", "unknown", "thumb", false),
+            100.51
+        ),
+        LEFT
+    );
 }
 
 #[test]
 fn derived_first_and_all_four_directions_work() {
     let mut router = GestureRouter::default();
     assert_eq!(
-        router.gesture(&gesture(1, 100.0, "unknown", "buttonRight", "thumb", false), 100.0),
+        router.gesture(
+            &gesture(1, 100.0, "unknown", "buttonRight", "thumb", false),
+            100.0
+        ),
         Some(Recognized::Swipe(Swipe::Right))
     );
-    assert_eq!(router.gesture(&gesture(2, 100.02, "right", "unknown", "thumb", false), 100.03), None);
-    assert_eq!(router.gesture(&gesture(3, 101.0, "up", "unknown", "thumb", false), 101.0), Some(Recognized::Swipe(Swipe::Up)));
-    assert_eq!(router.gesture(&gesture(4, 102.0, "down", "unknown", "thumb", false), 102.0), Some(Recognized::Swipe(Swipe::Down)));
-    assert_eq!(router.gesture(&gesture(5, 103.0, "left", "unknown", "thumb", false), 103.0), LEFT);
+    assert_eq!(
+        router.gesture(
+            &gesture(2, 100.02, "right", "unknown", "thumb", false),
+            100.03
+        ),
+        None
+    );
+    assert_eq!(
+        router.gesture(&gesture(3, 101.0, "up", "unknown", "thumb", false), 101.0),
+        Some(Recognized::Swipe(Swipe::Up))
+    );
+    assert_eq!(
+        router.gesture(&gesture(4, 102.0, "down", "unknown", "thumb", false), 102.0),
+        Some(Recognized::Swipe(Swipe::Down))
+    );
+    assert_eq!(
+        router.gesture(&gesture(5, 103.0, "left", "unknown", "thumb", false), 103.0),
+        LEFT
+    );
 }
 
 #[test]
 fn stale_partial_synthetic_and_wrong_finger_events_cannot_control_the_desktop() {
     let mut router = GestureRouter::default();
     assert_eq!(router.gesture(&g(1), 101.0), None);
-    assert_eq!(router.gesture(&gesture(2, 102.0, "left", "unknown", "thumb", false), 100.0), None);
-    assert_eq!(router.gesture(&gesture(3, 100.0, "partialLeft", "unknown", "thumb", false), 100.0), None);
-    assert_eq!(router.gesture(&gesture(4, 100.0, "left", "unknown", "index", false), 100.0), None);
-    assert_eq!(router.gesture(&gesture(5, 100.0, "left", "unknown", "thumb", true), 100.0), None);
+    assert_eq!(
+        router.gesture(&gesture(2, 102.0, "left", "unknown", "thumb", false), 100.0),
+        None
+    );
+    assert_eq!(
+        router.gesture(
+            &gesture(3, 100.0, "partialLeft", "unknown", "thumb", false),
+            100.0
+        ),
+        None
+    );
+    assert_eq!(
+        router.gesture(&gesture(4, 100.0, "left", "unknown", "index", false), 100.0),
+        None
+    );
+    assert_eq!(
+        router.gesture(&gesture(5, 100.0, "left", "unknown", "thumb", true), 100.0),
+        None
+    );
     assert_eq!(router.gesture(&g(6), 100.02), LEFT);
 }
 
@@ -60,7 +112,10 @@ fn reconnect_can_restart_sequence_without_replaying_stale_input() {
     assert_eq!(router.gesture(&g(1), 100.0), LEFT);
     router.reset();
     assert_eq!(router.gesture(&g(1), 200.0), None);
-    assert_eq!(router.gesture(&gesture(1, 200.0, "left", "unknown", "thumb", false), 200.0), LEFT);
+    assert_eq!(
+        router.gesture(&gesture(1, 200.0, "left", "unknown", "thumb", false), 200.0),
+        LEFT
+    );
 }
 
 #[test]
@@ -89,16 +144,40 @@ fn permission_and_live_connection_are_required_at_dispatch() {
 fn double_taps_are_recognized_once_and_partial_pinches_are_ignored() {
     let mut router = GestureRouter::default();
     assert_eq!(
-        router.gesture(&gesture(1, 100.0, "doubletap", "unknown", "index", false), 100.0),
+        router.gesture(
+            &gesture(1, 100.0, "doubletap", "unknown", "index", false),
+            100.0
+        ),
         Some(Recognized::Tap(Tap::IndexDoubleTap))
     );
-    assert_eq!(router.gesture(&gesture(2, 100.03, "unknown", "doubleTap", "index", false), 100.04), None);
     assert_eq!(
-        router.gesture(&gesture(3, 101.0, "unknown", "doubleTap", "middle", false), 101.0),
+        router.gesture(
+            &gesture(2, 100.03, "unknown", "doubleTap", "index", false),
+            100.04
+        ),
+        None
+    );
+    assert_eq!(
+        router.gesture(
+            &gesture(3, 101.0, "unknown", "doubleTap", "middle", false),
+            101.0
+        ),
         Some(Recognized::Tap(Tap::MiddleDoubleTap))
     );
-    assert_eq!(router.gesture(&gesture(4, 102.0, "partialClick", "unknown", "index", false), 102.0), None);
-    assert_eq!(router.gesture(&gesture(5, 103.0, "doubletap", "unknown", "middle", true), 103.0), None);
+    assert_eq!(
+        router.gesture(
+            &gesture(4, 102.0, "partialClick", "unknown", "index", false),
+            102.0
+        ),
+        None
+    );
+    assert_eq!(
+        router.gesture(
+            &gesture(5, 103.0, "doubletap", "unknown", "middle", true),
+            103.0
+        ),
+        None
+    );
 }
 
 #[test]
@@ -129,7 +208,11 @@ fn fractional_dial_input_accumulates_across_rate_limit_and_sensitivity_scales() 
             }
         }
         sent += dial.turn(0.0, sensitivity, 101.4);
-        assert_eq!(sent, (2.0 * sensitivity) as i32, "sensitivity {sensitivity}");
+        assert_eq!(
+            sent,
+            (2.0 * sensitivity) as i32,
+            "sensitivity {sensitivity}"
+        );
     }
 }
 
@@ -157,14 +240,38 @@ fn a_fast_dial_flick_cannot_send_a_burst_or_queue_more_changes() {
 #[test]
 fn interleaved_raw_and_derived_gestures_are_counted_once_per_gesture() {
     let mut router = GestureRouter::default();
-    assert_eq!(router.gesture(&gesture(1, 100.0, "left", "unknown", "thumb", false), 100.0), LEFT);
     assert_eq!(
-        router.gesture(&gesture(2, 100.01, "right", "unknown", "thumb", false), 100.01),
+        router.gesture(&gesture(1, 100.0, "left", "unknown", "thumb", false), 100.0),
+        LEFT
+    );
+    assert_eq!(
+        router.gesture(
+            &gesture(2, 100.01, "right", "unknown", "thumb", false),
+            100.01
+        ),
         Some(Recognized::Swipe(Swipe::Right))
     );
-    assert_eq!(router.gesture(&gesture(3, 100.02, "unknown", "buttonLeft", "thumb", false), 100.02), None);
-    assert_eq!(router.gesture(&gesture(4, 100.03, "unknown", "buttonRight", "thumb", false), 100.03), None);
-    assert_eq!(router.gesture(&gesture(5, 100.04, "left", "unknown", "thumb", false), 100.04), LEFT);
+    assert_eq!(
+        router.gesture(
+            &gesture(3, 100.02, "unknown", "buttonLeft", "thumb", false),
+            100.02
+        ),
+        None
+    );
+    assert_eq!(
+        router.gesture(
+            &gesture(4, 100.03, "unknown", "buttonRight", "thumb", false),
+            100.03
+        ),
+        None
+    );
+    assert_eq!(
+        router.gesture(
+            &gesture(5, 100.04, "left", "unknown", "thumb", false),
+            100.04
+        ),
+        LEFT
+    );
 }
 
 #[test]
@@ -192,8 +299,14 @@ fn a_middle_hold_is_a_gesture_and_an_index_hold_is_not() {
         synthetic: false,
         received_at: 100.0,
     };
-    assert_eq!(router.gesture(&hold("middle", 1), 100.0), Some(Recognized::Tap(Tap::MiddleHold)));
+    assert_eq!(
+        router.gesture(&hold("middle", 1), 100.0),
+        Some(Recognized::Tap(Tap::MiddleHold))
+    );
     // Holding the index finger is the dial, so it never fires an action of its own.
     assert_eq!(router.gesture(&hold("index", 2), 100.0), None);
-    assert_eq!((Tap::MiddleHold.finger(), Tap::MiddleHold.action()), ("middle", "hold"));
+    assert_eq!(
+        (Tap::MiddleHold.finger(), Tap::MiddleHold.action()),
+        ("middle", "hold")
+    );
 }

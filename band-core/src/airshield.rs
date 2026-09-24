@@ -5,12 +5,12 @@
 //! The IV chains from the previous ciphertext block and the counter wraps.
 
 use aes::Aes256;
-use cbc::cipher::{block_padding::NoPadding, BlockDecryptMut, BlockEncryptMut, KeyIvInit};
+use cbc::cipher::{BlockDecryptMut, BlockEncryptMut, KeyIvInit, block_padding::NoPadding};
 use hkdf::Hkdf;
 use hmac::{Hmac, Mac};
 use sha2::{Digest, Sha256};
 
-use crate::error::{perr, Result};
+use crate::error::{Result, perr};
 
 #[derive(Clone)]
 pub struct AirShieldKeys {
@@ -38,7 +38,10 @@ impl AirShieldKeys {
         Hkdf::<Sha256>::new(Some(&salt), &hashed)
             .expand(b"AirShield", &mut key)
             .expect("32 bytes is a valid HKDF-SHA256 length");
-        Ok(Self { encryption: key, mac: key })
+        Ok(Self {
+            encryption: key,
+            mac: key,
+        })
     }
 
     pub fn fixed(encryption: [u8; 32], mac: [u8; 32]) -> Self {
@@ -79,7 +82,8 @@ impl AirShieldCipher {
         body.push((ciphertext.len() / 16 - 1) as u8);
         body.extend_from_slice(&ciphertext);
         let tag = self.tag(&body);
-        self.iv.copy_from_slice(&ciphertext[ciphertext.len() - 16..]);
+        self.iv
+            .copy_from_slice(&ciphertext[ciphertext.len() - 16..]);
         self.counter = self.counter.wrapping_add(1);
         let mut packet = Vec::with_capacity(body.len() + 9);
         packet.push(0x40);
@@ -110,7 +114,8 @@ impl AirShieldCipher {
             .expect("AES-256 key and 16-byte IV")
             .decrypt_padded_vec_mut::<NoPadding>(ciphertext)
             .map_err(|_| perr("AES operation failed"))?;
-        self.iv.copy_from_slice(&ciphertext[ciphertext.len() - 16..]);
+        self.iv
+            .copy_from_slice(&ciphertext[ciphertext.len() - 16..]);
         self.counter = self.counter.wrapping_add(1);
         Ok(plaintext)
     }
@@ -127,7 +132,10 @@ pub struct AirShieldReceiver {
 
 impl AirShieldReceiver {
     pub fn new(cipher: AirShieldCipher) -> Self {
-        Self { cipher, pending: Vec::new() }
+        Self {
+            cipher,
+            pending: Vec::new(),
+        }
     }
 
     /// An error leaves the offending bytes pending; treat it as fatal for the
@@ -175,6 +183,10 @@ impl AirShieldReceiver {
     }
 
     pub fn finish(&self) -> Result<()> {
-        if self.pending.is_empty() { Ok(()) } else { Err(perr("Truncated AirShield packet")) }
+        if self.pending.is_empty() {
+            Ok(())
+        } else {
+            Err(perr("Truncated AirShield packet"))
+        }
     }
 }

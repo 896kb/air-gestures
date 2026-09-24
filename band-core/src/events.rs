@@ -2,7 +2,7 @@
 //! `EMGReadings.swift`, `BandBatteryStatus.swift`).
 
 use crate::ceremony::CeremonyHttpRequest;
-use crate::error::{perr, Result};
+use crate::error::{Result, perr};
 use crate::identity::EnrollmentIdentity;
 use crate::proto::ProtoFields;
 
@@ -55,7 +55,10 @@ impl BatteryStatus {
         } else {
             None
         };
-        Ok(Self { level: level as u8, charging })
+        Ok(Self {
+            level: level as u8,
+            charging,
+        })
     }
 }
 
@@ -111,14 +114,23 @@ impl EmgBatch {
 
     pub fn parse(payload: &[u8], config: &EmgConfig) -> Result<Self> {
         if !config.is_supported() {
-            return Err(perr("This EMG format isn't supported by the readings view yet."));
+            return Err(perr(
+                "This EMG format isn't supported by the readings view yet.",
+            ));
         }
         let fields = ProtoFields::parse(payload)?;
         let sequence = fields.required_integer(1)?;
         let timestamp_us = fields.required_integer(2)?;
         let bytes = fields.bytes_len(3, 256)?;
-        let values = bytes.chunks_exact(2).map(|pair| u16::from_le_bytes([pair[0], pair[1]])).collect();
-        Ok(Self { sequence, timestamp_us, values })
+        let values = bytes
+            .chunks_exact(2)
+            .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+            .collect();
+        Ok(Self {
+            sequence,
+            timestamp_us,
+            values,
+        })
     }
 }
 
@@ -163,15 +175,21 @@ impl std::fmt::Debug for Event {
             Self::DialState(on) => f.debug_tuple("DialState").field(on).finish(),
             Self::DialTurn(delta) => f.debug_tuple("DialTurn").field(delta).finish(),
             Self::Handedness(hand) => f.debug_tuple("Handedness").field(hand).finish(),
-            Self::HandednessFailure(message) => f.debug_tuple("HandednessFailure").field(message).finish(),
+            Self::HandednessFailure(message) => {
+                f.debug_tuple("HandednessFailure").field(message).finish()
+            }
             Self::BatteryStatus(status) => f.debug_tuple("BatteryStatus").field(status).finish(),
             Self::RawEmgFrame(bytes) => write!(f, "RawEmgFrame(len={})", bytes.len()),
-            Self::RawEmgConfiguration(config) => f.debug_tuple("RawEmgConfiguration").field(config).finish(),
+            Self::RawEmgConfiguration(config) => {
+                f.debug_tuple("RawEmgConfiguration").field(config).finish()
+            }
             Self::RawEmgState(on) => f.debug_tuple("RawEmgState").field(on).finish(),
             Self::RawEmgFailure(message) => f.debug_tuple("RawEmgFailure").field(message).finish(),
             Self::CeremonyStage(stage) => f.debug_tuple("CeremonyStage").field(stage).finish(),
             Self::CeremonyHttp(request) => f.debug_tuple("CeremonyHttp").field(request).finish(),
-            Self::CeremonyCompleted(identity) => f.debug_tuple("CeremonyCompleted").field(identity).finish(),
+            Self::CeremonyCompleted(identity) => {
+                f.debug_tuple("CeremonyCompleted").field(identity).finish()
+            }
         }
     }
 }

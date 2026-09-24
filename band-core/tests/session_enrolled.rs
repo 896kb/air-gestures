@@ -1,7 +1,7 @@
 mod common;
 
-use band_core::datax::{encode_frame, DataXFrame};
-use band_core::identity::{point64, trust_digest, EnrollmentIdentity};
+use band_core::datax::{DataXFrame, encode_frame};
+use band_core::identity::{EnrollmentIdentity, point64, trust_digest};
 use band_core::proto::ProtoFields;
 use band_core::session::BandSession;
 use band_core::sim::SimBand;
@@ -23,7 +23,10 @@ impl Enrolled {
     fn new(band_key_in_record: bool) -> Enrolled {
         let app_key = SigningKey::random(&mut OsRng);
         let band_key = SigningKey::random(&mut OsRng);
-        let identity = EnrollmentIdentity::new(app_key.clone(), band_key_in_record.then(|| *band_key.verifying_key()));
+        let identity = EnrollmentIdentity::new(
+            app_key.clone(),
+            band_key_in_record.then(|| *band_key.verifying_key()),
+        );
         let mut session = BandSession::new(Some(identity), None, false);
         let (band, startup) = SimBand::connect(&mut session).unwrap();
         // Enrolled startup replaces the empty identity query with one EnableTrust proof.
@@ -32,12 +35,27 @@ impl Enrolled {
         assert_eq!(proof.channel, 0x8002);
         assert_eq!(proof.words, vec![0x81000024, 0x02001000]);
         let fields = ProtoFields::parse(&proof.payload).unwrap();
-        assert_eq!(fields.bytes(1).unwrap(), Sha256::digest(point64(app_key.verifying_key())).as_slice());
+        assert_eq!(
+            fields.bytes(1).unwrap(),
+            Sha256::digest(point64(app_key.verifying_key())).as_slice()
+        );
         // Independently rebuild the transcript digest and verify the proof.
-        let digest = trust_digest(&band.band_challenge, &band.transport_point, &band.host_seed, &band.host_point);
+        let digest = trust_digest(
+            &band.band_challenge,
+            &band.transport_point,
+            &band.host_seed,
+            &band.host_point,
+        );
         let signature = Signature::from_slice(fields.bytes_len(2, 64).unwrap()).unwrap();
-        app_key.verifying_key().verify_prehash(&digest, &signature).unwrap();
-        Enrolled { session, band, band_key }
+        app_key
+            .verifying_key()
+            .verify_prehash(&digest, &signature)
+            .unwrap();
+        Enrolled {
+            session,
+            band,
+            band_key,
+        }
     }
 
     fn send(&mut self, frame: &[u8]) -> Result<Vec<DataXFrame>> {
@@ -84,11 +102,17 @@ fn enrolled_startup_verifies_both_trust_directions_before_link_setup() {
         assert_eq!(end_fields.integer(1).unwrap(), 1);
         assert_eq!(end_fields.bytes(2).unwrap().len(), 16);
         // The band's link-setup acknowledgement reopens the shared startup flow.
-        let end_ack = peer.send(&encode_frame(0x8001, &[0x02001000], &ready()).unwrap()).unwrap();
+        let end_ack = peer
+            .send(&encode_frame(0x8001, &[0x02001000], &ready()).unwrap())
+            .unwrap();
         assert_eq!(channels(&end_ack), vec![0x8003]);
-        let info = peer.send(&encode_frame(3, &[RPC], &device_ok()).unwrap()).unwrap();
+        let info = peer
+            .send(&encode_frame(3, &[RPC], &device_ok()).unwrap())
+            .unwrap();
         assert_eq!(channels(&info), vec![0x8005, 0x8005, 0x8006]);
-        let enabled = peer.send(&encode_frame(5, &[RPC], &status(3)).unwrap()).unwrap();
+        let enabled = peer
+            .send(&encode_frame(5, &[RPC], &status(3)).unwrap())
+            .unwrap();
         assert!(enabled.is_empty());
         assert!(peer.session.streams_enabled());
     }
@@ -98,7 +122,9 @@ fn enrolled_startup_verifies_both_trust_directions_before_link_setup() {
 fn a_different_key_rejection_surfaces_the_identity_error() {
     let mut peer = Enrolled::new(true);
     match peer.send(&result(0x03001043)) {
-        Err(BandError::IdentityMismatch(message)) => assert!(message.contains("band enrolled to a different key")),
+        Err(BandError::IdentityMismatch(message)) => {
+            assert!(message.contains("band enrolled to a different key"))
+        }
         other => panic!("expected an identity mismatch, got {other:?}"),
     }
     assert!(!peer.session.streams_enabled());
@@ -107,14 +133,20 @@ fn a_different_key_rejection_surfaces_the_identity_error() {
 #[test]
 fn any_other_identity_result_is_a_mismatch_too() {
     let mut peer = Enrolled::new(true);
-    assert!(matches!(peer.send(&result(0x03001044)), Err(BandError::IdentityMismatch(_))));
+    assert!(matches!(
+        peer.send(&result(0x03001044)),
+        Err(BandError::IdentityMismatch(_))
+    ));
 }
 
 #[test]
 fn a_band_proof_from_the_wrong_key_is_never_acknowledged() {
     let mut peer = Enrolled::new(true);
     assert!(peer.send(&result(0x03001000)).unwrap().is_empty());
-    let forged = peer.band.trust_proof(&SigningKey::random(&mut OsRng)).unwrap();
+    let forged = peer
+        .band
+        .trust_proof(&SigningKey::random(&mut OsRng))
+        .unwrap();
     assert!(peer.send(&forged).is_err());
     // The rejected proof left no acknowledgement or link setup behind.
     let retried = peer.send(&peer.proof()).unwrap();
@@ -125,7 +157,10 @@ fn a_band_proof_from_the_wrong_key_is_never_acknowledged() {
 fn an_unverifiable_band_proof_is_accepted_when_no_band_key_is_stored() {
     let mut peer = Enrolled::new(false);
     assert!(peer.send(&result(0x03001000)).unwrap().is_empty());
-    let unknown = peer.band.trust_proof(&SigningKey::random(&mut OsRng)).unwrap();
+    let unknown = peer
+        .band
+        .trust_proof(&SigningKey::random(&mut OsRng))
+        .unwrap();
     let frames = peer.send(&unknown).unwrap();
     assert_eq!(words(&frames), vec![vec![0x03001000], vec![0x02001000]]);
 }

@@ -1,5 +1,5 @@
-use band_core::datax::{encode_frame, DataXReceiver};
-use band_core::proto::{field_bytes, field_int, varint, ProtoFields};
+use band_core::datax::{DataXReceiver, encode_frame};
+use band_core::proto::{ProtoFields, field_bytes, field_int, varint};
 
 #[test]
 fn builders_produce_protobuf_wire_format() {
@@ -24,7 +24,11 @@ fn parser_reads_integers_bytes_and_skips_fixed_fields() {
     let fields = ProtoFields::parse(&data).unwrap();
     assert_eq!(fields.integer(1).unwrap(), 42);
     assert_eq!(fields.required_integer(1).unwrap(), 42);
-    assert_eq!(fields.integer(2).unwrap(), 0, "absent integers default to 0");
+    assert_eq!(
+        fields.integer(2).unwrap(),
+        0,
+        "absent integers default to 0"
+    );
     assert!(fields.required_integer(2).is_err());
     assert_eq!(fields.bytes(3).unwrap(), b"abc");
     assert!(fields.bytes_len(3, 4).is_err());
@@ -35,15 +39,26 @@ fn parser_reads_integers_bytes_and_skips_fixed_fields() {
 
 #[test]
 fn parser_rejects_malformed_input() {
-    assert!(ProtoFields::parse(&[0x08, 0x80]).is_err(), "truncated varint");
     assert!(
-        ProtoFields::parse(&[0x08, 1, 0x08, 2]).unwrap().required_integer(1).is_err(),
+        ProtoFields::parse(&[0x08, 0x80]).is_err(),
+        "truncated varint"
+    );
+    assert!(
+        ProtoFields::parse(&[0x08, 1, 0x08, 2])
+            .unwrap()
+            .required_integer(1)
+            .is_err(),
         "repeated integer"
     );
-    assert!(ProtoFields::parse(&[0x1a, 12, 1]).is_err(), "truncated bytes");
+    assert!(
+        ProtoFields::parse(&[0x1a, 12, 1]).is_err(),
+        "truncated bytes"
+    );
     assert!(ProtoFields::parse(&[0x00]).is_err(), "field number 0");
     assert!(ProtoFields::parse(&[0x0b]).is_err(), "wire type 3");
-    let overflow = [0x08, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x02];
+    let overflow = [
+        0x08, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x02,
+    ];
     assert!(ProtoFields::parse(&overflow).is_err(), "varint overflow");
 }
 
@@ -69,7 +84,10 @@ fn native_framing_preserves_split_messages_and_rejects_malformed_input() {
     assert_eq!(frames[0].channel, 0x8005);
     assert_eq!(frames[0].words, vec![0x0200020d]);
     assert_eq!(frames[0].payload, payload);
-    assert!(DataXReceiver::default().feed(&[0; 15]).is_err(), "unaligned plaintext");
+    assert!(
+        DataXReceiver::default().feed(&[0; 15]).is_err(),
+        "unaligned plaintext"
+    );
     // A typed header whose words run past the frame end.
     let bad = [vec![0x80, 0x04, 0x00, 0x01, 0x80, 0, 0, 0], vec![0xc8; 8]].concat();
     assert!(DataXReceiver::default().feed(&bad).is_err());

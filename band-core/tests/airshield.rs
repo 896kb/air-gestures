@@ -5,14 +5,18 @@ fn seq(range: std::ops::Range<u8>) -> Vec<u8> {
 }
 
 fn fixed_keys() -> AirShieldKeys {
-    AirShieldKeys::fixed(seq(0..32).try_into().unwrap(), seq(0..32).try_into().unwrap())
+    AirShieldKeys::fixed(
+        seq(0..32).try_into().unwrap(),
+        seq(0..32).try_into().unwrap(),
+    )
 }
 
 fn iv() -> [u8; 16] {
     seq(0..16).try_into().unwrap()
 }
 
-const FIRST: &str = "40c9f748fb0f0ae8e0018675352ee743a1e58ccd288d25d27f6e72551887e4aad6fc68175e7287a1eee1";
+const FIRST: &str =
+    "40c9f748fb0f0ae8e0018675352ee743a1e58ccd288d25d27f6e72551887e4aad6fc68175e7287a1eee1";
 const SECOND: &str = "4038cb0decaa0692b900d5962230f8734c8a3de4d262936261f1";
 
 #[test]
@@ -31,7 +35,12 @@ fn receiver_decrypts_split_records_and_skips_control_markers() {
     let first = hex::decode(FIRST).unwrap();
     let second = hex::decode(SECOND).unwrap();
     let mut receiver = AirShieldReceiver::new(AirShieldCipher::new(fixed_keys(), iv(), u32::MAX));
-    let wire = [first.clone(), vec![0x81, 0, 1, 2, 42, 43, 44], second.clone()].concat();
+    let wire = [
+        first.clone(),
+        vec![0x81, 0, 1, 2, 42, 43, 44],
+        second.clone(),
+    ]
+    .concat();
     let mut decoded = Vec::new();
     for byte in &wire {
         decoded.extend(receiver.feed(&[*byte]).unwrap());
@@ -39,7 +48,10 @@ fn receiver_decrypts_split_records_and_skips_control_markers() {
     receiver.finish().unwrap();
     assert_eq!(
         decoded,
-        vec![b"first block.....second block....".to_vec(), b"last block......".to_vec()]
+        vec![
+            b"first block.....second block....".to_vec(),
+            b"last block......".to_vec()
+        ]
     );
     assert_eq!(receiver.cipher.counter, 1, "the counter wraps");
 
@@ -60,7 +72,12 @@ fn tampered_packets_are_rejected_before_any_state_changes() {
         assert_eq!(bad.cipher.iv, iv());
     }
     let mut truncated = AirShieldReceiver::new(AirShieldCipher::new(fixed_keys(), iv(), u32::MAX));
-    assert!(truncated.feed(&first[..first.len() - 1]).unwrap().is_empty());
+    assert!(
+        truncated
+            .feed(&first[..first.len() - 1])
+            .unwrap()
+            .is_empty()
+    );
     assert!(truncated.finish().is_err());
     let mut unknown = AirShieldReceiver::new(AirShieldCipher::new(fixed_keys(), iv(), 0));
     assert!(unknown.feed(&[0x55]).is_err(), "unknown transport marker");

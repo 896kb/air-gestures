@@ -4,14 +4,14 @@
 use p256::ecdsa::signature::hazmat::PrehashSigner;
 use p256::ecdsa::{Signature, SigningKey};
 use p256::elliptic_curve::sec1::ToEncodedPoint;
-use p256::{ecdh, PublicKey, SecretKey};
+use p256::{PublicKey, SecretKey, ecdh};
 
 use crate::airshield::{AirShieldCipher, AirShieldKeys, AirShieldReceiver};
-use crate::datax::{be16, encode_frame, DataXFrame, DataXReceiver};
-use crate::error::{perr, Result};
+use crate::datax::{DataXFrame, DataXReceiver, be16, encode_frame};
+use crate::error::{Result, perr};
 use crate::events::Event;
 use crate::identity::trust_digest;
-use crate::proto::{field_bytes, field_int, ProtoFields};
+use crate::proto::{ProtoFields, field_bytes, field_int};
 use crate::session::BandSession;
 
 pub struct SimBand {
@@ -45,20 +45,33 @@ impl SimBand {
         let mut scalar = [0u8; 32];
         scalar[31] = 1;
         let transport = SecretKey::from_slice(&scalar).expect("scalar 1 is a valid key");
-        let transport_point = transport.public_key().to_encoded_point(false).as_bytes()[1..].to_vec();
+        let transport_point =
+            transport.public_key().to_encoded_point(false).as_bytes()[1..].to_vec();
         let band_challenge: Vec<u8> = (0..16).collect();
         let band_seed: Vec<u8> = (0..32).collect();
         let iv: [u8; 16] = std::array::from_fn(|i| 16 + i as u8);
         let peer_request = encode_frame(
             0x8001,
             &[0x81000005, 0x02000001],
-            &[field_bytes(1, &transport_point), field_bytes(2, &band_challenge), field_int(3, 0), field_int(4, 3)].concat(),
+            &[
+                field_bytes(1, &transport_point),
+                field_bytes(2, &band_challenge),
+                field_int(3, 0),
+                field_int(4, 3),
+            ]
+            .concat(),
         )?;
         let peer_enable = encode_frame(
             1,
             &[0x02000002],
-            &[field_bytes(1, &transport_point), field_bytes(2, &band_seed), field_bytes(3, &iv), field_int(4, 42), field_int(5, 3)]
-                .concat(),
+            &[
+                field_bytes(1, &transport_point),
+                field_bytes(2, &band_seed),
+                field_bytes(3, &iv),
+                field_int(4, 42),
+                field_int(5, 3),
+            ]
+            .concat(),
         )?;
         let mut output = Vec::new();
         for byte in [peer_request, peer_enable].concat() {
@@ -85,9 +98,14 @@ impl SimBand {
         let secret = shared.raw_secret_bytes().as_slice();
         let host_seed = enable.bytes(2)?.to_vec();
         let host_iv: [u8; 16] = enable.bytes_len(3, 16)?.try_into().expect("length checked");
-        let host_counter = u32::try_from(enable.integer(4)?).map_err(|_| perr("sim: invalid counter"))?;
+        let host_counter =
+            u32::try_from(enable.integer(4)?).map_err(|_| perr("sim: invalid counter"))?;
         let mut band = SimBand {
-            sender: AirShieldCipher::new(AirShieldKeys::derive(secret, &host_challenge, &band_seed)?, iv, 42),
+            sender: AirShieldCipher::new(
+                AirShieldKeys::derive(secret, &host_challenge, &band_seed)?,
+                iv,
+                42,
+            ),
             receiver: AirShieldReceiver::new(AirShieldCipher::new(
                 AirShieldKeys::derive(secret, &band_challenge, &host_seed)?,
                 host_iv,
@@ -117,11 +135,20 @@ impl SimBand {
 
     /// Encrypt one or more concatenated band → host frames as a single record.
     pub fn encrypt(&mut self, frames: &[u8]) -> Vec<u8> {
-        self.sender.encrypt(frames).expect("sim frames fit in one record")
+        self.sender
+            .encrypt(frames)
+            .expect("sim frames fit in one record")
     }
 
     /// Send one typed frame at `100 + now`; return the session's events and requests.
-    pub fn exchange(&mut self, session: &mut BandSession, channel: u16, kind: u32, payload: &[u8], now: f64) -> Result<(Vec<Event>, Vec<DataXFrame>)> {
+    pub fn exchange(
+        &mut self,
+        session: &mut BandSession,
+        channel: u16,
+        kind: u32,
+        payload: &[u8],
+        now: f64,
+    ) -> Result<(Vec<Event>, Vec<DataXFrame>)> {
         let frame = encode_frame(channel, &[kind], payload)?;
         let record = self.encrypt(&frame);
         let result = session.feed(&record, 100.0 + now)?;
@@ -130,24 +157,51 @@ impl SimBand {
     }
 
     /// RPC responses go to channel 5, sensor data to 0x8010 (kinesis `Peer.send`).
-    pub fn send(&mut self, session: &mut BandSession, kind: u32, payload: &[u8], now: f64) -> Result<Vec<Event>> {
+    pub fn send(
+        &mut self,
+        session: &mut BandSession,
+        kind: u32,
+        payload: &[u8],
+        now: f64,
+    ) -> Result<Vec<Event>> {
         let channel = if kind == 0x02000315 { 5 } else { 0x8010 };
         Ok(self.exchange(session, channel, kind, payload, now)?.0)
     }
 
     /// One raw sEMG frame on channel 5 (the captured shape).
-    pub fn raw(&mut self, session: &mut BandSession, payload: &[u8], now: f64) -> Result<Vec<Event>> {
+    pub fn raw(
+        &mut self,
+        session: &mut BandSession,
+        payload: &[u8],
+        now: f64,
+    ) -> Result<Vec<Event>> {
         Ok(self.exchange(session, 5, 0x0200020a, payload, now)?.0)
     }
 
-    pub fn gyro(&mut self, session: &mut BandSession, stamp: u64, x: i16, now: f64) -> Result<Vec<Event>> {
+    pub fn gyro(
+        &mut self,
+        session: &mut BandSession,
+        stamp: u64,
+        x: i16,
+        now: f64,
+    ) -> Result<Vec<Event>> {
         let axes = [x.to_le_bytes(), 0i16.to_le_bytes(), 0i16.to_le_bytes()].concat();
-        let payload = [field_int(1, stamp), field_int(2, stamp), field_bytes(3, &axes)].concat();
+        let payload = [
+            field_int(1, stamp),
+            field_int(2, stamp),
+            field_bytes(3, &axes),
+        ]
+        .concat();
         self.send(session, 0x0200020f, &payload, now)
     }
 
     /// Keeps motion flowing: one gyro sample every 10 ms on both clocks.
-    pub fn spin(&mut self, session: &mut BandSession, from: f64, through: f64) -> Result<Vec<Event>> {
+    pub fn spin(
+        &mut self,
+        session: &mut BandSession,
+        from: f64,
+        through: f64,
+    ) -> Result<Vec<Event>> {
         let mut events = Vec::new();
         let mut now = from;
         while now <= through + 1e-9 {
@@ -160,7 +214,15 @@ impl SimBand {
     }
 
     /// A gesture message with sequence 10 and band timestamp 20.
-    pub fn gesture(&mut self, session: &mut BandSession, action: u64, finger: u64, derived: u64, synthetic: u64, now: f64) -> Result<Vec<Event>> {
+    pub fn gesture(
+        &mut self,
+        session: &mut BandSession,
+        action: u64,
+        finger: u64,
+        derived: u64,
+        synthetic: u64,
+        now: f64,
+    ) -> Result<Vec<Event>> {
         let payload = [
             field_int(1, 10),
             field_int(2, 20),
@@ -173,9 +235,26 @@ impl SimBand {
         self.send(session, 0x0200020d, &payload, now)
     }
 
-    pub fn hand_reply(&mut self, session: &mut BandSession, id: u64, value: Option<u64>, status: u64, channel: u16, now: f64) -> Result<(Vec<Event>, Vec<DataXFrame>)> {
-        let config = [value.map(|value| field_int(10, value)).unwrap_or_default(), field_int(2, 2048)].concat();
-        let payload = [field_int(1, id), field_int(2, status), field_bytes(6, &config)].concat();
+    pub fn hand_reply(
+        &mut self,
+        session: &mut BandSession,
+        id: u64,
+        value: Option<u64>,
+        status: u64,
+        channel: u16,
+        now: f64,
+    ) -> Result<(Vec<Event>, Vec<DataXFrame>)> {
+        let config = [
+            value.map(|value| field_int(10, value)).unwrap_or_default(),
+            field_int(2, 2048),
+        ]
+        .concat();
+        let payload = [
+            field_int(1, id),
+            field_int(2, status),
+            field_bytes(6, &config),
+        ]
+        .concat();
         self.exchange(session, channel, 0x02000315, &payload, now)
     }
 
@@ -190,12 +269,24 @@ impl SimBand {
 
     /// The band's EnableTrustEC proof over the host transcript, signed by `key`.
     pub fn trust_proof(&self, key: &SigningKey) -> Result<Vec<u8>> {
-        let digest = trust_digest(&self.host_challenge, &self.host_point, &self.band_seed, &self.transport_point);
-        let signature: Signature = key.sign_prehash(&digest).map_err(|_| perr("sim: signing failed"))?;
+        let digest = trust_digest(
+            &self.host_challenge,
+            &self.host_point,
+            &self.band_seed,
+            &self.transport_point,
+        );
+        let signature: Signature = key
+            .sign_prehash(&digest)
+            .map_err(|_| perr("sim: signing failed"))?;
         encode_frame(
             0x8003,
             &[0x81000024, 0x02001001],
-            &[field_bytes(1, &[7; 12]), field_bytes(2, &signature.to_bytes()), field_int(3, 1)].concat(),
+            &[
+                field_bytes(1, &[7; 12]),
+                field_bytes(2, &signature.to_bytes()),
+                field_int(3, 1),
+            ]
+            .concat(),
         )
     }
 }

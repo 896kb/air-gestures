@@ -24,7 +24,13 @@ pub enum Tap {
 }
 
 impl Tap {
-    pub const ALL: [Tap; 5] = [Tap::IndexTap, Tap::IndexDoubleTap, Tap::MiddleTap, Tap::MiddleDoubleTap, Tap::MiddleHold];
+    pub const ALL: [Tap; 5] = [
+        Tap::IndexTap,
+        Tap::IndexDoubleTap,
+        Tap::MiddleTap,
+        Tap::MiddleDoubleTap,
+        Tap::MiddleHold,
+    ];
 
     pub fn finger(self) -> &'static str {
         match self {
@@ -114,7 +120,11 @@ impl GestureRouter {
         };
         let identity = format!(
             "{}:{}:{}:{}:{}",
-            message.sequence, message.timestamp_us, message.finger, message.action, message.derived_action
+            message.sequence,
+            message.timestamp_us,
+            message.finger,
+            message.action,
+            message.derived_action
         );
         if self.seen.contains(&identity) {
             return None;
@@ -129,7 +139,8 @@ impl GestureRouter {
         {
             return None;
         }
-        self.last.insert(gesture, (from_derived, message.received_at));
+        self.last
+            .insert(gesture, (from_derived, message.received_at));
         Some(gesture)
     }
 }
@@ -144,7 +155,11 @@ pub struct DialRouter {
 
 impl Default for DialRouter {
     fn default() -> Self {
-        Self { remainder: 0.0, last_dispatch: f64::NEG_INFINITY, last_input: f64::NEG_INFINITY }
+        Self {
+            remainder: 0.0,
+            last_dispatch: f64::NEG_INFINITY,
+            last_input: f64::NEG_INFINITY,
+        }
     }
 }
 
@@ -156,7 +171,11 @@ impl DialRouter {
     /// One step per two degrees of relative rotation at sensitivity 1; excess
     /// whole steps from a fast flick are discarded.
     pub fn turn(&mut self, delta: f64, sensitivity: f64, now: f64) -> i32 {
-        if !delta.is_finite() || !sensitivity.is_finite() || !now.is_finite() || !(0.5..=4.0).contains(&sensitivity) {
+        if !delta.is_finite()
+            || !sensitivity.is_finite()
+            || !now.is_finite()
+            || !(0.5..=4.0).contains(&sensitivity)
+        {
             return 0;
         }
         if now - self.last_input > 0.35 {
@@ -196,7 +215,11 @@ impl Default for ActionGate {
 
 impl ActionGate {
     pub fn new(minimum_interval: f64) -> Self {
-        Self { armed_at: f64::INFINITY, last_action: f64::NEG_INFINITY, minimum_interval }
+        Self {
+            armed_at: f64::INFINITY,
+            last_action: f64::NEG_INFINITY,
+            minimum_interval,
+        }
     }
 
     pub fn arm(&mut self, time: f64) {

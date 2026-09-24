@@ -4,14 +4,19 @@
 //! size's top bit says typed words follow; each word with its top bit set is
 //! followed by another word.
 
-use crate::error::{perr, Result};
+use crate::error::{Result, perr};
 
 pub fn be16(bytes: &[u8], offset: usize) -> u16 {
     u16::from_be_bytes([bytes[offset], bytes[offset + 1]])
 }
 
 pub fn be32(bytes: &[u8], offset: usize) -> u32 {
-    u32::from_be_bytes([bytes[offset], bytes[offset + 1], bytes[offset + 2], bytes[offset + 3]])
+    u32::from_be_bytes([
+        bytes[offset],
+        bytes[offset + 1],
+        bytes[offset + 2],
+        bytes[offset + 3],
+    ])
 }
 
 pub fn encode_frame(channel: u16, words: &[u32], payload: &[u8]) -> Result<Vec<u8>> {
@@ -46,7 +51,9 @@ pub struct DataXReceiver {
 
 impl std::fmt::Debug for DataXReceiver {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("DataXReceiver").field("pending_len", &self.pending.len()).finish()
+        f.debug_struct("DataXReceiver")
+            .field("pending_len", &self.pending.len())
+            .finish()
     }
 }
 
@@ -63,7 +70,10 @@ impl DataXReceiver {
         if (1..=15).contains(&padding) {
             let count = padding as usize;
             let marker = (0xc0 + padding) as u8;
-            if bytes[bytes.len() - count..].iter().all(|&byte| byte == marker) {
+            if bytes[bytes.len() - count..]
+                .iter()
+                .all(|&byte| byte == marker)
+            {
                 bytes = &bytes[..bytes.len() - count];
             }
         }
@@ -91,7 +101,11 @@ impl DataXReceiver {
                     }
                 }
             }
-            frames.push(DataXFrame { channel, words, payload: self.pending[offset..size].to_vec() });
+            frames.push(DataXFrame {
+                channel,
+                words,
+                payload: self.pending[offset..size].to_vec(),
+            });
             self.pending.drain(..size);
         }
         Ok(frames)

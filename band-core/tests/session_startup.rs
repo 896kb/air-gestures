@@ -1,7 +1,7 @@
 mod common;
 
 use band_core::datax::encode_frame;
-use band_core::proto::{field_bytes as fb, field_int as fi, ProtoFields};
+use band_core::proto::{ProtoFields, field_bytes as fb, field_int as fi};
 use band_core::session::BandSession;
 use common::*;
 
@@ -13,7 +13,14 @@ fn the_request_opens_encryption_with_parameters_31() {
     let fields = ProtoFields::parse(&request[12..]).unwrap();
     assert_eq!(fields.bytes(1).unwrap().len(), 64);
     assert_eq!(fields.bytes(2).unwrap().len(), 16);
-    assert_eq!((fields.integer(3).unwrap(), fields.integer(4).unwrap(), fields.integer(7).unwrap()), (0, 31, 16));
+    assert_eq!(
+        (
+            fields.integer(3).unwrap(),
+            fields.integer(4).unwrap(),
+            fields.integer(7).unwrap()
+        ),
+        (0, 31, 16)
+    );
 }
 
 #[test]
@@ -38,7 +45,9 @@ fn startup_waits_for_its_link_and_device_info_before_opening_input() {
         let closed = peer.exchange(channel, 0x01000000, &[], 7.0).unwrap();
         assert!(closed.0.is_empty() && closed.1.is_empty());
     }
-    let wrong_id = peer.exchange(3, RPC, &[fi(1, 2), fi(2, 1)].concat(), 7.0).unwrap();
+    let wrong_id = peer
+        .exchange(3, RPC, &[fi(1, 2), fi(2, 1)].concat(), 7.0)
+        .unwrap();
     assert!(wrong_id.1.is_empty());
     let accepted = peer.exchange(3, RPC, &device_ok(), 7.0).unwrap();
     assert_eq!(channels(&accepted.1), vec![0x8005, 0x8005, 0x8006]);
@@ -48,7 +57,10 @@ fn startup_waits_for_its_link_and_device_info_before_opening_input() {
     assert!(repeated_link.0.is_empty() && repeated_link.1.is_empty());
     assert!(repeated_device.0.is_empty() && repeated_device.1.is_empty());
     assert!(peer.session.tick(108.0).is_empty());
-    assert_eq!(hands(&peer.hand_reply(1, Some(0), 1, 6, 9.0).unwrap().0), vec![band_core::events::Hand::Right]);
+    assert_eq!(
+        hands(&peer.hand_reply(1, Some(0), 1, 6, 9.0).unwrap().0),
+        vec![band_core::events::Hand::Right]
+    );
 }
 
 #[test]
@@ -62,9 +74,20 @@ fn startup_ignores_input_until_device_info_succeeds() {
         assert!(peer.gesture(1, 0.01).unwrap().is_empty());
         let quaternion = hex::decode("0000000000000000000000000000803f").unwrap();
         let orientation = [fi(1, 1), fi(2, 1_000_000), fb(3, &quaternion)].concat();
-        assert!(peer.send(ORIENTATION, &orientation, 0.02).unwrap().is_empty());
+        assert!(
+            peer.send(ORIENTATION, &orientation, 0.02)
+                .unwrap()
+                .is_empty()
+        );
         for id in [3u64, 5] {
-            let premature = peer.exchange(5, RPC, &[fi(1, id), fi(2, 1), fb(5, &flags_on())].concat(), 0.0).unwrap();
+            let premature = peer
+                .exchange(
+                    5,
+                    RPC,
+                    &[fi(1, id), fi(2, 1), fb(5, &flags_on())].concat(),
+                    0.0,
+                )
+                .unwrap();
             assert!(premature.0.is_empty() && premature.1.is_empty());
         }
         assert!(!peer.session.streams_enabled() && peer.session.motion_messages() == 0);
@@ -124,7 +147,10 @@ fn stopping_during_setup_never_opens_an_input_subscription() {
 #[test]
 fn native_handshake_subscribes_and_stops_the_same_streams_on_the_same_channel() {
     let mut peer = Peer::legacy(true, false);
-    assert_eq!(channels(&peer.startup), vec![0x8002, 0x8001, 0x8003, 0x8005, 0x8005, 0x8006]);
+    assert_eq!(
+        channels(&peer.startup),
+        vec![0x8002, 0x8001, 0x8003, 0x8005, 0x8005, 0x8006]
+    );
     assert_eq!(peer.startup[0].words, vec![0x81000024, 0x02003000]);
     assert_eq!(peer.startup[1].words, vec![0x02001000]);
     let end = ProtoFields::parse(&peer.startup[1].payload).unwrap();
@@ -132,7 +158,13 @@ fn native_handshake_subscribes_and_stops_the_same_streams_on_the_same_channel() 
     assert_eq!(end.bytes(2).unwrap().len(), 16);
     assert_eq!(peer.startup[3].words, SERVICE_OPEN.to_vec());
     assert!(peer.startup[4].words.is_empty());
-    let enabled = ProtoFields::parse(ProtoFields::parse(&peer.startup[4].payload).unwrap().bytes(4).unwrap()).unwrap();
+    let enabled = ProtoFields::parse(
+        ProtoFields::parse(&peer.startup[4].payload)
+            .unwrap()
+            .bytes(4)
+            .unwrap(),
+    )
+    .unwrap();
     for field in [3, 6, 8] {
         assert_eq!(enabled.integer(field).unwrap(), 1);
     }
@@ -178,7 +210,8 @@ fn late_subscription_replies_do_not_interrupt_shutdown() {
             let stop = peer.session.stop().unwrap();
             assert!(!peer.requests(&stop).unwrap().is_empty() && !peer.session.stop_acknowledged());
             let late = encode_frame(5, &[RPC], &[fi(1, request_id), reply].concat()).unwrap();
-            let stop_ack = encode_frame(5, &[], &[fi(1, 4), fi(2, 1), fb(5, &flags_off())].concat()).unwrap();
+            let stop_ack =
+                encode_frame(5, &[], &[fi(1, 4), fi(2, 1), fb(5, &flags_off())].concat()).unwrap();
             // A late reply must not prevent the following stop acknowledgement in the same record.
             let record = peer.band.encrypt(&[late, stop_ack].concat());
             let result = peer.session.feed(&record, 101.0).unwrap();
@@ -235,10 +268,23 @@ fn rejected_subscriptions_fail_without_reporting_a_ready_connection() {
 #[test]
 fn unknown_repeated_fields_do_not_break_known_gesture_messages() {
     let mut peer = Peer::legacy(true, false);
-    let payload = [fi(1, 42), fi(2, 1000), fi(3, 1), fi(4, 8), fi(99, 1), fi(99, 2)].concat();
+    let payload = [
+        fi(1, 42),
+        fi(2, 1000),
+        fi(3, 1),
+        fi(4, 8),
+        fi(99, 1),
+        fi(99, 2),
+    ]
+    .concat();
     let events = peer.send(GESTURE, &payload, 0.0).unwrap();
-    let band_core::events::Event::Gesture(gesture) = &events[0] else { panic!("missing gesture") };
+    let band_core::events::Event::Gesture(gesture) = &events[0] else {
+        panic!("missing gesture")
+    };
     assert!(gesture.finger == "thumb" && gesture.action == "left");
     assert!(gesture.sequence == 42 && gesture.timestamp_us == 1000);
-    assert!(peer.send(GESTURE, &[payload, fi(1, 43)].concat(), 1.0).is_err());
+    assert!(
+        peer.send(GESTURE, &[payload, fi(1, 43)].concat(), 1.0)
+            .is_err()
+    );
 }

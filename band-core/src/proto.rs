@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use crate::error::{perr, Result};
+use crate::error::{Result, perr};
 
 #[derive(Debug, Clone)]
 enum Value {
@@ -23,7 +23,9 @@ impl std::fmt::Debug for ProtoFields {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut fields: Vec<u32> = self.values.keys().copied().collect();
         fields.sort_unstable();
-        f.debug_struct("ProtoFields").field("fields", &fields).finish()
+        f.debug_struct("ProtoFields")
+            .field("fields", &fields)
+            .finish()
     }
 }
 
@@ -61,7 +63,10 @@ impl ProtoFields {
             let wire = tag & 7;
             if wire == 0 {
                 let integer = read_varint(data, &mut offset)?;
-                values.entry(number).or_default().push(Value::Integer(integer));
+                values
+                    .entry(number)
+                    .or_default()
+                    .push(Value::Integer(integer));
                 continue;
             }
             let size = match wire {
