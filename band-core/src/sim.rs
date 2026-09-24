@@ -134,10 +134,8 @@ impl SimBand {
     }
 
     /// Encrypt one or more concatenated band → host frames as a single record.
-    pub fn encrypt(&mut self, frames: &[u8]) -> Vec<u8> {
-        self.sender
-            .encrypt(frames)
-            .expect("sim frames fit in one record")
+    pub fn encrypt(&mut self, frames: &[u8]) -> Result<Vec<u8>> {
+        self.sender.encrypt(frames)
     }
 
     /// Send one typed frame at `100 + now`; return the session's events and requests.
@@ -150,7 +148,7 @@ impl SimBand {
         now: f64,
     ) -> Result<(Vec<Event>, Vec<DataXFrame>)> {
         let frame = encode_frame(channel, &[kind], payload)?;
-        let record = self.encrypt(&frame);
+        let record = self.encrypt(&frame)?;
         let result = session.feed(&record, 100.0 + now)?;
         let requests = self.requests(&result.outgoing)?;
         Ok((result.events, requests))

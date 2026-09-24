@@ -18,7 +18,7 @@ const FINAL_RECEIPT: &str = r#"{"receipt_type":"ServerFinalOwnershipReceipt"}"#;
 
 /// Feed one record and let the band read whatever the session answered.
 fn feed(session: &mut BandSession, band: &mut SimBand, frames: &[u8]) -> band_core::Result<()> {
-    let record = band.encrypt(frames);
+    let record = band.encrypt(frames)?;
     let outgoing = session.feed(&record, 100.0)?.outgoing;
     band.requests(&outgoing)?;
     Ok(())

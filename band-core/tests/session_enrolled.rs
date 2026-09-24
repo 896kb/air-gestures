@@ -59,7 +59,7 @@ impl Enrolled {
     }
 
     fn send(&mut self, frame: &[u8]) -> Result<Vec<DataXFrame>> {
-        let record = self.band.encrypt(frame);
+        let record = self.band.encrypt(frame)?;
         let result = self.session.feed(&record, 100.0)?;
         self.band.requests(&result.outgoing)
     }

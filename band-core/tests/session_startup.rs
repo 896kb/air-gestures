@@ -213,7 +213,7 @@ fn late_subscription_replies_do_not_interrupt_shutdown() {
             let stop_ack =
                 encode_frame(5, &[], &[fi(1, 4), fi(2, 1), fb(5, &flags_off())].concat()).unwrap();
             // A late reply must not prevent the following stop acknowledgement in the same record.
-            let record = peer.band.encrypt(&[late, stop_ack].concat());
+            let record = peer.band.encrypt(&[late, stop_ack].concat()).unwrap();
             let result = peer.session.feed(&record, 101.0).unwrap();
             assert!(result.events.is_empty() && result.outgoing.is_empty());
             assert_eq!(peer.session.streams_enabled(), request_id == 5);
@@ -287,4 +287,10 @@ fn unknown_repeated_fields_do_not_break_known_gesture_messages() {
         peer.send(GESTURE, &[payload, fi(1, 43)].concat(), 1.0)
             .is_err()
     );
+}
+
+#[test]
+fn the_sim_band_reports_an_oversized_record_instead_of_panicking() {
+    let mut peer = Peer::legacy(false, false);
+    assert!(peer.band.encrypt(&[0; 5000]).is_err());
 }

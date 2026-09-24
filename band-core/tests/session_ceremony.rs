@@ -53,7 +53,7 @@ impl CeremonyPeer {
     }
 
     fn send(&mut self, frame: &[u8]) -> Result<(Vec<Event>, Vec<DataXFrame>)> {
-        let record = self.band.encrypt(frame);
+        let record = self.band.encrypt(frame)?;
         let result = self.session.feed(&record, 100.0)?;
         Ok((result.events, self.band.requests(&result.outgoing)?))
     }
