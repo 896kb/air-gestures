@@ -58,26 +58,30 @@ impl std::fmt::Debug for DataXReceiver {
 }
 
 impl DataXReceiver {
+    /// Feeds one decrypted AirShield record and returns every frame it completes.
+    ///
+    /// The sender pads a record with `n` bytes of `0xc0 + n` (1..=15) only when
+    /// its frames don't fill a whole number of 16-byte blocks, so the tail
+    /// alone can't tell padding from data: an aligned record whose last frame
+    /// ends in `0xc1` has no padding. The record is therefore appended
+    /// unstripped and complete frames are parsed first (padding bytes as a
+    /// header always declare a frame far larger than 15 bytes, so they never
+    /// start one); only a non-empty leftover after the last complete frame
+    /// can end in padding, and the tail rule is applied to that leftover.
+    ///
+    /// Residual ambiguity: a record ending in a partial frame exactly `n`
+    /// bytes short, padded with `n` bytes of `0xc0 + n`, is read as a
+    /// complete frame whose last bytes are the padding. Records from
+    /// `AirShieldCipher::encrypt` always carry whole frames, so this needs a
+    /// sender that splits frames across records and pads the split.
+    ///
     /// An error leaves the offending bytes pending; treat it as fatal for the
     /// connection and drop the receiver.
     pub fn feed(&mut self, plaintext: &[u8]) -> Result<Vec<DataXFrame>> {
         if plaintext.is_empty() || !plaintext.len().is_multiple_of(16) {
             return Err(perr("Unaligned DataX plaintext"));
         }
-        let mut bytes = plaintext;
-        let padding = i32::from(*bytes.last().unwrap()) - 0xc0;
-        // Only the repeated suffix observed on the tested firmware is stripped.
-        if (1..=15).contains(&padding) {
-            let count = padding as usize;
-            let marker = (0xc0 + padding) as u8;
-            if bytes[bytes.len() - count..]
-                .iter()
-                .all(|&byte| byte == marker)
-            {
-                bytes = &bytes[..bytes.len() - count];
-            }
-        }
-        self.pending.extend_from_slice(bytes);
+        self.pending.extend_from_slice(plaintext);
         let mut frames = Vec::new();
         while self.pending.len() >= 4 {
             let length = be16(&self.pending, 0);
@@ -108,6 +112,23 @@ impl DataXReceiver {
             });
             self.pending.drain(..size);
         }
+        self.strip_padding();
         Ok(frames)
+    }
+
+    /// Only the repeated suffix observed on the tested firmware is stripped,
+    /// and only from bytes left over after the last complete frame.
+    fn strip_padding(&mut self) {
+        let Some(&marker) = self.pending.last() else {
+            return;
+        };
+        let count = usize::from(marker.wrapping_sub(0xc0));
+        if !(1..=15).contains(&count) || count > self.pending.len() {
+            return;
+        }
+        let tail = self.pending.len() - count;
+        if self.pending[tail..].iter().all(|&byte| byte == marker) {
+            self.pending.truncate(tail);
+        }
     }
 }
