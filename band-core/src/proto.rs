@@ -12,9 +12,19 @@ enum Value {
 }
 
 /// All fields of one protobuf message, keyed by field number.
-#[derive(Debug, Clone, Default)]
+#[derive(Clone, Default)]
 pub struct ProtoFields {
     values: HashMap<u32, Vec<Value>>,
+}
+
+/// Prints only the sorted set of field numbers present; field values may be
+/// plaintext and are never included.
+impl std::fmt::Debug for ProtoFields {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut fields: Vec<u32> = self.values.keys().copied().collect();
+        fields.sort_unstable();
+        f.debug_struct("ProtoFields").field("fields", &fields).finish()
+    }
 }
 
 fn read_varint(data: &[u8], offset: &mut usize) -> Result<u64> {

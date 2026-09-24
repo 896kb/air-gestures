@@ -30,6 +30,7 @@ pub fn encode_frame(channel: u16, words: &[u32], payload: &[u8]) -> Result<Vec<u
     Ok(out)
 }
 
+/// Debug prints the decrypted payload; never log frames.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DataXFrame {
     pub channel: u16,
@@ -38,12 +39,20 @@ pub struct DataXFrame {
 }
 
 /// Reassembles frames that span several decrypted 16-byte-aligned records.
-#[derive(Debug, Default)]
+#[derive(Default)]
 pub struct DataXReceiver {
     pending: Vec<u8>,
 }
 
+impl std::fmt::Debug for DataXReceiver {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DataXReceiver").field("pending_len", &self.pending.len()).finish()
+    }
+}
+
 impl DataXReceiver {
+    /// An error leaves the offending bytes pending; treat it as fatal for the
+    /// connection and drop the receiver.
     pub fn feed(&mut self, plaintext: &[u8]) -> Result<Vec<DataXFrame>> {
         if plaintext.is_empty() || !plaintext.len().is_multiple_of(16) {
             return Err(perr("Unaligned DataX plaintext"));

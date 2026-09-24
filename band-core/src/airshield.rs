@@ -130,6 +130,8 @@ impl AirShieldReceiver {
         Self { cipher, pending: Vec::new() }
     }
 
+    /// An error leaves the offending bytes pending; treat it as fatal for the
+    /// connection and drop the receiver.
     pub fn feed(&mut self, bytes: &[u8]) -> Result<Vec<Vec<u8>>> {
         self.pending.extend_from_slice(bytes);
         let mut plaintext = Vec::new();
