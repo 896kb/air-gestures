@@ -3,7 +3,7 @@ mod support;
 use std::time::Duration;
 
 use band_core::responder::SimMode;
-use kinesisctl::semg::{Channels, decimate, draw, record};
+use kinesisctl::semg::{Channels, decimate, draw, record, view};
 use kinesisd::status::LinkState;
 use kinesisd::transport::SimInject;
 
@@ -68,6 +68,18 @@ async fn record_refuses_to_start_when_the_band_isnt_connected() {
         .unwrap_err();
     assert!(error.contains("connect the band first"), "{error}");
     assert!(!file.exists(), "no file should be created on refusal");
+}
+
+#[tokio::test]
+async fn view_refuses_to_start_when_the_band_isnt_connected() {
+    let daemon = support::start(SimMode::Legacy, false).await;
+    daemon
+        .wait("the unpaired error", |s| s.error.is_some())
+        .await;
+    // Never reaches `ratatui::try_init` (the connected check comes first),
+    // so this is safe to run without a real terminal.
+    let error = view(&daemon.socket).await.unwrap_err();
+    assert!(error.contains("connect the band first"), "{error}");
 }
 
 #[test]

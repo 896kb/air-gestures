@@ -203,6 +203,10 @@ pub fn draw(frame: &mut ratatui::Frame, channels: &Channels, header: &str) {
 pub async fn view(socket: &Path) -> Result<(), String> {
     use ratatui::crossterm::event::{self, Event, KeyCode, KeyModifiers};
 
+    let status = client::status(socket).await?;
+    if status.state != LinkState::Connected {
+        return Err("connect the band first".into());
+    }
     let mut subscription = Subscription::semg(socket).await?;
     client::request(socket, &Request::Semg { on: true }).await?;
     let mut channels = Channels::new(4096);

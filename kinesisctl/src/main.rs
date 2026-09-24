@@ -186,6 +186,16 @@ fn has_meta_session(store_dir: &std::path::Path) -> bool {
         .is_ok_and(|session| session.is_some())
 }
 
+/// The band leaves pairing mode while the sign-in window is open (or once a
+/// pairing attempt itself has failed): it has to be put back before pairing
+/// can be started again.
+fn prompt_to_re_enter_pairing_mode() {
+    println!(
+        "Put the band back in pairing mode (hold its button 3 s until it flashes), then press Enter."
+    );
+    let _ = std::io::stdin().read_line(&mut String::new());
+}
+
 fn pair(
     socket: &std::path::Path,
     address: Option<String>,
@@ -239,7 +249,9 @@ fn pair(
 
     // At most one sign-in-and-retry: either the daemon refuses the initial
     // `Pair` outright (no session at all), or the pairing itself later fails
-    // because the session it had turned out to be expired.
+    // because the session it had turned out to be expired. Either way, the
+    // band gave up on pairing mode while the sign-in window was open, so it
+    // has to be put back before pairing is asked to start again.
     let mut signed_in_already = false;
     loop {
         if let Err(error) =
@@ -253,6 +265,7 @@ fn pair(
                     eprintln!("{error}");
                     return ExitCode::FAILURE;
                 }
+                prompt_to_re_enter_pairing_mode();
                 continue;
             }
             eprintln!("{error}");
@@ -277,6 +290,7 @@ fn pair(
                     eprintln!("{error}");
                     return ExitCode::FAILURE;
                 }
+                prompt_to_re_enter_pairing_mode();
             }
             Ok(kinesisctl::pair::Outcome::NeedsSignIn) => {
                 eprintln!(
