@@ -165,3 +165,13 @@ fn identity_read_rejects_short_certificates_and_empty_serials() {
     let no_serial = [fb(1, &[1; 967]), fb(2, b""), fb(5, &[2; 889])].concat();
     assert!(ceremony.identity_read(&no_serial).is_err());
 }
+
+#[test]
+fn an_invalid_device_key_fails_before_the_band_commits() {
+    let mut ceremony = at_pair_stage();
+    ceremony
+        .start_change_owner(&[fb(1, &device_signature()), fb(2, DEVICE_RECEIPT.as_bytes())].concat())
+        .unwrap();
+    assert!(ceremony.pair_completed(&final_signature(), FINAL_RECEIPT, Some(&[0xff; 64])).is_err());
+    assert_eq!(ceremony.stage(), Stage::FinishChangeOwner);
+}

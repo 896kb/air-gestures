@@ -53,6 +53,7 @@ impl EnrollmentIdentity {
         }
         let private_key = SigningKey::from_slice(private).map_err(|_| perr("Stored owner key is invalid"))?;
         let band_public_key = match band_x963 {
+            Some(bytes) if bytes.len() != 65 => return Err(perr("Stored band key is invalid")),
             Some(bytes) => Some(
                 VerifyingKey::from_sec1_bytes(bytes).map_err(|_| perr("Stored band key is invalid"))?,
             ),

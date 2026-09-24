@@ -14,6 +14,7 @@ pub enum Hand {
 
 /// One recognized-gesture message as the band sent it. Names come from the
 /// band's enum tables; unknown values read `unrecognized:<n>`.
+/// Sensor data must not be logged verbatim.
 #[derive(Debug, Clone, PartialEq)]
 pub struct GestureMessage {
     pub sequence: u64,
@@ -122,7 +123,8 @@ impl EmgBatch {
 }
 
 /// Everything a session reports. Times are implied by the `feed`/`tick` call.
-#[derive(Debug, Clone)]
+/// Sensor data must not be logged verbatim: `Debug` prints raw sEMG frames by length only.
+#[derive(Clone)]
 pub enum Event {
     /// Input streams are live (first subscription ack or first sensor data).
     Connected,
@@ -149,4 +151,27 @@ pub enum Event {
     CeremonyHttp(CeremonyHttpRequest),
     /// The band confirmed this host as owner. Persist the identity; trust setup continues.
     CeremonyCompleted(EnrollmentIdentity),
+}
+
+impl std::fmt::Debug for Event {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Connected => f.write_str("Connected"),
+            Self::Heartbeat => f.write_str("Heartbeat"),
+            Self::DataSeen => f.write_str("DataSeen"),
+            Self::Gesture(gesture) => f.debug_tuple("Gesture").field(gesture).finish(),
+            Self::DialState(on) => f.debug_tuple("DialState").field(on).finish(),
+            Self::DialTurn(delta) => f.debug_tuple("DialTurn").field(delta).finish(),
+            Self::Handedness(hand) => f.debug_tuple("Handedness").field(hand).finish(),
+            Self::HandednessFailure(message) => f.debug_tuple("HandednessFailure").field(message).finish(),
+            Self::BatteryStatus(status) => f.debug_tuple("BatteryStatus").field(status).finish(),
+            Self::RawEmgFrame(bytes) => write!(f, "RawEmgFrame(len={})", bytes.len()),
+            Self::RawEmgConfiguration(config) => f.debug_tuple("RawEmgConfiguration").field(config).finish(),
+            Self::RawEmgState(on) => f.debug_tuple("RawEmgState").field(on).finish(),
+            Self::RawEmgFailure(message) => f.debug_tuple("RawEmgFailure").field(message).finish(),
+            Self::CeremonyStage(stage) => f.debug_tuple("CeremonyStage").field(stage).finish(),
+            Self::CeremonyHttp(request) => f.debug_tuple("CeremonyHttp").field(request).finish(),
+            Self::CeremonyCompleted(identity) => f.debug_tuple("CeremonyCompleted").field(identity).finish(),
+        }
+    }
 }

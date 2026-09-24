@@ -44,3 +44,10 @@ fn battery_decoder_rejects_invalid_values_and_keeps_an_absent_charging_flag_unkn
     let reply = battery_reply(1, 84, Some(1));
     assert!(BatteryStatus::from_response(&reply[..reply.len() - 1]).is_err());
 }
+
+#[test]
+fn event_debug_never_prints_raw_emg_bytes() {
+    let text = format!("{:?}", band_core::events::Event::RawEmgFrame(vec![0xab; 4]));
+    assert!(text.contains("len=4"), "{text}");
+    assert!(!text.contains("171"), "{text}");
+}

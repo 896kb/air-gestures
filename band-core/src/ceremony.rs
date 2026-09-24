@@ -172,12 +172,19 @@ impl OwnershipCeremony {
         if signature.is_empty() || receipt.is_empty() {
             return Err(perr("The server didn't return a final ownership receipt"));
         }
+        // Validate a full device key before the band is asked to commit.
+        if let Some(point) = device_public_key
+            && point.len() == 64
+        {
+            verifying_key_from_point64(point)?;
+        }
         self.device_public_key = device_public_key.map(<[u8]>::to_vec);
         self.stage = Stage::Done;
         encode_frame(0x8002, &[0x02002004], &[field_bytes(1, signature), field_bytes(2, receipt.as_bytes())].concat())
     }
 
     /// Confirm the empty FinishChangeOwnerResponse and hand back the new identity.
+    /// If this errors, the caller still holds the app key via `app_key()`; the band may already have changed owner.
     pub fn complete(&self, words: &[u32], payload: &[u8]) -> Result<EnrollmentIdentity> {
         if self.stage != Stage::Done {
             return Err(perr("The enrollment isn't ready to finish"));

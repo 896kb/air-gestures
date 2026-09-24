@@ -18,6 +18,9 @@ fn identity_round_trips_through_raw_bytes() {
     assert_eq!(loaded.app_point(), point64(key.verifying_key()));
     assert!(EnrollmentIdentity::from_bytes(&private[..31], None).is_err());
     assert!(EnrollmentIdentity::from_bytes(&private, Some(&[4; 65])).is_err());
+    let compressed = SigningKey::random(&mut OsRng).verifying_key().to_encoded_point(true);
+    assert_eq!(compressed.as_bytes().len(), 33);
+    assert!(EnrollmentIdentity::from_bytes(&private, Some(compressed.as_bytes())).is_err(), "compressed points are rejected");
     assert!(!format!("{loaded:?}").contains(&hex::encode(private)), "Debug never prints keys");
 }
 
