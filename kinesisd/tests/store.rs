@@ -1,7 +1,7 @@
 use std::os::unix::fs::PermissionsExt;
 
 use band_core::identity::EnrollmentIdentity;
-use kinesisd::status::{LinkState, Status};
+use kinesisd::status::{LinkState, PairResult, Status};
 use kinesisd::store::{BandRecord, IdentitySource, Store};
 use p256::ecdsa::SigningKey;
 use rand_core::OsRng;
@@ -177,4 +177,39 @@ fn status_serializes_for_clients() {
     assert_eq!(json["dial"], "volume");
     let back: Status = serde_json::from_value(json).unwrap();
     assert_eq!(back, status);
+}
+
+#[test]
+fn status_contract_v1() {
+    let status = Status::default();
+    assert_eq!(status.version, 1);
+    let json = serde_json::to_value(&status).unwrap();
+    assert_eq!(json["version"], 1);
+    for field in [
+        "error",
+        "pairing_error",
+        "config_error",
+        "reconnect_in",
+        "last_pair",
+    ] {
+        assert!(json.get(field).is_some(), "{field} missing from {json}");
+    }
+    // Older / partial JSON still parses, as version 1.
+    let partial: Status = serde_json::from_str(r#"{"state":"idle"}"#).unwrap();
+    assert_eq!(partial.version, 1);
+    let full = Status {
+        pairing_error: Some("no band".into()),
+        config_error: Some("config: bad".into()),
+        reconnect_in: Some(4.0),
+        last_pair: Some(PairResult {
+            ok: false,
+            message: "no band".into(),
+        }),
+        ..Status::default()
+    };
+    let json = serde_json::to_value(&full).unwrap();
+    assert_eq!(json["last_pair"]["ok"], false);
+    assert_eq!(json["reconnect_in"], 4.0);
+    let back: Status = serde_json::from_value(json).unwrap();
+    assert_eq!(back, full);
 }

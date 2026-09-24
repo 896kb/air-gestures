@@ -21,7 +21,7 @@ use crate::ipc::{Call, HandChoice, Request, Response};
 use crate::link::{LinkCommand, LinkEnd, LinkEvent, LinkOutcome, run_link};
 use crate::meta::ClientFactory;
 use crate::pairing::{PairFailure, pair_band};
-use crate::status::{LinkState, Status};
+use crate::status::{LinkState, PairResult, Status};
 use crate::store::{BandRecord, IdentitySource, Store};
 use crate::transport::Transport;
 
@@ -67,6 +67,7 @@ pub struct Daemon<T: Transport, R: Runner, F: ClientFactory> {
     /// Why the last pairing failed; outlives reconnects (cleared by the next
     /// pairing, a successful one, or `Forget`).
     pairing_error: Option<String>,
+    last_pair: Option<PairResult>,
     /// Reconnect the already-paired band if this pairing fails.
     resume_after_pairing: bool,
     progress_tx: mpsc::UnboundedSender<String>,
@@ -137,6 +138,7 @@ impl<T: Transport, R: Runner, F: ClientFactory> Daemon<T, R, F> {
             pairing: None,
             pairing_stage: None,
             pairing_error: None,
+            last_pair: None,
             resume_after_pairing: false,
             progress_tx,
             progress_rx,
@@ -201,11 +203,17 @@ impl<T: Transport, R: Runner, F: ClientFactory> Daemon<T, R, F> {
     fn publish(&self) {
         let mut status = self.controller.status().clone();
         status.state = self.state;
-        status.error = self
-            .error
-            .clone()
-            .or_else(|| self.pairing_error.clone())
-            .or_else(|| self.config_error.clone());
+        status.error = self.error.clone();
+        status.pairing_error = self.pairing_error.clone();
+        status.config_error = self.config_error.clone();
+        status.last_pair = self.last_pair.clone();
+        // Whole seconds, so subscribers see one change per second, not per tick.
+        status.reconnect_in = match self.reconnect_at {
+            Some(at) if self.wants_connection && self.link.is_none() && self.pairing.is_none() => {
+                Some((at - self.clock.now()).max(0.0).ceil())
+            }
+            _ => None,
+        };
         status.pairing = self.pairing_stage.clone();
         status.semg = self.semg_on;
         status.band = self.band_name.clone();
@@ -472,6 +480,10 @@ impl<T: Transport, R: Runner, F: ClientFactory> Daemon<T, R, F> {
         let failure = match result {
             Ok(Ok(record)) => {
                 tracing::info!("paired with {}", record.name);
+                self.last_pair = Some(PairResult {
+                    ok: true,
+                    message: format!("paired with {}", record.name),
+                });
                 self.band_name = Some(record.name);
                 self.error = None;
                 self.pairing_error = None;
@@ -489,6 +501,10 @@ impl<T: Transport, R: Runner, F: ClientFactory> Daemon<T, R, F> {
             Err(error) => format!("the pairing crashed: {error}"),
         };
         tracing::warn!("pairing failed: {failure}");
+        self.last_pair = Some(PairResult {
+            ok: false,
+            message: failure.clone(),
+        });
         self.pairing_error = Some(failure);
         // Go back to the band we had (or the one a possibly committed claim left pending).
         let has_pending = self.store.load_pending().ok().flatten().is_some();
@@ -531,6 +547,7 @@ impl<T: Transport, R: Runner, F: ClientFactory> Daemon<T, R, F> {
         self.state = LinkState::Pairing;
         self.error = None;
         self.pairing_error = None;
+        self.last_pair = None;
         self.pairing_stage = Some("starting".into());
         let transport = self.transport.clone();
         let store = self.store.clone();
@@ -634,6 +651,7 @@ impl<T: Transport, R: Runner, F: ClientFactory> Daemon<T, R, F> {
                 self.band_name = None;
                 self.error = None;
                 self.pairing_error = None;
+                self.last_pair = None;
                 self.publish();
                 return Response::message(
                     self.status.borrow().clone(),

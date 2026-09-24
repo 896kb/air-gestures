@@ -220,7 +220,11 @@ async fn pairing_claims_the_band_then_connects_as_its_owner() {
         daemon.store.load_band().unwrap().unwrap().address,
         SIM_ADDRESS
     );
-    assert!(daemon.status.borrow().error.is_none());
+    let status = daemon.status.borrow().clone();
+    assert!(status.error.is_none());
+    assert!(status.pairing_error.is_none());
+    assert!(status.last_pair.is_some_and(|last| last.ok));
+    assert_eq!(status.version, 1);
 }
 
 #[tokio::test(start_paused = true)]
@@ -259,10 +263,13 @@ async fn a_broken_config_is_reported_and_the_old_one_kept() {
     std::fs::write(&daemon.config_path, "[gestures]\nswipe_sideways = \"x\"\n").unwrap();
     let status = daemon
         .wait("the config error", |s| {
-            s.error.as_deref().is_some_and(|e| e.contains("config"))
+            s.config_error
+                .as_deref()
+                .is_some_and(|e| e.contains("config"))
         })
         .await;
     assert_eq!(status.state, LinkState::Connected);
+    assert!(status.error.is_none(), "config errors are reported apart");
     daemon.transport.inject(SWIPE_LEFT);
     daemon
         .wait("the old command", |s| {
@@ -466,12 +473,15 @@ async fn a_failed_pairing_keeps_the_failure_visible() {
     let status = daemon
         .wait("the pairing failure", |s| {
             s.state != LinkState::Pairing
-                && s.error
+                && s.pairing_error
                     .as_deref()
                     .is_some_and(|e| e.contains("no band in pairing mode"))
         })
         .await;
     assert_eq!(status.state, LinkState::Idle);
+    assert!(status.error.is_none(), "pairing errors are reported apart");
+    let last = status.last_pair.expect("the pairing's result");
+    assert!(!last.ok && last.message.contains("no band in pairing mode"));
     assert_eq!(daemon.transport.opens(), 0);
 }
 
@@ -545,10 +555,21 @@ async fn a_confirmed_key_rejected_with_another_code_is_retried() {
                 .is_some_and(|e| e.contains("rejected the stored identity"))
         })
         .await;
+    let waiting = daemon
+        .wait("the countdown", |s| {
+            s.state == LinkState::Idle && s.reconnect_in.is_some()
+        })
+        .await;
+    assert!(waiting.reconnect_in.unwrap() > 0.0 && waiting.reconnect_in.unwrap() <= 10.0);
     daemon.opened(3).await;
     transport.set_reject_identity(None);
     daemon.connected().await;
-    assert!(daemon.status.borrow().error.is_none());
+    let status = daemon.status.borrow().clone();
+    assert!(status.error.is_none());
+    assert!(
+        status.reconnect_in.is_none(),
+        "no countdown while connected"
+    );
 }
 
 #[tokio::test(start_paused = true)]
