@@ -1,6 +1,7 @@
 use std::os::unix::fs::PermissionsExt;
 
 use band_core::identity::EnrollmentIdentity;
+use kinesisd::meta::MetaSession;
 use kinesisd::status::{LinkState, PairResult, Status};
 use kinesisd::store::{BandRecord, IdentitySource, Store};
 use p256::ecdsa::SigningKey;
@@ -135,7 +136,7 @@ fn an_identity_file_with_an_invalid_length_is_rejected() {
 }
 
 #[test]
-fn the_band_record_round_trips_and_forget_removes_everything() {
+fn the_band_record_round_trips_and_forget_removes_everything_but_the_meta_session() {
     let root = tempfile::tempdir().unwrap();
     let store = Store::open(root.path()).unwrap();
     assert!(store.load_band().unwrap().is_none());
@@ -147,10 +148,16 @@ fn the_band_record_round_trips_and_forget_removes_everything() {
     assert_eq!(store.load_band().unwrap(), Some(band));
     store.save_identity(&identity(true)).unwrap();
     store.save_pending(&identity(true)).unwrap();
+    store
+        .save_meta_session(&MetaSession::new("test-access-token", "1234567890"))
+        .unwrap();
     store.forget().unwrap();
     assert!(store.load_band().unwrap().is_none());
     assert!(store.connect_identity().unwrap().is_none());
-    assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 0);
+    // Forgetting a band keeps the Meta sign-in; signing out is separate
+    // (`Store::delete_meta_session`).
+    assert!(store.load_meta_session().unwrap().is_some());
+    assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 1);
 }
 
 #[test]
@@ -200,7 +207,7 @@ fn status_contract_v1() {
     let full = Status {
         pairing_error: Some("no band".into()),
         config_error: Some("config: bad".into()),
-        reconnect_in: Some(4.0),
+        reconnect_in: Some(4),
         last_pair: Some(PairResult {
             ok: false,
             message: "no band".into(),
@@ -209,7 +216,7 @@ fn status_contract_v1() {
     };
     let json = serde_json::to_value(&full).unwrap();
     assert_eq!(json["last_pair"]["ok"], false);
-    assert_eq!(json["reconnect_in"], 4.0);
+    assert_eq!(json["reconnect_in"], 4);
     let back: Status = serde_json::from_value(json).unwrap();
     assert_eq!(back, full);
 }

@@ -10,6 +10,7 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
+use band_core::ceremony::FACTORY_RESET_HINT;
 use bluer::agent::{Agent, AgentHandle, ReqError, ReqResult};
 use bluer::gatt::remote::Service;
 use bluer::l2cap::{SocketAddr, Stream};
@@ -157,7 +158,7 @@ async fn read_psm(services: Vec<Service>) -> Result<u16, String> {
             }
             let value = characteristic.read().await.map_err(|error| {
                 format!(
-                    "reading the band's input channel failed ({error}); if the band was factory reset, run `kinesisctl pair` again"
+                    "reading the band's input channel failed ({error}); run `kinesisctl forget`, factory reset the band ({FACTORY_RESET_HINT}), then `kinesisctl pair`"
                 )
             })?;
             return match value.as_slice() {

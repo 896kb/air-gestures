@@ -210,7 +210,7 @@ impl<T: Transport, R: Runner, F: ClientFactory> Daemon<T, R, F> {
         // Whole seconds, so subscribers see one change per second, not per tick.
         status.reconnect_in = match self.reconnect_at {
             Some(at) if self.wants_connection && self.link.is_none() && self.pairing.is_none() => {
-                Some((at - self.clock.now()).max(0.0).ceil())
+                Some((at - self.clock.now()).max(0.0).ceil() as u32)
             }
             _ => None,
         };
@@ -329,7 +329,7 @@ impl<T: Transport, R: Runner, F: ClientFactory> Daemon<T, R, F> {
                 message,
             } => {
                 self.error = Some(format!(
-                    "{message} Run `kinesisctl pair` to claim the band again."
+                    "{message} Run `kinesisctl forget`, factory reset the band ({FACTORY_RESET_HINT}), then `kinesisctl pair`."
                 ));
                 self.wants_connection = false;
             }
@@ -477,6 +477,9 @@ impl<T: Transport, R: Runner, F: ClientFactory> Daemon<T, R, F> {
         while self.progress_rx.try_recv().is_ok() {}
         self.pairing_stage = None;
         self.state = LinkState::Idle;
+        // The pairing's own outcome lives in pairing_error/last_pair; any
+        // link error from before it started is stale now, whatever the result.
+        self.error = None;
         let failure = match result {
             Ok(Ok(record)) => {
                 tracing::info!("paired with {}", record.name);
@@ -485,7 +488,6 @@ impl<T: Transport, R: Runner, F: ClientFactory> Daemon<T, R, F> {
                     message: format!("paired with {}", record.name),
                 });
                 self.band_name = Some(record.name);
-                self.error = None;
                 self.pairing_error = None;
                 // The settling reconnect: connect again as the new owner.
                 self.wants_connection = true;

@@ -207,20 +207,24 @@ impl Store {
         self.remove(BAND)
     }
 
-    /// Remove every stored key, the band record and the Meta session, plus
-    /// any temp file an interrupted write left behind.
+    /// Remove every stored key, the band record and the legacy files, plus
+    /// any temp file an interrupted write left behind. The Meta sign-in
+    /// (`meta-session.json`) survives: signing out is a separate action
+    /// (`delete_meta_session`), not implied by forgetting a band.
     pub fn forget(&self) -> io::Result<()> {
         for name in [
             OWNER,
             PENDING_OWNER,
             BAND,
-            META_SESSION,
             LEGACY_BAND_KEY,
             LEGACY_PENDING_BAND_KEY,
         ] {
             Self::remove_path(&self.path(&format!(".{name}.tmp")))?;
             Self::remove_path(&self.path(name))?;
         }
+        // Only the interrupted-write leftover for the session goes; the
+        // committed file itself is kept.
+        Self::remove_path(&self.path(&format!(".{META_SESSION}.tmp")))?;
         self.sync_dir()
     }
 

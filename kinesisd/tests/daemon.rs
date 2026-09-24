@@ -358,7 +358,7 @@ async fn a_rejected_owner_key_stops_retrying() {
         .wait("the rejection", |s| {
             s.error
                 .as_deref()
-                .is_some_and(|e| e.contains("claim the band again"))
+                .is_some_and(|e| e.contains("kinesisctl forget"))
         })
         .await;
     assert_eq!(status.state, LinkState::Idle);
@@ -560,7 +560,7 @@ async fn a_confirmed_key_rejected_with_another_code_is_retried() {
             s.state == LinkState::Idle && s.reconnect_in.is_some()
         })
         .await;
-    assert!(waiting.reconnect_in.unwrap() > 0.0 && waiting.reconnect_in.unwrap() <= 10.0);
+    assert!(waiting.reconnect_in.unwrap() > 0 && waiting.reconnect_in.unwrap() <= 10);
     daemon.opened(3).await;
     transport.set_reject_identity(None);
     daemon.connected().await;

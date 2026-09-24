@@ -94,10 +94,12 @@ atomically (temp file, fsync, rename, directory fsync). A pending key is tried
 first; a corrupt pending file is skipped with a warning when a confirmed key
 exists.
 No keyring daemon is running on this machine, so libsecret is not used.
-`kinesisctl forget` deletes these (and any leftover temp files), removes the
-BlueZ bond, and prints the factory-reset reminder. `pair` is refused while a band
-is paired (forget it first): pairing removes the target's bond, which must never
-happen to the band we own.
+`kinesisctl forget` deletes the keys and the band record (and any leftover temp
+files), removes the BlueZ bond, and prints the factory-reset reminder. It leaves
+`meta-session.json` alone — the Meta sign-in is a separate thing, and signing out
+of it is its own action. `pair` is refused while a band is paired (forget it
+first): pairing removes the target's bond, which must never happen to the band
+we own.
 
 **Errors** (codes as in kinesis `enrollment.md`): `0x1043` wrong key and
 `0x1042` wrong account get explicit messages and offer re-sign-in with another

@@ -49,8 +49,9 @@ pub struct Status {
     pub pairing_error: Option<String>,
     /// The config file is broken (the previous config stays in use).
     pub config_error: Option<String>,
-    /// Seconds until the next reconnect attempt, while idle and wanting a connection.
-    pub reconnect_in: Option<f64>,
+    /// Whole seconds until the next reconnect attempt (rounded up), while
+    /// idle and wanting a connection.
+    pub reconnect_in: Option<u32>,
     /// How the last pairing ended (kept until the next pairing or `forget`).
     pub last_pair: Option<PairResult>,
     /// Raw sEMG streaming is on.
