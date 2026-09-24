@@ -5,6 +5,7 @@ pub mod actions;
 pub mod clock;
 pub mod config;
 pub mod controller;
+pub mod link;
 pub mod status;
 pub mod store;
 pub mod transport;
