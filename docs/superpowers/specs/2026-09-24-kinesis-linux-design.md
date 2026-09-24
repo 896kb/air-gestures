@@ -84,11 +84,20 @@ requests/responses plus a subscribe mode that streams status and events.
 Subsequent connects use only the stored owner key; no Meta traffic.
 
 **Secrets** live in `~/.local/state/kinesis/` (dir `0700`, files `0600`), never in
-`~/arch_rice` and never in logs: `owner.key` (raw 32-byte P-256 scalar),
-`band.pub` (65-byte X9.63), `meta-session.json`, `band.json` (address, name).
+`~/arch_rice` and never in logs. Each identity is one file: `owner.key` (the
+confirmed owner) and `owner.pending.key` (a claim written before
+FinishChangeOwner, whose confirmation may still be lost) each hold the raw
+32-byte P-256 scalar, optionally followed by the band's 65-byte X9.63 key (32 or
+97 bytes; anything else is corrupt). Plus `meta-session.json` and `band.json`
+(address — the identity address once bonded — and name). Files are written
+atomically (temp file, fsync, rename, directory fsync). A pending key is tried
+first; a corrupt pending file is skipped with a warning when a confirmed key
+exists.
 No keyring daemon is running on this machine, so libsecret is not used.
-`kinesisctl forget` deletes these, removes the BlueZ bond, and prints the
-factory-reset reminder.
+`kinesisctl forget` deletes these (and any leftover temp files), removes the
+BlueZ bond, and prints the factory-reset reminder. `pair` is refused while a band
+is paired (forget it first): pairing removes the target's bond, which must never
+happen to the band we own.
 
 **Errors** (codes as in kinesis `enrollment.md`): `0x1043` wrong key and
 `0x1042` wrong account get explicit messages and offer re-sign-in with another
@@ -96,6 +105,12 @@ account; HTTP 401/403 or graph error 190 drops the session and re-prompts
 sign-in; any ceremony failure restarts from the identity read (no mid-ceremony
 resume; band must stay in pairing mode). `pair --dry-run` runs the whole flow
 against the simulated band (Meta HTTP calls stubbed).
+
+On an ordinary (enrolled) connect only `0x1043` proves the band doesn't accept a
+key: a pending key rejected with `0x1043` is discarded when a confirmed key
+exists (reconnect at once with it); rejected with any other code it is kept and
+retried with backoff. The confirmed key rejected with `0x1043` stops reconnecting
+and asks for `kinesisctl pair`; any other code is treated as transient.
 
 ## Gestures, actions, config
 
@@ -124,7 +139,10 @@ target = "volume"        # "volume" | "brightness" | "off"
 sensitivity = 1.0        # 1.0 = 2° relative wrist rotation per step
 ```
 
-- Actions run detached with a 5 s timeout; they never block the transport.
+- Actions run detached (`sh -c` in their own process group) and are never killed:
+  after 5 s a still-running action is only logged. The unit uses
+  `KillMode=process`, so stopping kinesisd leaves launched apps alone. They never
+  block the transport.
 - Dial targets are command pairs in `[dial]` (`volume_up`/`volume_down`,
   `brightness_up`/`brightness_down`) so any rice can plug in its own OSD. Defaults are
   generic: `wpctl set-volume -l 1.0 @DEFAULT_AUDIO_SINK@ 2%±` and `brightnessctl -q set 2%±`;
@@ -152,19 +170,23 @@ popups only on connect, disconnect, low battery.
 
 **Service** `~/arch_rice/.config/systemd/user/kinesisd.service`:
 `ExecStart=%h/.cargo/bin/kinesisd`, `Restart=on-failure`,
-`WantedBy=graphical-session.target`. Reconnect backoff 1 s → 30 s. Heartbeat:
+`KillMode=process`, `WantedBy=graphical-session.target`. Reconnect backoff:
+attempt *n* waits min(2n, 10) s (reset on connect). Heartbeat:
 after 2 s without authenticated traffic, read subscription status; only an
 authenticated reply refreshes it; otherwise time out and reconnect (covers s2idle
-resume and out-of-range). Lock file `$XDG_RUNTIME_DIR/kinesisd.lock`. Logs to
+resume and out-of-range). No lock file: the control socket is the single-instance
+guard — binding refuses a socket another daemon still answers on and replaces a
+stale one (never anything that isn't a socket). Logs to
 journald. `install.sh` (Z13 profile) runs
 `cargo install --path ~/Projects/kinesis-linux/{kinesisd,kinesisctl}` and enables
 the unit.
 
 **sEMG**: `kinesisctl semg view` (ratatui: 8 channels, received vs configured
 2048 Hz rate, dropped batches) and `kinesisctl semg record FILE.jsonl` (raw
-payloads, kinesis/POC-compatible JSONL). The daemon enables raw flag 2 only while
-a viewer/recorder is attached and disables it on detach, waiting ≤ 3 s for the
-ack. Config read on `0x8007`; supported config: 2048 Hz, 8 ch, 16-bit, 16
+payloads, kinesis/POC-compatible JSONL). Raw flag 2 is enabled only while a
+viewer/recorder is attached: a client sends `semg on` and subscribes
+(`subscribe-semg`); once no subscriber has been attached for 3 s the daemon turns
+it off again (and doesn't re-enable it at reconnect). Config read on `0x8007`; supported config: 2048 Hz, 8 ch, 16-bit, 16
 samples/batch, encoding 0; payload `0x0200020a`. Values are unscaled ADC counts.
 
 **Battery**: `BatteryInfoReq` on `0x8008` every 5 s while streaming (level + charging;
