@@ -6,6 +6,7 @@
 
 pub mod airshield;
 pub mod datax;
+pub mod dial;
 pub mod error;
 pub mod events;
 pub mod gestures;
