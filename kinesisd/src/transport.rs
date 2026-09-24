@@ -157,9 +157,11 @@ impl Transport for SimTransport {
     async fn prepare_pairing(&self, _address: &str) -> Result<(), String> {
         let mut state = self.lock();
         state.next_mode = Some(SimMode::Ceremony);
-        // A band in pairing mode after a factory reset has no owner: the
-        // ceremony connection that follows starts ownerless.
+        // A factory reset puts the band back in pairing mode with no owner;
+        // if the ceremony that follows doesn't finish, a later connection
+        // must see a plain pairing-mode band, not whatever it was before.
         state.owner = None;
+        state.mode = SimMode::Legacy;
         Ok(())
     }
 

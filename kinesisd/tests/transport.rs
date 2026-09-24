@@ -114,3 +114,31 @@ async fn a_rejected_claim_leaves_the_band_unowned_and_still_legacy() {
         other => panic!("expected an identity mismatch, got {other:?}"),
     }
 }
+
+#[tokio::test]
+async fn a_rejected_claim_on_an_already_enrolled_band_still_resets_to_pairing_mode() {
+    // A factory reset puts a previously-enrolled band back in pairing mode
+    // with no owner; `prepare_pairing` must reflect that even if the
+    // ceremony that follows doesn't finish.
+    let transport = SimTransport::new(SimMode::Enrolled);
+    transport.set_reject_claim(Some(0x03001042));
+    transport.prepare_pairing(SIM_ADDRESS).await.unwrap();
+    let mut io = transport.open(SIM_ADDRESS).await.unwrap();
+
+    let mut session = BandSession::new(None, Some(OwnershipCeremony::default()), false);
+    match pump(&mut io, &mut session, &transport).await {
+        Err(BandError::OwnershipRejected { code, .. }) => assert_eq!(code, 0x1042),
+        other => panic!("expected an ownership rejection, got {other:?}"),
+    }
+    assert!(transport.owner().is_none());
+
+    // The next connection still refuses an enrolled session — the previous
+    // owner was reset by the factory reset, not silently kept.
+    let identity = EnrollmentIdentity::new(SigningKey::random(&mut OsRng), None);
+    let mut io = transport.open(SIM_ADDRESS).await.unwrap();
+    let mut session = BandSession::new(Some(identity), None, false);
+    match pump(&mut io, &mut session, &transport).await {
+        Err(BandError::IdentityMismatch(_)) => {}
+        other => panic!("expected an identity mismatch, got {other:?}"),
+    }
+}

@@ -195,9 +195,14 @@ fn a_configured_hand_is_written_once_after_connecting() {
         controller.on_event(&Event::Handedness(Hand::Right), 1.5),
         vec![Command::SetHand(Hand::Left)]
     );
+    // The band still reports Right: one automatic retry, then no more.
+    assert_eq!(
+        controller.on_event(&Event::Handedness(Hand::Right), 1.6),
+        vec![Command::SetHand(Hand::Left)]
+    );
     assert!(
         controller
-            .on_event(&Event::Handedness(Hand::Right), 1.6)
+            .on_event(&Event::Handedness(Hand::Right), 1.7)
             .is_empty()
     );
     assert!(
@@ -206,6 +211,32 @@ fn a_configured_hand_is_written_once_after_connecting() {
             .is_empty()
     );
     assert_eq!(controller.status().hand.as_deref(), Some("left"));
+}
+
+#[test]
+fn a_lost_hand_request_is_retried_once() {
+    let mut controller = with_hand(Hand::Right);
+    assert_eq!(
+        controller.request_hand(Hand::Left),
+        vec![Command::SetHand(Hand::Left)]
+    );
+    // A second request while the first is still outstanding: the controller
+    // itself doesn't dedupe (a real session would refuse it as busy).
+    assert_eq!(
+        controller.request_hand(Hand::Left),
+        vec![Command::SetHand(Hand::Left)]
+    );
+    // The band still reports Right — the write never took. One automatic retry.
+    assert_eq!(
+        controller.on_event(&Event::Handedness(Hand::Right), 2.0),
+        vec![Command::SetHand(Hand::Left)]
+    );
+    // No further retries once one has already been used.
+    assert!(
+        controller
+            .on_event(&Event::Handedness(Hand::Right), 3.0)
+            .is_empty()
+    );
 }
 
 #[test]

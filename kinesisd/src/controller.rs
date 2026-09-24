@@ -50,6 +50,9 @@ pub struct Controller {
     hand: Option<Hand>,
     hand_confirmed: bool,
     hand_requested: bool,
+    /// Whether the one automatic retry (see `on_event`'s `Handedness` arm) has
+    /// already been used for the current request.
+    hand_retry_used: bool,
     /// A runtime hand request (e.g. from the control socket) that wins over
     /// the configured hand until the config reloads.
     hand_override: Option<Hand>,
@@ -81,6 +84,7 @@ impl Controller {
             hand: None,
             hand_confirmed: false,
             hand_requested: false,
+            hand_retry_used: false,
             hand_override: None,
             dial_armed: false,
             dial_engaged: false,
@@ -106,6 +110,7 @@ impl Controller {
         self.config = config;
         self.hand_override = None;
         self.hand_requested = false;
+        self.hand_retry_used = false;
         self.reset_dial();
         self.maybe_request_hand()
     }
@@ -115,6 +120,7 @@ impl Controller {
     pub fn request_hand(&mut self, hand: Hand) -> Vec<Command> {
         self.hand_override = Some(hand);
         self.hand_requested = false;
+        self.hand_retry_used = false;
         self.maybe_request_hand()
     }
 
@@ -156,6 +162,7 @@ impl Controller {
         self.hand = None;
         self.hand_confirmed = false;
         self.hand_requested = false;
+        self.hand_retry_used = false;
         self.suspend();
         self.router.reset();
         self.status.charging = None;
@@ -174,6 +181,15 @@ impl Controller {
                 self.hand = Some(*hand);
                 self.hand_confirmed = true;
                 self.status.hand = Some(hand_name(*hand).into());
+                // The band still disagrees with an outstanding request: the
+                // write may have been lost or refused. Retry once.
+                if self.hand_requested
+                    && !self.hand_retry_used
+                    && self.desired_hand().is_some_and(|wanted| wanted != *hand)
+                {
+                    self.hand_retry_used = true;
+                    self.hand_requested = false;
+                }
                 self.maybe_request_hand()
             }
             Event::HandednessFailure(_) => {

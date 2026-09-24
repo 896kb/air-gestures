@@ -2,12 +2,9 @@
 //! launched apps (e.g. `wofi --show drun`) — never killed for taking a while;
 //! a slow one is only logged, and still reaped so it never zombies.
 
-use std::borrow::Cow;
 use std::process::Stdio;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-
-use tokio::io::AsyncReadExt;
 
 pub trait Runner: Send + Sync + 'static {
     /// Start `command` and return immediately.
@@ -28,13 +25,6 @@ impl Default for ShellRunner {
     }
 }
 
-/// The last `max` bytes, lossily decoded (a cut multi-byte character just
-/// becomes a replacement character).
-fn tail(bytes: &[u8], max: usize) -> Cow<'_, str> {
-    let start = bytes.len().saturating_sub(max);
-    String::from_utf8_lossy(&bytes[start..])
-}
-
 impl Runner for ShellRunner {
     fn run(&self, command: String) {
         let Ok(handle) = tokio::runtime::Handle::try_current() else {
@@ -48,7 +38,10 @@ impl Runner for ShellRunner {
                 .arg(&command)
                 .stdin(Stdio::null())
                 .stdout(Stdio::null())
-                .stderr(Stdio::piped())
+                // Inherited, not piped: under systemd this reaches the journal
+                // with no buffer for us to manage, and no pipe for a daemon
+                // restart to SIGPIPE the action into.
+                .stderr(Stdio::inherit())
                 // Its own process group: dropping the runner must never signal it.
                 .process_group(0)
                 .spawn();
@@ -59,14 +52,6 @@ impl Runner for ShellRunner {
                     return;
                 }
             };
-            let stderr = child.stderr.take();
-            let stderr_task = tokio::spawn(async move {
-                let mut buffer = Vec::new();
-                if let Some(mut stderr) = stderr {
-                    let _ = stderr.read_to_end(&mut buffer).await;
-                }
-                buffer
-            });
 
             let sleep = tokio::time::sleep(timeout);
             tokio::pin!(sleep);
@@ -76,16 +61,13 @@ impl Runner for ShellRunner {
                     result = child.wait() => break result,
                     () = &mut sleep, if !timed_out => {
                         timed_out = true;
-                        tracing::debug!(%command, ?timeout, "action still running; leaving it running");
+                        tracing::info!(%command, ?timeout, "action still running; leaving it running");
                     }
                 }
             };
 
-            let stderr_bytes = stderr_task.await.unwrap_or_default();
             match status {
-                Ok(status) if !status.success() => {
-                    tracing::warn!(%command, %status, stderr = %tail(&stderr_bytes, 200), "action failed");
-                }
+                Ok(status) if !status.success() => tracing::warn!(%command, %status, "action failed"),
                 Ok(_) => {}
                 Err(error) => tracing::warn!(%command, "action wait failed: {error}"),
             }
