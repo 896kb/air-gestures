@@ -205,4 +205,25 @@ impl Store {
         }
         Ok(())
     }
+
+    pub fn save_meta_session(&self, session: &crate::meta::MetaSession) -> io::Result<()> {
+        let json = serde_json::to_vec(session).map_err(io::Error::other)?;
+        self.write_secret(META_SESSION, &json)
+    }
+
+    pub fn load_meta_session(&self) -> io::Result<Option<crate::meta::MetaSession>> {
+        match self.read(META_SESSION)? {
+            Some(bytes) => serde_json::from_slice(&bytes).map(Some).map_err(|error| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("{META_SESSION}: {error}"),
+                )
+            }),
+            None => Ok(None),
+        }
+    }
+
+    pub fn delete_meta_session(&self) -> io::Result<()> {
+        self.remove(META_SESSION)
+    }
 }
