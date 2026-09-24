@@ -213,3 +213,47 @@ fn status_contract_v1() {
     let back: Status = serde_json::from_value(json).unwrap();
     assert_eq!(back, full);
 }
+
+#[test]
+fn a_corrupt_pending_key_does_not_block_the_confirmed_one() {
+    let root = tempfile::tempdir().unwrap();
+    let store = Store::open(root.path()).unwrap();
+    let confirmed = identity(true);
+    store.save_identity(&confirmed).unwrap();
+    std::fs::write(root.path().join("owner.pending.key"), [9; 5]).unwrap();
+    let (found, source) = store.connect_identity().unwrap().unwrap();
+    assert_eq!(source, IdentitySource::Confirmed);
+    assert_eq!(found.private_bytes(), confirmed.private_bytes());
+}
+
+#[test]
+fn a_corrupt_pending_key_with_nothing_confirmed_is_still_an_error() {
+    let root = tempfile::tempdir().unwrap();
+    let store = Store::open(root.path()).unwrap();
+    std::fs::write(root.path().join("owner.pending.key"), [9; 5]).unwrap();
+    assert_eq!(
+        store.connect_identity().unwrap_err().kind(),
+        std::io::ErrorKind::InvalidData
+    );
+}
+
+#[test]
+fn forget_also_removes_leftover_temp_files() {
+    let root = tempfile::tempdir().unwrap();
+    let store = Store::open(root.path()).unwrap();
+    store.save_identity(&identity(true)).unwrap();
+    let temps = [
+        ".owner.key.tmp",
+        ".owner.pending.key.tmp",
+        ".band.json.tmp",
+        ".meta-session.json.tmp",
+    ];
+    for name in temps {
+        std::fs::write(root.path().join(name), b"half-written").unwrap();
+    }
+    store.forget().unwrap();
+    for name in temps {
+        assert!(!root.path().join(name).exists(), "{name} left behind");
+    }
+    assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 0);
+}

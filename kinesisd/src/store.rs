@@ -167,14 +167,25 @@ impl Store {
 
     /// The identity to connect with: a pending one first (it is always newer
     /// — the band may have committed a claim whose confirmation was lost),
-    /// else the confirmed one.
+    /// else the confirmed one. A corrupt pending file never blocks a valid
+    /// confirmed key: it is skipped with a warning (and left in place).
     pub fn connect_identity(&self) -> io::Result<Option<(EnrollmentIdentity, IdentitySource)>> {
-        if let Some(identity) = self.load_pending()? {
-            return Ok(Some((identity, IdentitySource::Pending)));
+        let pending_error = match self.load_pending() {
+            Ok(Some(identity)) => return Ok(Some((identity, IdentitySource::Pending))),
+            Ok(None) => None,
+            Err(error) if error.kind() == io::ErrorKind::InvalidData => Some(error),
+            Err(error) => return Err(error),
+        };
+        match (self.load_identity()?, pending_error) {
+            (Some(identity), pending_error) => {
+                if let Some(error) = pending_error {
+                    tracing::warn!("ignoring the unreadable pending owner key: {error}");
+                }
+                Ok(Some((identity, IdentitySource::Confirmed)))
+            }
+            (None, Some(error)) => Err(error),
+            (None, None) => Ok(None),
         }
-        Ok(self
-            .load_identity()?
-            .map(|identity| (identity, IdentitySource::Confirmed)))
     }
 
     pub fn save_band(&self, band: &BandRecord) -> io::Result<()> {
@@ -196,7 +207,8 @@ impl Store {
         self.remove(BAND)
     }
 
-    /// Remove every stored key, the band record and the Meta session.
+    /// Remove every stored key, the band record and the Meta session, plus
+    /// any temp file an interrupted write left behind.
     pub fn forget(&self) -> io::Result<()> {
         for name in [
             OWNER,
@@ -206,9 +218,10 @@ impl Store {
             LEGACY_BAND_KEY,
             LEGACY_PENDING_BAND_KEY,
         ] {
-            self.remove(name)?;
+            Self::remove_path(&self.path(&format!(".{name}.tmp")))?;
+            Self::remove_path(&self.path(name))?;
         }
-        Ok(())
+        self.sync_dir()
     }
 
     pub fn save_meta_session(&self, session: &crate::meta::MetaSession) -> io::Result<()> {
