@@ -480,12 +480,14 @@ impl<T: Transport, R: Runner, F: ClientFactory> Daemon<T, R, F> {
         // The pairing's own outcome lives in pairing_error/last_pair; any
         // link error from before it started is stale now, whatever the result.
         self.error = None;
+        let mut needs_sign_in = false;
         let failure = match result {
             Ok(Ok(record)) => {
                 tracing::info!("paired with {}", record.name);
                 self.last_pair = Some(PairResult {
                     ok: true,
                     message: format!("paired with {}", record.name),
+                    needs_sign_in: false,
                 });
                 self.band_name = Some(record.name);
                 self.pairing_error = None;
@@ -497,6 +499,7 @@ impl<T: Transport, R: Runner, F: ClientFactory> Daemon<T, R, F> {
             }
             Ok(Err(PairFailure::SessionExpired(message))) => {
                 let _ = self.store.delete_meta_session();
+                needs_sign_in = true;
                 message
             }
             Ok(Err(failure)) => failure.to_string(),
@@ -506,6 +509,7 @@ impl<T: Transport, R: Runner, F: ClientFactory> Daemon<T, R, F> {
         self.last_pair = Some(PairResult {
             ok: false,
             message: failure.clone(),
+            needs_sign_in,
         });
         self.pairing_error = Some(failure);
         // Go back to the band we had (or the one a possibly committed claim left pending).
@@ -537,8 +541,9 @@ impl<T: Transport, R: Runner, F: ClientFactory> Daemon<T, R, F> {
             Ok(client) => client,
             Err(Some(message)) => return Response::error(message),
             Err(None) => {
-                return Response::error(
+                return Response::error_code(
                     "sign in to Meta first (`kinesisctl pair` opens the sign-in window)",
+                    crate::ipc::CODE_NEEDS_SIGN_IN,
                 );
             }
         };

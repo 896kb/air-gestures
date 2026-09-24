@@ -69,7 +69,14 @@ pub struct Response {
     /// One raw sEMG payload, base64 (only on `subscribe-semg` streams).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub semg: Option<String>,
+    /// A stable, machine-readable tag for `error` (e.g. [`CODE_NEEDS_SIGN_IN`]),
+    /// so a client can react without matching on the human-readable text.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub code: Option<String>,
 }
+
+/// `error`'s code when a `Pair` request needs a Meta sign-in first.
+pub const CODE_NEEDS_SIGN_IN: &str = "needs_sign_in";
 
 impl Response {
     pub fn ok(status: Status) -> Self {
@@ -93,6 +100,16 @@ impl Response {
         Self {
             ok: false,
             error: Some(message.into()),
+            ..Self::default()
+        }
+    }
+
+    /// An `error` carrying a stable `code` a client can match on.
+    pub fn error_code(message: impl Into<String>, code: impl Into<String>) -> Self {
+        Self {
+            ok: false,
+            error: Some(message.into()),
+            code: Some(code.into()),
             ..Self::default()
         }
     }

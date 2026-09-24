@@ -18,10 +18,13 @@ pub enum LinkState {
 pub const STATUS_VERSION: u32 = 1;
 
 /// How the last pairing ended.
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
 pub struct PairResult {
     pub ok: bool,
     pub message: String,
+    /// The failure was a missing or expired Meta session: sign in and pair again.
+    #[serde(default)]
+    pub needs_sign_in: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

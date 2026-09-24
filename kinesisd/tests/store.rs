@@ -211,6 +211,7 @@ fn status_contract_v1() {
         last_pair: Some(PairResult {
             ok: false,
             message: "no band".into(),
+            needs_sign_in: false,
         }),
         ..Status::default()
     };

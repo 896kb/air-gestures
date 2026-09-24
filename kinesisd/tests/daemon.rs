@@ -234,6 +234,31 @@ async fn pairing_without_a_meta_session_asks_to_sign_in() {
     let response = daemon.call(Request::Pair { address: None }).await;
     assert!(!response.ok);
     assert!(response.error.unwrap().contains("sign in"));
+    assert_eq!(
+        response.code.as_deref(),
+        Some(kinesisd::ipc::CODE_NEEDS_SIGN_IN)
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_pairing_that_finds_an_expired_session_asks_to_sign_in_again() {
+    let transport = SimTransport::new(SimMode::Legacy);
+    let factory = FakeFactory {
+        device_point: Some(transport.band_point()),
+        fail: Some(PairError::SessionInvalid(
+            "your meta session expired.".into(),
+        )),
+    };
+    let mut daemon = start(transport, false, factory);
+    daemon
+        .wait("the unpaired error", |s| s.error.is_some())
+        .await;
+    assert!(daemon.call(Request::Pair { address: None }).await.ok);
+    let status = daemon
+        .wait("the pairing failure", |s| s.last_pair.is_some())
+        .await;
+    let last = status.last_pair.unwrap();
+    assert!(!last.ok && last.needs_sign_in, "{last:?}");
 }
 
 #[tokio::test(start_paused = true)]
