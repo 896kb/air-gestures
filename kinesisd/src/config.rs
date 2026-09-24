@@ -82,8 +82,9 @@ impl Default for GestureConfig {
 }
 
 impl GestureConfig {
+    /// The configured command, or `""` when it's unassigned (including whitespace-only).
     pub fn command(&self, gesture: Recognized) -> &str {
-        match gesture {
+        let command = match gesture {
             Recognized::Swipe(Swipe::Left) => &self.swipe_left,
             Recognized::Swipe(Swipe::Right) => &self.swipe_right,
             Recognized::Swipe(Swipe::Up) => &self.swipe_up,
@@ -93,6 +94,11 @@ impl GestureConfig {
             Recognized::Tap(Tap::MiddleTap) => &self.middle_tap,
             Recognized::Tap(Tap::MiddleDoubleTap) => &self.middle_double,
             Recognized::Tap(Tap::MiddleHold) => &self.middle_hold,
+        };
+        if command.trim().is_empty() {
+            ""
+        } else {
+            command
         }
     }
 }
@@ -123,7 +129,8 @@ impl Default for DialConfig {
 }
 
 impl DialConfig {
-    /// The command for one step, or `None` when the target is off or unassigned.
+    /// The command for one step, or `None` when the target is off or the
+    /// command is unassigned (including whitespace-only).
     pub fn command(&self, target: DialTarget, up: bool) -> Option<&str> {
         let command = match (target, up) {
             (DialTarget::Off, _) => return None,
@@ -132,7 +139,7 @@ impl DialConfig {
             (DialTarget::Brightness, true) => &self.brightness_up,
             (DialTarget::Brightness, false) => &self.brightness_down,
         };
-        (!command.is_empty()).then_some(command.as_str())
+        (!command.trim().is_empty()).then_some(command.as_str())
     }
 }
 
@@ -148,7 +155,10 @@ impl Config {
     pub fn parse(text: &str) -> Result<Self, String> {
         let config: Config = toml::from_str(text).map_err(|error| error.to_string())?;
         if !(0.5..=4.0).contains(&config.dial.sensitivity) {
-            return Err("dial.sensitivity must be between 0.5 and 4".into());
+            return Err(format!(
+                "dial.sensitivity must be between 0.5 and 4 (got {})",
+                config.dial.sensitivity
+            ));
         }
         Ok(config)
     }
@@ -164,9 +174,7 @@ impl Config {
 
     /// `$XDG_CONFIG_HOME/kinesis/config.toml`, else `~/.config/kinesis/config.toml`.
     pub fn default_path() -> PathBuf {
-        let base = std::env::var_os("XDG_CONFIG_HOME")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| home().join(".config"));
+        let base = xdg("XDG_CONFIG_HOME").unwrap_or_else(|| home().join(".config"));
         base.join("kinesis").join("config.toml")
     }
 }
@@ -175,4 +183,43 @@ pub(crate) fn home() -> PathBuf {
     std::env::var_os("HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("/"))
+}
+
+/// `$name`, but only when it's set, non-empty and absolute — the XDG base
+/// directory spec says relative values must be ignored.
+pub(crate) fn xdg(name: &str) -> Option<PathBuf> {
+    let value = std::env::var_os(name)?;
+    if value.is_empty() {
+        return None;
+    }
+    let path = PathBuf::from(value);
+    path.is_absolute().then_some(path)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn xdg_ignores_unset_empty_and_relative_values() {
+        assert_eq!(xdg("KINESISD_TEST_XDG_UNSET"), None);
+        // SAFETY: these env vars are private to this test and touched only here.
+        unsafe {
+            std::env::set_var("KINESISD_TEST_XDG_EMPTY", "");
+            std::env::set_var("KINESISD_TEST_XDG_RELATIVE", "relative/path");
+            std::env::set_var("KINESISD_TEST_XDG_ABSOLUTE", "/abs/path");
+        }
+        assert_eq!(xdg("KINESISD_TEST_XDG_EMPTY"), None);
+        assert_eq!(xdg("KINESISD_TEST_XDG_RELATIVE"), None);
+        assert_eq!(
+            xdg("KINESISD_TEST_XDG_ABSOLUTE"),
+            Some(PathBuf::from("/abs/path"))
+        );
+        // SAFETY: cleanup of the same test-private env vars.
+        unsafe {
+            std::env::remove_var("KINESISD_TEST_XDG_EMPTY");
+            std::env::remove_var("KINESISD_TEST_XDG_RELATIVE");
+            std::env::remove_var("KINESISD_TEST_XDG_ABSOLUTE");
+        }
+    }
 }

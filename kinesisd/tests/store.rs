@@ -2,7 +2,7 @@ use std::os::unix::fs::PermissionsExt;
 
 use band_core::identity::EnrollmentIdentity;
 use kinesisd::status::{LinkState, Status};
-use kinesisd::store::{BandRecord, Store};
+use kinesisd::store::{BandRecord, IdentitySource, Store};
 use p256::ecdsa::SigningKey;
 use rand_core::OsRng;
 
@@ -31,9 +31,12 @@ fn the_directory_and_every_file_are_private() {
             name: "Meta Band 1234".into(),
         })
         .unwrap();
-    for name in ["owner.key", "band.pub", "band.json"] {
+    // A single `owner.key` now holds the private key plus any band key
+    // (there's no more separate `band.pub` file).
+    for name in ["owner.key", "band.json"] {
         assert_eq!(mode(&dir.join(name)), 0o600, "{name}");
     }
+    assert!(!dir.join("band.pub").exists());
 }
 
 #[test]
@@ -66,19 +69,68 @@ fn a_pending_identity_is_used_until_one_is_confirmed() {
     let pending = identity(true);
     store.save_pending(&pending).unwrap();
     assert!(store.load_identity().unwrap().is_none());
-    assert_eq!(
-        store.connect_identity().unwrap().unwrap().private_bytes(),
-        pending.private_bytes()
-    );
+    let (loaded, source) = store.connect_identity().unwrap().unwrap();
+    assert_eq!(loaded.private_bytes(), pending.private_bytes());
+    assert_eq!(source, IdentitySource::Pending);
+
+    // A pending claim is always newer: even an older confirmed identity
+    // sitting alongside it must not win.
+    let older_confirmed = identity(true);
+    store.save_identity(&older_confirmed).unwrap();
+    store.save_pending(&pending).unwrap();
+    let (loaded, source) = store.connect_identity().unwrap().unwrap();
+    assert_eq!(loaded.private_bytes(), pending.private_bytes());
+    assert_eq!(source, IdentitySource::Pending);
+
     let confirmed = identity(true);
     store.save_identity(&confirmed).unwrap();
     assert!(
         store.load_pending().unwrap().is_none(),
         "confirming clears the pending key"
     );
+    let (loaded, source) = store.connect_identity().unwrap().unwrap();
+    assert_eq!(loaded.private_bytes(), confirmed.private_bytes());
+    assert_eq!(source, IdentitySource::Confirmed);
+}
+
+#[test]
+fn pending_identities_can_be_promoted_or_discarded() {
+    let root = tempfile::tempdir().unwrap();
+    let store = Store::open(root.path()).unwrap();
+
+    // promote_pending is a no-op with nothing pending.
+    store.promote_pending().unwrap();
+    assert!(store.load_identity().unwrap().is_none());
+
+    let pending = identity(true);
+    store.save_pending(&pending).unwrap();
+    store.promote_pending().unwrap();
+    assert!(store.load_pending().unwrap().is_none());
     assert_eq!(
-        store.connect_identity().unwrap().unwrap().private_bytes(),
-        confirmed.private_bytes()
+        store.load_identity().unwrap().unwrap().private_bytes(),
+        pending.private_bytes()
+    );
+
+    let other_pending = identity(false);
+    store.save_pending(&other_pending).unwrap();
+    store.discard_pending().unwrap();
+    assert!(store.load_pending().unwrap().is_none());
+    // Discarding the pending key must not touch the confirmed one.
+    assert_eq!(
+        store.load_identity().unwrap().unwrap().private_bytes(),
+        pending.private_bytes()
+    );
+}
+
+#[test]
+fn an_identity_file_with_an_invalid_length_is_rejected() {
+    let root = tempfile::tempdir().unwrap();
+    let store = Store::open(root.path()).unwrap();
+    // Neither a bare 32-byte key nor a 32+65-byte key plus band key.
+    std::fs::write(root.path().join("owner.key"), [7u8; 50]).unwrap();
+    assert_eq!(
+        store.load_identity().unwrap_err().kind(),
+        std::io::ErrorKind::InvalidData
     );
 }
 

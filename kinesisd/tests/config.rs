@@ -91,12 +91,22 @@ fn mistakes_are_reported() {
             .unwrap_err()
             .contains("swipe_sideways")
     );
+    let error = Config::parse("[dial]\nsensitivity = 9.0").unwrap_err();
+    assert!(error.contains("sensitivity"));
     assert!(
-        Config::parse("[dial]\nsensitivity = 9.0")
-            .unwrap_err()
-            .contains("sensitivity")
+        error.contains("(got 9"),
+        "should report the bad value: {error}"
     );
     assert!(Config::parse("[band]\nhand = \"both\"").is_err());
+}
+
+#[test]
+fn whitespace_only_commands_are_treated_as_unassigned() {
+    let config =
+        Config::parse("[gestures]\nswipe_left = \"   \"\n[dial]\nvolume_up = \"\\t\\n\"\n")
+            .unwrap();
+    assert_eq!(config.gestures.command(Recognized::Swipe(Swipe::Left)), "");
+    assert_eq!(config.dial.command(DialTarget::Volume, true), None);
 }
 
 #[test]

@@ -1,8 +1,8 @@
 //! Owner keys, the paired band and (Task 8) the Meta session, under
 //! `$XDG_STATE_HOME/kinesis` (else `~/.local/state/kinesis`): a 0700 directory
-//! of 0600 files, each written atomically. Nothing here is logged.
+//! of 0600 files, each written atomically and fsynced. Nothing here is logged.
 
-use std::fs::{self, DirBuilder, OpenOptions};
+use std::fs::{self, DirBuilder, File, OpenOptions};
 use std::io::{self, Write};
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
@@ -11,17 +11,26 @@ use band_core::identity::EnrollmentIdentity;
 use serde::{Deserialize, Serialize};
 
 const OWNER: &str = "owner.key";
-const BAND_KEY: &str = "band.pub";
 const PENDING_OWNER: &str = "owner.pending.key";
-const PENDING_BAND_KEY: &str = "band.pending.pub";
 const BAND: &str = "band.json";
 pub(crate) const META_SESSION: &str = "meta-session.json";
+/// Pre-single-file-identity layout; `forget()` still cleans these up if found.
+const LEGACY_BAND_KEY: &str = "band.pub";
+const LEGACY_PENDING_BAND_KEY: &str = "band.pending.pub";
 
 /// The paired band: its Bluetooth address and advertised name.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BandRecord {
     pub address: String,
     pub name: String,
+}
+
+/// Which identity file `Store::connect_identity` returned.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IdentitySource {
+    /// A claim the band may have committed, whose confirmation never arrived.
+    Pending,
+    Confirmed,
 }
 
 #[derive(Debug, Clone)]
@@ -39,8 +48,7 @@ impl Store {
 
     /// `$XDG_STATE_HOME/kinesis`, else `~/.local/state/kinesis`.
     pub fn default_dir() -> PathBuf {
-        std::env::var_os("XDG_STATE_HOME")
-            .map(PathBuf::from)
+        crate::config::xdg("XDG_STATE_HOME")
             .unwrap_or_else(|| crate::config::home().join(".local/state"))
             .join("kinesis")
     }
@@ -53,8 +61,21 @@ impl Store {
         self.dir.join(name)
     }
 
+    fn remove_path(path: &Path) -> io::Result<()> {
+        match fs::remove_file(path) {
+            Err(error) if error.kind() != io::ErrorKind::NotFound => Err(error),
+            _ => Ok(()),
+        }
+    }
+
+    /// Fsync the directory itself, so a rename or unlink survives a crash.
+    fn sync_dir(&self) -> io::Result<()> {
+        File::open(&self.dir)?.sync_all()
+    }
+
     pub(crate) fn write_secret(&self, name: &str, bytes: &[u8]) -> io::Result<()> {
         let temp = self.path(&format!(".{name}.tmp"));
+        Self::remove_path(&temp)?;
         {
             let mut file = OpenOptions::new()
                 .write(true)
@@ -62,10 +83,12 @@ impl Store {
                 .truncate(true)
                 .mode(0o600)
                 .open(&temp)?;
+            file.set_permissions(fs::Permissions::from_mode(0o600))?;
             file.write_all(bytes)?;
             file.sync_all()?;
         }
-        fs::rename(&temp, self.path(name))
+        fs::rename(&temp, self.path(name))?;
+        self.sync_dir()
     }
 
     pub(crate) fn read(&self, name: &str) -> io::Result<Option<Vec<u8>>> {
@@ -77,64 +100,81 @@ impl Store {
     }
 
     pub(crate) fn remove(&self, name: &str) -> io::Result<()> {
-        match fs::remove_file(self.path(name)) {
-            Err(error) if error.kind() != io::ErrorKind::NotFound => Err(error),
-            _ => Ok(()),
-        }
+        Self::remove_path(&self.path(name))?;
+        self.sync_dir()
     }
 
-    fn write_identity(
-        &self,
-        owner: &str,
-        band_key: &str,
-        identity: &EnrollmentIdentity,
-    ) -> io::Result<()> {
-        self.write_secret(owner, &identity.private_bytes())?;
-        match identity.band_key_x963() {
-            Some(key) => self.write_secret(band_key, &key),
-            None => self.remove(band_key),
+    /// One file: the 32-byte private key, optionally followed by the 65-byte
+    /// X9.63 band key (32 or 97 bytes total; anything else is corrupt).
+    fn write_identity(&self, name: &str, identity: &EnrollmentIdentity) -> io::Result<()> {
+        let mut bytes = identity.private_bytes().to_vec();
+        if let Some(band_key) = identity.band_key_x963() {
+            bytes.extend(band_key);
         }
+        self.write_secret(name, &bytes)
     }
 
-    fn read_identity(&self, owner: &str, band_key: &str) -> io::Result<Option<EnrollmentIdentity>> {
-        let Some(private) = self.read(owner)? else {
+    fn read_identity(&self, name: &str) -> io::Result<Option<EnrollmentIdentity>> {
+        let Some(bytes) = self.read(name)? else {
             return Ok(None);
         };
-        let band = self.read(band_key)?;
-        EnrollmentIdentity::from_bytes(&private, band.as_deref())
+        let (private, band) = match bytes.len() {
+            32 => (&bytes[..32], None),
+            97 => (&bytes[..32], Some(&bytes[32..])),
+            length => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("{name}: invalid identity file length ({length} bytes)"),
+                ));
+            }
+        };
+        EnrollmentIdentity::from_bytes(private, band)
             .map(Some)
-            .map_err(|error| {
-                io::Error::new(io::ErrorKind::InvalidData, format!("{owner}: {error}"))
-            })
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, format!("{name}: {error}")))
     }
 
     /// Store the confirmed owner identity and drop any pending one.
     pub fn save_identity(&self, identity: &EnrollmentIdentity) -> io::Result<()> {
-        self.write_identity(OWNER, BAND_KEY, identity)?;
-        self.remove(PENDING_OWNER)?;
-        self.remove(PENDING_BAND_KEY)
+        self.write_identity(OWNER, identity)?;
+        self.remove(PENDING_OWNER)
     }
 
     pub fn load_identity(&self) -> io::Result<Option<EnrollmentIdentity>> {
-        self.read_identity(OWNER, BAND_KEY)
+        self.read_identity(OWNER)
     }
 
     /// Store the identity the band may commit to before its confirmation arrives.
     pub fn save_pending(&self, identity: &EnrollmentIdentity) -> io::Result<()> {
-        self.write_identity(PENDING_OWNER, PENDING_BAND_KEY, identity)
+        self.write_identity(PENDING_OWNER, identity)
     }
 
     pub fn load_pending(&self) -> io::Result<Option<EnrollmentIdentity>> {
-        self.read_identity(PENDING_OWNER, PENDING_BAND_KEY)
+        self.read_identity(PENDING_OWNER)
     }
 
-    /// The identity to connect with: the confirmed one, else a pending one
-    /// (the band may have committed a claim whose confirmation was lost).
-    pub fn connect_identity(&self) -> io::Result<Option<EnrollmentIdentity>> {
-        match self.load_identity()? {
-            Some(identity) => Ok(Some(identity)),
-            None => self.load_pending(),
+    /// Drop the pending identity without confirming it.
+    pub fn discard_pending(&self) -> io::Result<()> {
+        self.remove(PENDING_OWNER)
+    }
+
+    /// Confirm the pending identity (a no-op when there is none).
+    pub fn promote_pending(&self) -> io::Result<()> {
+        match self.load_pending()? {
+            Some(identity) => self.save_identity(&identity),
+            None => Ok(()),
         }
+    }
+
+    /// The identity to connect with: a pending one first (it is always newer
+    /// — the band may have committed a claim whose confirmation was lost),
+    /// else the confirmed one.
+    pub fn connect_identity(&self) -> io::Result<Option<(EnrollmentIdentity, IdentitySource)>> {
+        if let Some(identity) = self.load_pending()? {
+            return Ok(Some((identity, IdentitySource::Pending)));
+        }
+        Ok(self
+            .load_identity()?
+            .map(|identity| (identity, IdentitySource::Confirmed)))
     }
 
     pub fn save_band(&self, band: &BandRecord) -> io::Result<()> {
@@ -155,11 +195,11 @@ impl Store {
     pub fn forget(&self) -> io::Result<()> {
         for name in [
             OWNER,
-            BAND_KEY,
             PENDING_OWNER,
-            PENDING_BAND_KEY,
             BAND,
             META_SESSION,
+            LEGACY_BAND_KEY,
+            LEGACY_PENDING_BAND_KEY,
         ] {
             self.remove(name)?;
         }
