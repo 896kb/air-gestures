@@ -1,0 +1,145 @@
+//! Typed values the session reports (kinesis `Gestures.swift` BandEvent/BandGesture,
+//! `EMGReadings.swift`, `BandBatteryStatus.swift`).
+
+use crate::error::{perr, Result};
+use crate::proto::ProtoFields;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Hand {
+    Right,
+    Left,
+}
+
+/// One recognized-gesture message as the band sent it. Names come from the
+/// band's enum tables; unknown values read `unrecognized:<n>`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct GestureMessage {
+    pub sequence: u64,
+    pub timestamp_us: u64,
+    pub finger: String,
+    pub action: String,
+    pub derived_action: String,
+    pub synthetic: bool,
+    /// Host monotonic time (seconds) the message was decoded at.
+    pub received_at: f64,
+}
+
+/// `BatteryInfoResp.batteryData`: level 0–100 and an optional charging flag.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BatteryStatus {
+    pub level: u8,
+    pub charging: Option<bool>,
+}
+
+impl BatteryStatus {
+    pub fn from_response(response: &[u8]) -> Result<Self> {
+        let rpc = ProtoFields::parse(response)?;
+        if rpc.required_integer(2)? != 1 {
+            return Err(perr("Battery status unavailable"));
+        }
+        let inner = ProtoFields::parse(rpc.bytes(3)?)?;
+        let battery = ProtoFields::parse(inner.bytes(1)?)?;
+        let level = battery.required_integer(1)?;
+        if level > 100 {
+            return Err(perr("Invalid battery level"));
+        }
+        let charging = if battery.contains(2) {
+            let value = battery.required_integer(2)?;
+            if value > 1 {
+                return Err(perr("Invalid charging flag"));
+            }
+            Some(value == 1)
+        } else {
+            None
+        };
+        Ok(Self { level: level as u8, charging })
+    }
+}
+
+/// Dimensions from the band's `Config.emg` field. ADC calibration is unknown.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EmgConfig {
+    pub sample_rate: u64,
+    pub channels: u64,
+    pub adc_bits: u64,
+    pub samples_per_batch: u64,
+    pub encoding: u64,
+}
+
+impl EmgConfig {
+    pub fn from_response(response: &[u8]) -> Result<Self> {
+        let response = ProtoFields::parse(response)?;
+        if response.required_integer(2)? != 1 {
+            return Err(perr("The band rejected the EMG configuration read."));
+        }
+        let config = ProtoFields::parse(response.bytes(6)?)?;
+        let emg = ProtoFields::parse(config.bytes(42)?)?;
+        Ok(Self {
+            sample_rate: emg.required_integer(1)?,
+            channels: emg.required_integer(2)?,
+            adc_bits: emg.required_integer(4)?,
+            samples_per_batch: emg.required_integer(5)?,
+            encoding: emg.required_integer(10)?,
+        })
+    }
+
+    /// The observed layout: 2048 Hz, 8 channels, 16-bit, 16 samples, encoding 0.
+    pub fn is_supported(&self) -> bool {
+        self.sample_rate == 2048
+            && self.channels == 8
+            && self.adc_bits == 16
+            && self.samples_per_batch == 16
+            && self.encoding == 0
+    }
+}
+
+/// One raw sEMG batch: 16 samples × 8 channels, little-endian u16, interleaved
+/// by sample then channel.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EmgBatch {
+    pub sequence: u64,
+    pub timestamp_us: u64,
+    pub values: Vec<u16>,
+}
+
+impl EmgBatch {
+    pub const CHANNELS: usize = 8;
+    pub const SAMPLES: usize = 16;
+
+    pub fn parse(payload: &[u8], config: &EmgConfig) -> Result<Self> {
+        if !config.is_supported() {
+            return Err(perr("This EMG format isn't supported by the readings view yet."));
+        }
+        let fields = ProtoFields::parse(payload)?;
+        let sequence = fields.required_integer(1)?;
+        let timestamp_us = fields.required_integer(2)?;
+        let bytes = fields.bytes_len(3, 256)?;
+        let values = bytes.chunks_exact(2).map(|pair| u16::from_le_bytes([pair[0], pair[1]])).collect();
+        Ok(Self { sequence, timestamp_us, values })
+    }
+}
+
+/// Everything a session reports. Times are implied by the `feed`/`tick` call.
+#[derive(Debug, Clone)]
+pub enum Event {
+    /// Input streams are live (first subscription ack or first sensor data).
+    Connected,
+    /// Authenticated traffic arrived while streaming (at most every 0.2 s).
+    Heartbeat,
+    /// A decoded sensor frame arrived (gesture, motion or raw sEMG).
+    DataSeen,
+    Gesture(GestureMessage),
+    /// The pinch dial armed (`true`) or let go (`false`).
+    DialState(bool),
+    /// Relative wrist rotation while the dial is armed, coalesced to ≥ 20 ms.
+    DialTurn(f64),
+    Handedness(Hand),
+    HandednessFailure(String),
+    /// `None` = unknown (timed out, rejected or unsupported).
+    BatteryStatus(Option<BatteryStatus>),
+    RawEmgFrame(Vec<u8>),
+    RawEmgConfiguration(EmgConfig),
+    RawEmgState(bool),
+    RawEmgFailure(String),
+    CeremonyStage(String),
+}
