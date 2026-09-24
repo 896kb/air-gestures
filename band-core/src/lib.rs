@@ -5,5 +5,6 @@
 //! typed events back; nothing here touches sockets, clocks or files.
 
 pub mod error;
+pub mod proto;
 
 pub use error::{BandError, Result};
