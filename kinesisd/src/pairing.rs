@@ -118,8 +118,10 @@ pub async fn pair_band<T: Transport, C: PairClient>(
         },
     ));
 
+    let mut record = record;
     let mut failure: Option<PairFailure> = None;
     let mut saved = false;
+    let mut resolved = false;
     while let Some(event) = events.recv().await {
         let LinkEvent::Band(event) = event else {
             continue;
@@ -162,6 +164,10 @@ pub async fn pair_band<T: Transport, C: PairClient>(
                 Ok(()) => {
                     saved = true;
                     progress("the band accepted this computer as its owner");
+                    if !resolved {
+                        resolved = true;
+                        resolve_identity(transport, store, &mut record).await;
+                    }
                 }
                 Err(error) => {
                     failure = Some(PairFailure::Failed(format!(
@@ -172,6 +178,10 @@ pub async fn pair_band<T: Transport, C: PairClient>(
             },
             Event::Connected => {
                 progress("connected as the owner");
+                if !resolved {
+                    resolved = true;
+                    resolve_identity(transport, store, &mut record).await;
+                }
                 let _ = commands.send(LinkCommand::Stop).await;
             }
             _ => {}
@@ -223,6 +233,19 @@ pub async fn pair_band<T: Transport, C: PairClient>(
         LinkEnd::Failed(message) => PairFailure::Failed(message),
         other => PairFailure::Failed(format!("the claim didn't finish: {other}")),
     })
+}
+
+/// Once bonded, a band advertising a resolvable private address is known by
+/// its identity address: save that, so later connections find it.
+async fn resolve_identity<T: Transport>(transport: &T, store: &Store, record: &mut BandRecord) {
+    let identity = transport.identity_address(&record.address).await;
+    if identity != record.address {
+        tracing::info!("the band's identity address is {identity}");
+        record.address = identity;
+        if let Err(error) = store.save_band(record) {
+            tracing::warn!("could not save the band's identity address: {error}");
+        }
+    }
 }
 
 /// Put back the band record from before this pairing run (or none).

@@ -11,6 +11,7 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use bluer::agent::{Agent, AgentHandle, ReqError, ReqResult};
+use bluer::gatt::remote::Service;
 use bluer::l2cap::{SocketAddr, Stream};
 use bluer::{
     Adapter, AdapterEvent, Address, Device, DiscoveryFilter, DiscoveryTransport, ErrorKind,
@@ -25,6 +26,11 @@ const PSM_CHARACTERISTIC: Uuid = Uuid::from_u128(0x2d41da7c_82b6_42aa_b34e_e2e01
 /// How long `open` listens for a band BlueZ has forgotten (e.g. right after
 /// `prepare_pairing` removed a stale bond).
 const REDISCOVER: Duration = Duration::from_secs(15);
+const CONNECT: Duration = Duration::from_secs(30);
+/// GATT service discovery after connecting.
+const SERVICES: Duration = Duration::from_secs(30);
+/// The PSM read, which may include Bluetooth pairing.
+const PSM_READ: Duration = Duration::from_secs(45);
 
 fn describe(error: bluer::Error) -> String {
     error.to_string()
@@ -51,16 +57,23 @@ pub struct BluezTransport {
 }
 
 impl BluezTransport {
+    /// Opens the BlueZ session and default adapter. Doesn't power the adapter
+    /// on: while Bluetooth is off, `scan` and `open` say so and the daemon keeps retrying.
     pub async fn new() -> Result<Self, String> {
         let session = Session::new().await.map_err(describe)?;
         let adapter = session.default_adapter().await.map_err(describe)?;
-        adapter.set_powered(true).await.map_err(describe)?;
         Ok(Self { session, adapter })
     }
 
-    async fn start_le_discovery(
-        &self,
-    ) -> Result<impl futures::Stream<Item = AdapterEvent> + use<>, String> {
+    async fn ensure_powered(&self) -> Result<(), String> {
+        match self.adapter.is_powered().await {
+            Ok(true) => Ok(()),
+            Ok(false) => Err("Bluetooth is off".into()),
+            Err(error) => Err(format!("Bluetooth is unavailable: {error}")),
+        }
+    }
+
+    async fn set_le_filter(&self) -> Result<(), String> {
         let filter = DiscoveryFilter {
             transport: DiscoveryTransport::Le,
             ..Default::default()
@@ -68,40 +81,73 @@ impl BluezTransport {
         self.adapter
             .set_discovery_filter(filter)
             .await
-            .map_err(describe)?;
-        self.adapter.discover_devices().await.map_err(describe)
+            .map_err(describe)
+    }
+
+    /// Whether the device object at `path_address` is the band at `target`:
+    /// either its object path or its Address property (the identity address
+    /// once a band with a resolvable private address is bonded) matches.
+    async fn is_target(&self, path_address: Address, target: Address) -> bool {
+        if path_address == target {
+            return true;
+        }
+        match self.adapter.device(path_address) {
+            Ok(device) => device.remote_address().await.ok() == Some(target),
+            Err(_) => false,
+        }
+    }
+
+    /// The device object BlueZ already has for `target`, if any.
+    async fn existing_device(&self, target: Address) -> Result<Option<Device>, String> {
+        let known = self.adapter.device_addresses().await.map_err(describe)?;
+        if known.contains(&target) {
+            return self.adapter.device(target).map(Some).map_err(describe);
+        }
+        for path_address in known {
+            if self.is_target(path_address, target).await {
+                return self
+                    .adapter
+                    .device(path_address)
+                    .map(Some)
+                    .map_err(describe);
+            }
+        }
+        Ok(None)
     }
 
     /// Make sure BlueZ has a device object for `target`, discovering it if needed.
     async fn known_device(&self, target: Address) -> Result<Device, String> {
-        let known = self.adapter.device_addresses().await.map_err(describe)?;
-        if !known.contains(&target) {
-            let events = self.start_le_discovery().await?;
-            let mut events = std::pin::pin!(events);
-            let seen = tokio::time::timeout(REDISCOVER, async {
-                while let Some(event) = events.next().await {
-                    if matches!(event, AdapterEvent::DeviceAdded(address) if address == target) {
-                        return true;
-                    }
-                }
-                false
-            })
-            .await
-            .unwrap_or(false);
-            // Dropping the stream stops discovery before we connect.
-            if !seen {
-                return Err(
-                    "the band isn't advertising (is it nearby and awake, or in pairing mode?)"
-                        .into(),
-                );
-            }
+        if let Some(device) = self.existing_device(target).await? {
+            return Ok(device);
         }
-        self.adapter.device(target).map_err(describe)
+        self.set_le_filter().await?;
+        let events = self.adapter.discover_devices().await.map_err(describe)?;
+        let mut events = std::pin::pin!(events);
+        let seen = tokio::time::timeout(REDISCOVER, async {
+            while let Some(event) = events.next().await {
+                if let AdapterEvent::DeviceAdded(path_address) = event
+                    && self.is_target(path_address, target).await
+                {
+                    return Some(path_address);
+                }
+            }
+            None
+        })
+        .await
+        .ok()
+        .flatten();
+        // Dropping the stream stops discovery before we connect.
+        match seen {
+            Some(path_address) => self.adapter.device(path_address).map_err(describe),
+            None => Err(
+                "the band isn't advertising (is it nearby and awake, or in pairing mode?)".into(),
+            ),
+        }
     }
 }
 
-async fn read_psm(device: &Device) -> Result<u16, String> {
-    for service in device.services().await.map_err(describe)? {
+async fn read_psm(services: Vec<Service>) -> Result<u16, String> {
+    for service in services {
         if service.uuid().await.map_err(describe)? != BAND_SERVICE {
             continue;
         }
@@ -136,7 +182,15 @@ impl Transport for BluezTransport {
     type PairingGuard = AgentHandle;
 
     async fn scan(&self, timeout: Duration) -> Result<Vec<Found>, String> {
-        let events = self.start_le_discovery().await?;
+        self.ensure_powered().await?;
+        self.set_le_filter().await?;
+        // Known devices come first, then one event per property change: only
+        // a device with an RSSI was actually heard in this scan.
+        let events = self
+            .adapter
+            .discover_devices_with_changes()
+            .await
+            .map_err(describe)?;
         let mut events = std::pin::pin!(events);
         let mut found: HashMap<Address, Found> = HashMap::new();
         let deadline = tokio::time::sleep(timeout);
@@ -147,11 +201,11 @@ impl Transport for BluezTransport {
                 event = events.next() => match event {
                     Some(AdapterEvent::DeviceAdded(address)) => {
                         let Ok(device) = self.adapter.device(address) else { continue };
+                        let Ok(Some(rssi)) = device.rssi().await else { continue };
                         if let Ok(Some(name)) = device.name().await
                             && is_band_name(&name)
                         {
-                            let rssi = device.rssi().await.ok().flatten();
-                            found.insert(address, Found { address: address.to_string(), name, rssi });
+                            found.insert(address, Found { address: address.to_string(), name, rssi: Some(rssi) });
                         }
                     }
                     Some(_) => {}
@@ -166,6 +220,9 @@ impl Transport for BluezTransport {
 
     async fn prepare_pairing(&self, address: &str) -> Result<AgentHandle, String> {
         let target = parse(address)?;
+        if let Err(error) = self.adapter.set_pairable(true).await {
+            tracing::debug!("could not make the adapter pairable: {error}");
+        }
         // A factory reset gives the band a new identity key; a stale bond would make pairing fail.
         if let Ok(device) = self.adapter.device(target)
             && device.is_paired().await.unwrap_or(false)
@@ -190,23 +247,39 @@ impl Transport for BluezTransport {
 
     async fn open(&self, address: &str) -> Result<Stream, String> {
         let target = parse(address)?;
+        self.ensure_powered().await?;
         let device = self.known_device(target).await?;
         if !device.is_connected().await.map_err(describe)? {
-            tokio::time::timeout(Duration::from_secs(20), device.connect())
-                .await
-                .map_err(|_| {
-                    "the band didn't answer the connection (is it nearby and awake?)".to_string()
-                })?
-                .map_err(describe)?;
+            match tokio::time::timeout(CONNECT, device.connect()).await {
+                Err(_) => {
+                    // Cancel BlueZ's pending Connect so it doesn't linger.
+                    let _ = device.disconnect().await;
+                    return Err(
+                        "the band didn't answer the connection (is it nearby and awake?)".into(),
+                    );
+                }
+                Ok(Err(error)) if error.kind == ErrorKind::AlreadyConnected => {}
+                Ok(Err(error)) => return Err(describe(error)),
+                Ok(Ok(())) => {}
+            }
         }
+        let services = tokio::time::timeout(SERVICES, device.services())
+            .await
+            .map_err(|_| "the band's services didn't appear".to_string())?
+            .map_err(describe)?;
         // The first read may wait on Bluetooth pairing.
-        let psm = tokio::time::timeout(Duration::from_secs(45), read_psm(&device))
+        let psm = tokio::time::timeout(PSM_READ, read_psm(services))
             .await
             .map_err(|_| "the band didn't open its input channel in time".to_string())??;
+        if let Err(error) = device.set_trusted(true).await {
+            tracing::debug!("could not mark the band trusted: {error}");
+        }
+        // Address and type as BlueZ now knows them (the identity address once bonded).
+        let remote = device.remote_address().await.unwrap_or(target);
         let kind = device.address_type().await.map_err(describe)?;
         tokio::time::timeout(
             Duration::from_secs(20),
-            Stream::connect(SocketAddr::new(target, kind, psm)),
+            Stream::connect(SocketAddr::new(remote, kind, psm)),
         )
         .await
         .map_err(|_| "opening the band's input channel timed out".to_string())?
@@ -214,10 +287,29 @@ impl Transport for BluezTransport {
     }
 
     async fn forget(&self, address: &str) -> Result<(), String> {
-        match self.adapter.remove_device(parse(address)?).await {
+        let target = parse(address)?;
+        // The object may live under a different (private) address than the identity we saved.
+        let path_address = match self.existing_device(target).await {
+            Ok(Some(device)) => device.address(),
+            _ => target,
+        };
+        match self.adapter.remove_device(path_address).await {
             Ok(()) => Ok(()),
             Err(error) if is_missing(&error) => Ok(()),
             Err(error) => Err(describe(error)),
+        }
+    }
+
+    async fn identity_address(&self, address: &str) -> String {
+        let Ok(target) = parse(address) else {
+            return address.to_owned();
+        };
+        match self.adapter.device(target) {
+            Ok(device) => match device.remote_address().await {
+                Ok(identity) => identity.to_string(),
+                Err(_) => address.to_owned(),
+            },
+            Err(_) => address.to_owned(),
         }
     }
 }

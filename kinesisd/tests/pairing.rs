@@ -280,3 +280,33 @@ async fn a_claim_rejected_at_finish_restores_the_previous_band() {
         old.private_bytes()
     );
 }
+
+#[tokio::test(start_paused = true)]
+async fn a_claim_saves_the_bands_identity_address() {
+    let transport = SimTransport::new(SimMode::Legacy);
+    transport.set_identity_address(Some("AA:BB:CC:DD:EE:FF".into()));
+    let client = FakeFactory {
+        device_point: Some(transport.band_point()),
+        fail: None,
+    }
+    .client(None)
+    .unwrap();
+    let (_dir, store) = store();
+    let record = pair_band(
+        &transport,
+        &client,
+        &store,
+        None,
+        Clock::new(),
+        |_: &str| {},
+    )
+    .await
+    .unwrap();
+    assert_eq!(record.address, "AA:BB:CC:DD:EE:FF");
+    assert_eq!(
+        store.load_band().unwrap().unwrap().address,
+        "AA:BB:CC:DD:EE:FF"
+    );
+    // The band answers at its identity address afterwards.
+    assert!(transport.open("AA:BB:CC:DD:EE:FF").await.is_ok());
+}

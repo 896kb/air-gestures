@@ -37,6 +37,10 @@ pub trait Transport: Send + Sync + 'static {
     fn open(&self, address: &str) -> impl Future<Output = Result<Self::Io, String>> + Send;
     /// Remove the system's bond with `address`.
     fn forget(&self, address: &str) -> impl Future<Output = Result<(), String>> + Send;
+    /// The band's stable address once bonded: a band advertising a resolvable
+    /// private address is known by its identity address afterwards. Returns
+    /// `address` unchanged when there is nothing better.
+    fn identity_address(&self, address: &str) -> impl Future<Output = String> + Send;
 }
 
 /// Things a test can make the simulated band do on the open connection.
@@ -74,6 +78,8 @@ struct SimState {
     opens: usize,
     /// Drop the connection right after the band commits a claim, before it confirms.
     drop_after_finish: bool,
+    /// The identity address the band resolves to once bonded (None = SIM_ADDRESS).
+    identity_address: Option<String>,
 }
 
 #[derive(Clone)]
@@ -101,6 +107,7 @@ impl SimTransport {
                 inject: None,
                 opens: 0,
                 drop_after_finish: false,
+                identity_address: None,
             })),
         }
     }
@@ -137,6 +144,13 @@ impl SimTransport {
     /// then drops the connection without sending its confirmation.
     pub fn set_drop_after_finish(&self, drop: bool) {
         self.lock().drop_after_finish = drop;
+    }
+
+    /// Test knob: after bonding, the band is known by this identity address
+    /// (as a band advertising a resolvable private address is). `open` accepts
+    /// either address.
+    pub fn set_identity_address(&self, address: Option<String>) {
+        self.lock().identity_address = address;
     }
 
     /// The band's current owner hash (None until a claim or the first enrolled connection).
@@ -182,7 +196,8 @@ impl Transport for SimTransport {
     }
 
     async fn open(&self, address: &str) -> Result<DuplexStream, String> {
-        if address != SIM_ADDRESS {
+        let identity = self.lock().identity_address.clone();
+        if address != SIM_ADDRESS && identity.as_deref() != Some(address) {
             return Err(format!("no simulated band at {address}"));
         }
         let (host, band) = tokio::io::duplex(1 << 16);
@@ -206,6 +221,13 @@ impl Transport for SimTransport {
 
     async fn forget(&self, _address: &str) -> Result<(), String> {
         Ok(())
+    }
+
+    async fn identity_address(&self, address: &str) -> String {
+        match &self.lock().identity_address {
+            Some(identity) if address == SIM_ADDRESS => identity.clone(),
+            _ => address.to_owned(),
+        }
     }
 }
 

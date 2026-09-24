@@ -15,7 +15,12 @@ use tokio::net::UnixListener;
 use tokio::sync::mpsc;
 use tracing_subscriber::EnvFilter;
 
-const USAGE: &str = "usage: kinesisd [--dry-run] [--config PATH] [--scan]";
+const USAGE: &str = "usage: kinesisd [--dry-run] [--config PATH] [--scan]
+
+  --dry-run      run against a simulated band instead of Bluetooth; it uses
+                 the real config, so gestures run their actions for real
+  --config PATH  config file (default ~/.config/kinesis/config.toml)
+  --scan         list nearby bands for 10 s and exit";
 
 async fn shutdown_signal() {
     let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
