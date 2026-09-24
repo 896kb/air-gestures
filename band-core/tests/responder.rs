@@ -6,6 +6,7 @@ use band_core::responder::{Responder, SimMode};
 use band_core::session::BandSession;
 use p256::ecdsa::SigningKey;
 use rand_core::OsRng;
+use sha2::{Digest, Sha256};
 
 /// Ping-pong host and band bytes until neither side has anything to say.
 fn pump(
@@ -191,4 +192,80 @@ fn a_silent_band_answers_nothing() {
     band.silent = true;
     let query = session.query_stream_state().unwrap();
     assert!(band.respond(&query).unwrap().is_empty());
+}
+
+#[test]
+fn an_enrolled_band_with_a_set_owner_rejects_a_different_key() {
+    let band_key = SigningKey::random(&mut OsRng);
+    let mut band = Responder::new(SimMode::Enrolled, band_key);
+    let someone_elses_point =
+        EnrollmentIdentity::new(SigningKey::random(&mut OsRng), None).app_point();
+    band.set_owner(Some(Sha256::digest(someone_elses_point).into()));
+    let identity = EnrollmentIdentity::new(SigningKey::random(&mut OsRng), None);
+    let mut session = BandSession::new(Some(identity), None, false);
+    assert!(matches!(
+        start(&mut session, &mut band),
+        Err(BandError::IdentityMismatch(_))
+    ));
+}
+
+#[test]
+fn a_legacy_band_rejects_an_enrolled_session() {
+    let mut band = Responder::new(SimMode::Legacy, SigningKey::random(&mut OsRng));
+    let identity = EnrollmentIdentity::new(SigningKey::random(&mut OsRng), None);
+    let mut session = BandSession::new(Some(identity), None, false);
+    assert!(matches!(
+        start(&mut session, &mut band),
+        Err(BandError::IdentityMismatch(_))
+    ));
+}
+
+#[test]
+fn an_enrolled_band_does_not_let_a_legacy_session_connect() {
+    let mut band = Responder::new(SimMode::Enrolled, SigningKey::random(&mut OsRng));
+    let mut session = BandSession::new(None, None, false);
+    let events = start(&mut session, &mut band).unwrap();
+    assert!(!connected(&events));
+}
+
+#[test]
+fn a_completed_ceremony_sets_the_bands_owner_to_the_new_app_point() {
+    let band_key = SigningKey::random(&mut OsRng);
+    let mut band = Responder::new(SimMode::Ceremony, band_key);
+    let band_point = band.band_point();
+    let mut session = BandSession::new(None, Some(OwnershipCeremony::default()), false);
+    let events = start(&mut session, &mut band).unwrap();
+    assert!(events.iter().any(|event| matches!(
+        event,
+        Event::CeremonyHttp(CeremonyHttpRequest::PairRequest(_))
+    )));
+    let bytes = session
+        .ceremony_pair_request_completed(&[0x30, 1, 2], "{\"pending\":1}")
+        .unwrap();
+    pump(&mut session, &mut band, bytes, 101.0).unwrap();
+    let bytes = session
+        .ceremony_pair_completed(&[0x30, 3, 4], "{\"final\":1}", Some(&band_point))
+        .unwrap();
+    let events = pump(&mut session, &mut band, bytes, 102.0).unwrap();
+    let Some(Event::CeremonyCompleted(identity)) = events
+        .iter()
+        .find(|event| matches!(event, Event::CeremonyCompleted(_)))
+    else {
+        panic!("no ceremony completed event: {events:?}")
+    };
+    let expected: [u8; 32] = Sha256::digest(identity.app_point()).into();
+    assert_eq!(band.owner(), Some(expected));
+    assert!(connected(&events));
+}
+
+#[test]
+fn an_injected_gesture_before_streams_are_enabled_yields_nothing() {
+    let mut band = Responder::new(SimMode::Legacy, SigningKey::random(&mut OsRng));
+    let mut session = BandSession::new(None, None, false);
+    let request = session.request().unwrap();
+    let reply = band.respond(&request).unwrap();
+    let result = session.feed(&reply, 100.0).unwrap();
+    band.respond(&result.outgoing).unwrap();
+    let bytes = band.gesture(8, 1, 0).unwrap();
+    assert!(bytes.is_empty());
 }

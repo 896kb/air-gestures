@@ -47,6 +47,11 @@ pub struct Responder {
     pub battery: (u64, Option<u64>),
     /// Stop answering (the band went quiet); requests are still decrypted.
     pub silent: bool,
+    /// SHA-256 of the trusted owner's 64-byte app point (EnableTrust field 1).
+    /// `None` accepts (and adopts) whichever key claims trust first.
+    owner: Option<[u8; 32]>,
+    /// Set once an EnableTrust exchange has been accepted.
+    trusted: bool,
     streams: u64,
     raw: u64,
     sequence: u64,
@@ -78,6 +83,8 @@ impl Responder {
             hand: 0,
             battery: (80, Some(0)),
             silent: false,
+            owner: None,
+            trusted: false,
             streams: 0,
             raw: 0,
             sequence: 0,
@@ -89,6 +96,16 @@ impl Responder {
     /// The band identity key's 64-byte point (what the ownership server reports).
     pub fn band_point(&self) -> Vec<u8> {
         point64(self.band_key.verifying_key())
+    }
+
+    /// SHA-256 of the trusted owner's app point, once one has been adopted.
+    pub fn owner(&self) -> Option<[u8; 32]> {
+        self.owner
+    }
+
+    /// Restrict (or, with `None`, reopen) which owner's EnableTrust is accepted.
+    pub fn set_owner(&mut self, owner: Option<[u8; 32]>) {
+        self.owner = owner;
     }
 
     /// True once FinishChangeOwner reached the band.
@@ -160,6 +177,9 @@ impl Responder {
 
     /// A recognized-gesture message (finger/action/derived use the band's enum values).
     pub fn gesture(&mut self, action: u64, finger: u64, derived: u64) -> Result<Vec<u8>> {
+        if self.streams != 1 || self.stopped || self.silent {
+            return Ok(Vec::new());
+        }
         self.sequence += 1;
         let sequence = self.sequence;
         let band = self.ready()?;
@@ -177,6 +197,9 @@ impl Responder {
 
     /// One gyro sample 10 ms after the previous one.
     pub fn gyro(&mut self, x: i16) -> Result<Vec<u8>> {
+        if self.streams != 1 || self.stopped || self.silent {
+            return Ok(Vec::new());
+        }
         let band = self.ready()?;
         band.stamp += 10_000;
         let axes = [x.to_le_bytes(), 0i16.to_le_bytes(), 0i16.to_le_bytes()].concat();
@@ -191,6 +214,9 @@ impl Responder {
 
     /// One raw sEMG batch (256 bytes of mid-scale samples).
     pub fn raw_emg(&mut self) -> Result<Vec<u8>> {
+        if self.raw != 1 || self.silent {
+            return Ok(Vec::new());
+        }
         self.sequence += 1;
         let sequence = self.sequence;
         let band = self.ready()?;
@@ -244,20 +270,39 @@ impl Responder {
                 reply(band, 2, 0x02002005, &[])
             }
             (0x8002, Some(0x02001000)) => {
-                let result = self.reject_identity.unwrap_or(0x03001000);
-                let mut out = reply(band, 2, result, &[])?;
-                if result == 0x03001000 {
-                    let proof = band.trust_proof(&self.band_key)?;
-                    out.extend(band.encrypt(&proof)?);
+                if let Some(code) = self.reject_identity {
+                    return reply(band, 2, code, &[]);
                 }
+                let claimed: [u8; 32] = ProtoFields::parse(&frame.payload)?
+                    .bytes_len(1, 32)?
+                    .try_into()
+                    .expect("length checked");
+                // Legacy bands have no owner to check against, and a ceremony
+                // only trusts a new owner once it has committed the claim (by
+                // which point `mode` has already flipped to `Enrolled`).
+                let allowed = self.mode == SimMode::Enrolled
+                    && self.owner.is_none_or(|owner| owner == claimed);
+                if !allowed {
+                    return reply(band, 2, 0x03001043, &[]);
+                }
+                self.owner.get_or_insert(claimed);
+                self.trusted = true;
+                let mut out = reply(band, 2, 0x03001000, &[])?;
+                let proof = band.trust_proof(&self.band_key)?;
+                out.extend(band.encrypt(&proof)?);
                 Ok(out)
             }
-            (0x8001, Some(0x02001000)) => reply(
-                band,
-                0x8001,
-                0x02001000,
-                &[field_int(1, 1), field_bytes(2, &[1; 16])].concat(),
-            ),
+            (0x8001, Some(0x02001000)) => {
+                if self.mode == SimMode::Enrolled && !self.trusted {
+                    return Ok(Vec::new());
+                }
+                reply(
+                    band,
+                    0x8001,
+                    0x02001000,
+                    &[field_int(1, 1), field_bytes(2, &[1; 16])].concat(),
+                )
+            }
             (0x8003, _) => reply(
                 band,
                 3,

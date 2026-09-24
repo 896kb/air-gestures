@@ -7,7 +7,7 @@ use p256::elliptic_curve::sec1::ToEncodedPoint;
 use p256::{PublicKey, SecretKey, ecdh};
 
 use crate::airshield::{AirShieldCipher, AirShieldKeys, AirShieldReceiver};
-use crate::datax::{DataXFrame, DataXReceiver, be16, encode_frame};
+use crate::datax::{DataXFrame, DataXReceiver, be16, be32, encode_frame};
 use crate::error::{Result, perr};
 use crate::events::Event;
 use crate::identity::trust_digest;
@@ -47,6 +47,9 @@ impl SimHandshake {
     pub fn accept(host_request: &[u8]) -> Result<(SimHandshake, Vec<u8>)> {
         if host_request.len() < 12 {
             return Err(perr("sim: short RequestEncryption"));
+        }
+        if be32(host_request, 8) != 0x02000001 {
+            return Err(perr("sim: expected a RequestEncryption frame"));
         }
         let local = ProtoFields::parse(&host_request[12..])?;
         let host_point = local.bytes_len(1, 64)?.to_vec();
@@ -98,6 +101,9 @@ impl SimHandshake {
     pub fn finish(self, host_enable: &[u8]) -> Result<SimBand> {
         if host_enable.len() < 8 {
             return Err(perr("sim: short EnableEncryption"));
+        }
+        if be32(host_enable, 4) != 0x02000002 {
+            return Err(perr("sim: expected an EnableEncryption frame"));
         }
         let enable = ProtoFields::parse(&host_enable[8..])?;
         if enable.bytes(1)? != self.host_point.as_slice() || enable.integer(5)? != 3 {
