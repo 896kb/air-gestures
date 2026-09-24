@@ -252,6 +252,19 @@ impl OwnershipCeremony {
         )
     }
 
+    /// The identity FinishChangeOwner asks the band to commit: the app key plus
+    /// the validated device key, if any. `Some` once `pair_completed` succeeded.
+    pub fn pending_identity(&self) -> Option<EnrollmentIdentity> {
+        if self.stage != Stage::Done {
+            return None;
+        }
+        let band_key = self
+            .device_public_key
+            .as_deref()
+            .and_then(|point| verifying_key_from_point64(point).ok());
+        Some(EnrollmentIdentity::new(self.app_key.clone(), band_key))
+    }
+
     /// Confirm the empty FinishChangeOwnerResponse and hand back the new identity.
     /// If this errors, the caller still holds the app key via `app_key()`; the band may already have changed owner.
     pub fn complete(&self, words: &[u32], payload: &[u8]) -> Result<EnrollmentIdentity> {

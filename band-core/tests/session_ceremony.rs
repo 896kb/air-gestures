@@ -178,7 +178,113 @@ fn identity_result_codes_fail_the_ceremony_session() {
     let mut peer = CeremonyPeer::new();
     peer.send(&identity_response()).unwrap();
     match peer.send(&encode_frame(2, &[0x03001043], &[]).unwrap()) {
-        Err(BandError::Protocol(message)) => assert!(message.contains("identity"), "{message}"),
-        other => panic!("expected a protocol error, got {other:?}"),
+        Err(BandError::OwnershipRejected { message, .. }) => {
+            assert!(message.contains("identity"), "{message}")
+        }
+        other => panic!("expected an ownership rejection, got {other:?}"),
     }
+}
+
+fn completed_identity(events: &[Event]) -> Option<band_core::identity::EnrollmentIdentity> {
+    events.iter().find_map(|event| match event {
+        Event::CeremonyCompleted(identity) => Some(identity.clone()),
+        _ => None,
+    })
+}
+
+impl CeremonyPeer {
+    /// Identity read, skip challenge and StartChangeOwner: the band now holds
+    /// the server's pending receipt.
+    fn claim(&mut self) {
+        self.send(&identity_response()).unwrap();
+        self.send(&skip_challenge_response()).unwrap();
+        let start = self
+            .session
+            .ceremony_pair_request_completed(&[3; 71], PENDING_RECEIPT)
+            .unwrap();
+        self.band.requests(&start).unwrap();
+    }
+
+    /// Through the StartChangeOwnerResponse: the session waits for the `pair` reply.
+    fn claim_through_pair(&mut self) {
+        self.claim();
+        let response = encode_frame(
+            2,
+            &[0x02002003],
+            &[fb(1, &[4; 70]), fb(2, DEVICE_RECEIPT.as_bytes())].concat(),
+        )
+        .unwrap();
+        self.send(&response).unwrap();
+    }
+
+    /// Write FinishChangeOwner with `band_key`'s point as the device key.
+    fn finish(&mut self, band_key: &SigningKey) {
+        let finish = self
+            .session
+            .ceremony_pair_completed(
+                &[5; 71],
+                FINAL_RECEIPT,
+                Some(&point64(band_key.verifying_key())),
+            )
+            .unwrap();
+        self.band.requests(&finish).unwrap();
+    }
+
+    /// The band's empty FinishChangeOwnerResponse.
+    fn confirm(&mut self) -> (Vec<Event>, Vec<DataXFrame>) {
+        self.send(&encode_frame(2, &[0x02002005], &[]).unwrap())
+            .unwrap()
+    }
+}
+
+#[test]
+fn a_wrong_account_rejection_is_typed_and_stores_nothing() {
+    let mut peer = CeremonyPeer::new();
+    peer.claim();
+    match peer.send(&encode_frame(2, &[0x03001042], &[]).unwrap()) {
+        Err(BandError::OwnershipRejected { code, message }) => {
+            assert_eq!(code, 0x1042);
+            assert!(message.contains("different meta account"), "{message}");
+        }
+        other => panic!("expected an ownership rejection, got {other:?}"),
+    }
+    assert!(peer.session.enrollment().is_none());
+}
+
+#[test]
+fn the_pending_identity_is_what_the_confirmation_hands_out() {
+    let mut peer = CeremonyPeer::new();
+    assert!(peer.session.pending_identity().is_none());
+    peer.claim_through_pair();
+    assert!(peer.session.pending_identity().is_none());
+    let band_key = SigningKey::random(&mut OsRng);
+    peer.finish(&band_key);
+    let pending = peer
+        .session
+        .pending_identity()
+        .expect("pending identity after FinishChangeOwner");
+    let completed = completed_identity(&peer.confirm().0).expect("ceremony completed event");
+    assert_eq!(pending.private_bytes(), completed.private_bytes());
+    assert_eq!(pending.band_key_x963(), completed.band_key_x963());
+    assert_eq!(
+        pending.band_key_x963(),
+        Some(
+            band_key
+                .verifying_key()
+                .to_encoded_point(false)
+                .as_bytes()
+                .to_vec()
+        )
+    );
+}
+
+#[test]
+fn a_link_lost_after_finish_change_owner_still_leaves_the_pending_identity() {
+    let mut peer = CeremonyPeer::new();
+    peer.claim_through_pair();
+    peer.finish(&SigningKey::random(&mut OsRng));
+    let app_key: [u8; 32] = peer.session.ceremony().unwrap().app_key().to_bytes().into();
+    let pending = peer.session.pending_identity().expect("pending identity");
+    drop(peer);
+    assert_eq!(pending.private_bytes(), app_key);
 }

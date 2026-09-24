@@ -276,6 +276,11 @@ impl BandSession {
     pub fn enrollment(&self) -> Option<&EnrollmentIdentity> {
         self.enrollment.as_ref()
     }
+    /// The identity FinishChangeOwner commits, once `ceremony_pair_completed`
+    /// succeeded; `None` before that or without a ceremony.
+    pub fn pending_identity(&self) -> Option<EnrollmentIdentity> {
+        self.ceremony.as_ref()?.pending_identity()
+    }
     /// Whether the band's trust proof is checked: the enrollment knows the band's key.
     pub fn band_verified(&self) -> bool {
         self.enrollment
@@ -710,6 +715,10 @@ impl BandSession {
     }
 
     /// Resume the ceremony after the `pair` HTTP exchange.
+    ///
+    /// Persist `pending_identity()` as tentative BEFORE writing these bytes; the
+    /// band may commit ownership even if its confirmation never arrives. Promote
+    /// it on `Event::CeremonyCompleted`.
     pub fn ceremony_pair_completed(
         &mut self,
         signature: &[u8],
@@ -769,7 +778,11 @@ impl BandSession {
             return Ok(Vec::new());
         };
         if kind & 0xff00_0000 == 0x0300_0000 {
-            return Err(perr(failure_message(kind & 0x00ff_ffff)));
+            let code = kind & 0x00ff_ffff;
+            return Err(BandError::OwnershipRejected {
+                code,
+                message: failure_message(code),
+            });
         }
         let ceremony = self
             .ceremony

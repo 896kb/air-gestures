@@ -3,8 +3,9 @@ use thiserror::Error;
 /// Every failure the protocol core can report. Messages are user-facing and
 /// never contain key material.
 ///
-/// `Protocol` / `IdentityMismatch` returned from `BandSession::feed` end the
-/// session. `Busy` means a request was refused and the session is fine.
+/// `Protocol` / `IdentityMismatch` / `OwnershipRejected` returned from
+/// `BandSession::feed` end the session. `Busy` means a request was refused and
+/// the session is fine.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum BandError {
     #[error("{0}")]
@@ -12,6 +13,13 @@ pub enum BandError {
     /// The band rejected our stored owner identity (kinesis `BandIdentityMismatchError`).
     #[error("{0}")]
     IdentityMismatch(String),
+    /// The band refused a step of the ownership ceremony with an identity-service
+    /// result word `0x03xxxxxx`; `code` is its low 24 bits and `message` the
+    /// user-facing text for it. `0x1042` means the band belongs to a different
+    /// Meta account: offer to sign in with that account (or a factory reset).
+    /// Terminal for the session, like `Protocol`.
+    #[error("{message}")]
+    OwnershipRejected { code: u32, message: String },
     /// A request was refused because the session isn't ready or another
     /// change is in flight; the session itself is unaffected.
     #[error("{0}")]
