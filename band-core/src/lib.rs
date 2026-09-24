@@ -10,6 +10,7 @@ pub mod dial;
 pub mod error;
 pub mod events;
 pub mod gestures;
+pub mod identity;
 pub mod proto;
 
 pub use error::{BandError, Result};
