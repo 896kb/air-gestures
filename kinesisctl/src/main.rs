@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::time::Duration;
 
 use clap::{Parser, Subcommand, ValueEnum};
 use kinesisd::config::DialTarget;
@@ -79,6 +80,23 @@ enum Command {
     Signin,
     /// Delete the saved Meta sign-in.
     Signout,
+    /// Raw sEMG readings.
+    Semg {
+        #[command(subcommand)]
+        what: SemgCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum SemgCommand {
+    /// Live 8-channel view in the terminal.
+    View,
+    /// Record raw frames to a JSONL file until Ctrl-C (or --seconds).
+    Record {
+        file: PathBuf,
+        #[arg(long)]
+        seconds: Option<u64>,
+    },
 }
 
 fn socket(dry_run: bool) -> PathBuf {
@@ -332,5 +350,26 @@ fn main() -> ExitCode {
         Command::Forget => simple(&socket, Request::Forget),
         Command::Signin => report(sign_in(&store_dir(cli.dry_run))),
         Command::Signout => report(sign_out(&store_dir(cli.dry_run))),
+        Command::Semg {
+            what: SemgCommand::View,
+        } => report(runtime().block_on(kinesisctl::semg::view(&socket))),
+        Command::Semg {
+            what: SemgCommand::Record { file, seconds },
+        } => {
+            match runtime().block_on(kinesisctl::semg::record(
+                &socket,
+                &file,
+                seconds.map(Duration::from_secs),
+            )) {
+                Ok(frames) => {
+                    println!("recorded {frames} frames to {}", file.display());
+                    ExitCode::SUCCESS
+                }
+                Err(error) => {
+                    eprintln!("{error}");
+                    ExitCode::FAILURE
+                }
+            }
+        }
     }
 }
