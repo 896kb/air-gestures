@@ -163,10 +163,25 @@ async fn a_rejected_identity_is_reported_as_such() {
     transport.set_reject_identity(Some(0x03001043));
     let identity = EnrollmentIdentity::new(SigningKey::random(&mut OsRng), None);
     let link = open(&transport, BandSession::new(Some(identity), None, false)).await;
-    assert!(matches!(
-        link.task.await.unwrap().end,
-        LinkEnd::IdentityRejected(_)
-    ));
+    match link.task.await.unwrap().end {
+        LinkEnd::IdentityRejected { code, message } => {
+            assert_eq!(code, 0x1043);
+            assert!(message.contains("different key"), "{message}");
+        }
+        other => panic!("expected an identity rejection, got {other:?}"),
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_identity_rejection_carries_its_result_code() {
+    let transport = SimTransport::new(SimMode::Enrolled);
+    transport.set_reject_identity(Some(0x03001044));
+    let identity = EnrollmentIdentity::new(SigningKey::random(&mut OsRng), None);
+    let link = open(&transport, BandSession::new(Some(identity), None, false)).await;
+    match link.task.await.unwrap().end {
+        LinkEnd::IdentityRejected { code, .. } => assert_eq!(code, 0x1044),
+        other => panic!("expected an identity rejection, got {other:?}"),
+    }
 }
 
 #[tokio::test(start_paused = true)]

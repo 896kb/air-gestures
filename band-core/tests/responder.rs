@@ -79,7 +79,7 @@ fn a_rejected_identity_fails_the_session() {
     let mut session = BandSession::new(Some(identity), None, false);
     assert!(matches!(
         start(&mut session, &mut band),
-        Err(BandError::IdentityMismatch(_))
+        Err(BandError::IdentityMismatch { code: 0x1043, .. })
     ));
 }
 
@@ -205,7 +205,7 @@ fn an_enrolled_band_with_a_set_owner_rejects_a_different_key() {
     let mut session = BandSession::new(Some(identity), None, false);
     assert!(matches!(
         start(&mut session, &mut band),
-        Err(BandError::IdentityMismatch(_))
+        Err(BandError::IdentityMismatch { code: 0x1043, .. })
     ));
 }
 
@@ -216,7 +216,7 @@ fn a_legacy_band_rejects_an_enrolled_session() {
     let mut session = BandSession::new(Some(identity), None, false);
     assert!(matches!(
         start(&mut session, &mut band),
-        Err(BandError::IdentityMismatch(_))
+        Err(BandError::IdentityMismatch { code: 0x1043, .. })
     ));
 }
 

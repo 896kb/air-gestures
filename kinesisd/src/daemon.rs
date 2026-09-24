@@ -26,6 +26,8 @@ use crate::store::{BandRecord, IdentitySource, Store};
 use crate::transport::Transport;
 
 const TICK: Duration = Duration::from_millis(250);
+/// Identity result code: the band is enrolled to a different key.
+const DIFFERENT_KEY: u32 = 0x1043;
 const PAIRING_RUNNING: &str = "a pairing is running; wait for it to finish";
 
 struct ActiveLink {
@@ -287,10 +289,12 @@ impl<T: Transport, R: Runner, F: ClientFactory> Daemon<T, R, F> {
         self.semg_on = false;
         self.state = LinkState::Idle;
         match &outcome.end {
-            // The unconfirmed claim never committed: drop that key and retry with the confirmed one.
-            LinkEnd::IdentityRejected(_)
-                if used_pending && self.store.load_identity().ok().flatten().is_some() =>
-            {
+            // Only 0x1043 proves the unconfirmed claim never committed: drop
+            // that key and retry with the confirmed one right away.
+            LinkEnd::IdentityRejected {
+                code: DIFFERENT_KEY,
+                ..
+            } if used_pending && self.store.load_identity().ok().flatten().is_some() => {
                 match self.store.discard_pending() {
                     Ok(()) => self.reconnect_at = Some(self.clock.now()),
                     Err(error) => {
@@ -302,11 +306,22 @@ impl<T: Transport, R: Runner, F: ClientFactory> Daemon<T, R, F> {
                 }
                 return;
             }
-            LinkEnd::IdentityRejected(message) => {
+            // 0x1043 on the confirmed key (or on a pending one with nothing to
+            // fall back to): the band belongs to another key; claiming it again
+            // is the only way back.
+            LinkEnd::IdentityRejected {
+                code: DIFFERENT_KEY,
+                message,
+            } => {
                 self.error = Some(format!(
                     "{message} Run `kinesisctl pair` to claim the band again."
                 ));
                 self.wants_connection = false;
+            }
+            // Any other code may be transient: keep the key and retry with backoff.
+            LinkEnd::IdentityRejected { message, .. } => {
+                tracing::warn!("band rejected the owner key for now: {message}");
+                self.error = Some(message.clone());
             }
             LinkEnd::Closed => {}
             other => {

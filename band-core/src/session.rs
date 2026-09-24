@@ -842,14 +842,19 @@ impl BandSession {
         };
         if kind & 0xff00_0000 == 0x0300_0000 && frame.channel == 2 {
             if kind != 0x03001000 {
-                if kind == 0x03001043 {
-                    return Err(BandError::IdentityMismatch(
-                        "band enrolled to a different key. forget the stored band identity to reconnect without it.".into(),
-                    ));
+                let code = kind & 0x00ff_ffff;
+                if code == 0x1043 {
+                    return Err(BandError::IdentityMismatch {
+                        code,
+                        message: "band enrolled to a different key. forget the stored band identity to reconnect without it.".into(),
+                    });
                 }
-                return Err(BandError::IdentityMismatch(format!(
-                    "the band rejected the stored identity ({kind:x}). try reconnecting."
-                )));
+                return Err(BandError::IdentityMismatch {
+                    code,
+                    message: format!(
+                        "the band rejected the stored identity ({kind:x}). try reconnecting."
+                    ),
+                });
             }
             self.app_trusted = true;
         } else if kind == 0x02001001 && frame.channel & 0x8000 != 0 {

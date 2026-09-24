@@ -122,8 +122,17 @@ fn enrolled_startup_verifies_both_trust_directions_before_link_setup() {
 fn a_different_key_rejection_surfaces_the_identity_error() {
     let mut peer = Enrolled::new(true);
     match peer.send(&result(0x03001043)) {
-        Err(BandError::IdentityMismatch(message)) => {
-            assert!(message.contains("band enrolled to a different key"))
+        Err(BandError::IdentityMismatch { code, message }) => {
+            assert_eq!(code, 0x1043);
+            assert!(message.contains("band enrolled to a different key"));
+            assert_eq!(
+                BandError::IdentityMismatch {
+                    code,
+                    message: message.clone()
+                }
+                .to_string(),
+                message
+            );
         }
         other => panic!("expected an identity mismatch, got {other:?}"),
     }
@@ -133,10 +142,10 @@ fn a_different_key_rejection_surfaces_the_identity_error() {
 #[test]
 fn any_other_identity_result_is_a_mismatch_too() {
     let mut peer = Enrolled::new(true);
-    assert!(matches!(
-        peer.send(&result(0x03001044)),
-        Err(BandError::IdentityMismatch(_))
-    ));
+    match peer.send(&result(0x03001044)) {
+        Err(BandError::IdentityMismatch { code, .. }) => assert_eq!(code, 0x1044),
+        other => panic!("expected an identity mismatch, got {other:?}"),
+    }
 }
 
 #[test]

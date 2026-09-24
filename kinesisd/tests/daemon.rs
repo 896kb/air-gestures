@@ -35,6 +35,16 @@ struct Harness {
 }
 
 fn start<F: ClientFactory>(transport: SimTransport, paired: bool, factory: F) -> Harness {
+    start_seeded(transport, paired, factory, |_| {})
+}
+
+/// Like `start`, with `seed` run on the store before the daemon exists.
+fn start_seeded<F: ClientFactory>(
+    transport: SimTransport,
+    paired: bool,
+    factory: F,
+    seed: impl FnOnce(&Store),
+) -> Harness {
     let dir = tempfile::tempdir().unwrap();
     let store = Store::open(dir.path().join("state")).unwrap();
     let config_path = dir.path().join("config.toml");
@@ -50,6 +60,7 @@ fn start<F: ClientFactory>(transport: SimTransport, paired: bool, factory: F) ->
         store.save_identity(&identity).unwrap();
         transport.set_owner(&identity);
     }
+    seed(&store);
     let runner = RecordingRunner::default();
     let daemon = Daemon::new(
         Arc::new(transport.clone()),
@@ -103,6 +114,21 @@ impl Harness {
                 self.status.borrow()
             )
         })
+    }
+
+    /// Let (paused) time run until the band has been opened `count` times.
+    async fn opened(&self, count: usize) {
+        for _ in 0..600 {
+            if self.transport.opens() >= count {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+        panic!(
+            "only {} opens; last status {:?}",
+            self.transport.opens(),
+            self.status.borrow()
+        );
     }
 
     async fn connected(&mut self) {
@@ -438,4 +464,57 @@ async fn connect_without_a_paired_band_is_an_error() {
     let response = daemon.call(Request::Connect).await;
     assert!(!response.ok);
     assert!(response.error.unwrap().contains("kinesisctl pair"));
+}
+
+fn random_identity(transport: &SimTransport) -> EnrollmentIdentity {
+    let band_key = verifying_key_from_point64(&transport.band_point()).unwrap();
+    EnrollmentIdentity::new(SigningKey::random(&mut OsRng), Some(band_key))
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_pending_key_rejected_with_another_code_is_kept_and_retried() {
+    let transport = SimTransport::new(SimMode::Enrolled);
+    let pending = random_identity(&transport);
+    let mut daemon = start_seeded(transport.clone(), true, fake(&transport), |store| {
+        store.save_pending(&pending).unwrap();
+    });
+    // The band has committed the pending claim, but answers 0x1044 for now.
+    transport.set_owner(&pending);
+    transport.set_reject_identity(Some(0x03001044));
+    daemon.opened(3).await;
+    assert!(
+        daemon.store.load_pending().unwrap().is_some(),
+        "only 0x1043 proves the claim didn't commit"
+    );
+    assert_eq!(daemon.status.borrow().state, LinkState::Idle);
+    transport.set_reject_identity(None);
+    daemon.connected().await;
+    assert!(daemon.store.load_pending().unwrap().is_none());
+    assert_eq!(
+        daemon
+            .store
+            .load_identity()
+            .unwrap()
+            .unwrap()
+            .private_bytes(),
+        pending.private_bytes()
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_confirmed_key_rejected_with_another_code_is_retried() {
+    let transport = SimTransport::new(SimMode::Enrolled);
+    transport.set_reject_identity(Some(0x03001044));
+    let mut daemon = start(transport.clone(), true, fake(&transport));
+    daemon
+        .wait("the transient rejection", |s| {
+            s.error
+                .as_deref()
+                .is_some_and(|e| e.contains("rejected the stored identity"))
+        })
+        .await;
+    daemon.opened(3).await;
+    transport.set_reject_identity(None);
+    daemon.connected().await;
+    assert!(daemon.status.borrow().error.is_none());
 }

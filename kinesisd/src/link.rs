@@ -59,8 +59,13 @@ pub enum LinkEnd {
     StartupTimeout,
     /// The band closed the channel.
     StreamEnded,
-    /// The band rejected our stored owner key.
-    IdentityRejected(String),
+    /// The band rejected our stored owner key; `code` is the result word's low
+    /// 24 bits (`0x1043` = enrolled to a different key, the only proof it
+    /// doesn't accept this key).
+    IdentityRejected {
+        code: u32,
+        message: String,
+    },
     /// The band rejected the ownership claim (`0x1042` = a different Meta account).
     OwnershipRejected {
         code: u32,
@@ -76,8 +81,9 @@ impl std::fmt::Display for LinkEnd {
             LinkEnd::Stalled => f.write_str("the band stopped responding"),
             LinkEnd::StartupTimeout => f.write_str("the band took too long to respond"),
             LinkEnd::StreamEnded => f.write_str("the band closed the connection"),
-            LinkEnd::IdentityRejected(message) | LinkEnd::Failed(message) => f.write_str(message),
-            LinkEnd::OwnershipRejected { message, .. } => f.write_str(message),
+            LinkEnd::Failed(message) => f.write_str(message),
+            LinkEnd::IdentityRejected { message, .. }
+            | LinkEnd::OwnershipRejected { message, .. } => f.write_str(message),
         }
     }
 }
@@ -91,7 +97,9 @@ pub struct LinkOutcome {
 
 fn from_error(error: BandError) -> LinkEnd {
     match error {
-        BandError::IdentityMismatch(message) => LinkEnd::IdentityRejected(message),
+        BandError::IdentityMismatch { code, message } => {
+            LinkEnd::IdentityRejected { code, message }
+        }
         BandError::OwnershipRejected { code, message } => {
             LinkEnd::OwnershipRejected { code, message }
         }

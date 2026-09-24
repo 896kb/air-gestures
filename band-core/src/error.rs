@@ -10,9 +10,12 @@ use thiserror::Error;
 pub enum BandError {
     #[error("{0}")]
     Protocol(String),
-    /// The band rejected our stored owner identity (kinesis `BandIdentityMismatchError`).
-    #[error("{0}")]
-    IdentityMismatch(String),
+    /// The band rejected our stored owner identity (kinesis `BandIdentityMismatchError`)
+    /// with an identity-service result word `0x03xxxxxx` on channel 2; `code` is
+    /// its low 24 bits. Only `0x1043` ("enrolled to a different key") proves the
+    /// band does not accept this key; other codes may be transient.
+    #[error("{message}")]
+    IdentityMismatch { code: u32, message: String },
     /// The band refused a step of the ownership ceremony with an identity-service
     /// result word `0x03xxxxxx`; `code` is its low 24 bits and `message` the
     /// user-facing text for it. `0x1042` means the band belongs to a different

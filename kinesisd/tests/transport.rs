@@ -110,7 +110,7 @@ async fn a_rejected_claim_leaves_the_band_unowned_and_still_legacy() {
     let mut io = transport.open(SIM_ADDRESS).await.unwrap();
     let mut session = BandSession::new(Some(identity), None, false);
     match pump(&mut io, &mut session, &transport).await {
-        Err(BandError::IdentityMismatch(_)) => {}
+        Err(BandError::IdentityMismatch { code: 0x1043, .. }) => {}
         other => panic!("expected an identity mismatch, got {other:?}"),
     }
 }
@@ -138,7 +138,7 @@ async fn a_rejected_claim_on_an_already_enrolled_band_still_resets_to_pairing_mo
     let mut io = transport.open(SIM_ADDRESS).await.unwrap();
     let mut session = BandSession::new(Some(identity), None, false);
     match pump(&mut io, &mut session, &transport).await {
-        Err(BandError::IdentityMismatch(_)) => {}
+        Err(BandError::IdentityMismatch { code: 0x1043, .. }) => {}
         other => panic!("expected an identity mismatch, got {other:?}"),
     }
 }

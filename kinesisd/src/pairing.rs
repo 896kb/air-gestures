@@ -227,7 +227,7 @@ pub async fn pair_band<T: Transport, C: PairClient>(
             code: 0x1042,
             message,
         } => PairFailure::WrongAccount(message),
-        LinkEnd::OwnershipRejected { message, .. } | LinkEnd::IdentityRejected(message) => {
+        LinkEnd::OwnershipRejected { message, .. } | LinkEnd::IdentityRejected { message, .. } => {
             PairFailure::Rejected(message)
         }
         LinkEnd::Failed(message) => PairFailure::Failed(message),
