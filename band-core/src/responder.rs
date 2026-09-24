@@ -41,6 +41,8 @@ pub struct Responder {
     pub reject_identity: Option<u32>,
     /// Answer StartChangeOwner with this result word (e.g. 0x03001042, wrong account).
     pub reject_claim: Option<u32>,
+    /// Answer FinishChangeOwner with this result word (the band does not commit).
+    pub reject_finish: Option<u32>,
     /// ConfigResp field 10: 0 = right, 1 = left.
     pub hand: u64,
     /// (level, charging flag).
@@ -80,6 +82,7 @@ impl Responder {
             band_key,
             reject_identity: None,
             reject_claim: None,
+            reject_finish: None,
             hand: 0,
             battery: (80, Some(0)),
             silent: false,
@@ -265,6 +268,9 @@ impl Responder {
                 }
             },
             (0x8002, Some(0x02002004)) => {
+                if let Some(code) = self.reject_finish {
+                    return reply(band, 2, code, &[]);
+                }
                 self.finish_seen = true;
                 self.mode = SimMode::Enrolled;
                 reply(band, 2, 0x02002005, &[])

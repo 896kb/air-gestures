@@ -59,6 +59,8 @@ pub async fn pair_band<T: Transport, C: PairClient>(
     clock: Clock,
     mut progress: impl FnMut(&str) + Send,
 ) -> Result<BandRecord, PairFailure> {
+    // Restored if this run's claim is abandoned or rejected before the band commits.
+    let previous_band = store.load_band().ok().flatten();
     progress("looking for a band in pairing mode");
     let found = transport
         .scan(Duration::from_secs(10))
@@ -95,6 +97,7 @@ pub async fn pair_band<T: Transport, C: PairClient>(
     let pending_record = record.clone();
     let persisted_this_run = Arc::new(AtomicBool::new(false));
     let persisted = persisted_this_run.clone();
+    let closure_previous = previous_band.clone();
     let session = BandSession::new(None, Some(OwnershipCeremony::default()), false);
     let link = tokio::spawn(run_link(
         io,
@@ -104,7 +107,12 @@ pub async fn pair_band<T: Transport, C: PairClient>(
         event_tx,
         move |identity| {
             pending_store.save_band(&pending_record)?;
-            pending_store.save_pending(identity)?;
+            if let Err(error) = pending_store.save_pending(identity) {
+                // The claim is abandoned before FinishChangeOwner is written:
+                // put the previous band record back (best effort).
+                let _ = restore_band(&pending_store, closure_previous.as_ref());
+                return Err(error);
+            }
             persisted.store(true, Ordering::SeqCst);
             Ok(())
         },
@@ -182,17 +190,16 @@ pub async fn pair_band<T: Transport, C: PairClient>(
     // Band-record rule: band.json is kept when this run confirmed an owner, or
     // saved a pending key the band may have committed to. A pending key from an
     // earlier run never counts. An explicit ownership rejection means the band
-    // did not commit: drop this run's pending key, and keep band.json only if a
-    // confirmed owner identity exists.
+    // did not commit: drop this run's pending key and put back the band record
+    // that was there before this run (or none), so the old owner key and its
+    // band stay paired.
     if !saved && persisted && matches!(outcome.end, LinkEnd::OwnershipRejected { .. }) {
         store.discard_pending().map_err(|error| {
             PairFailure::Failed(format!("could not drop the rejected owner key: {error}"))
         })?;
-        if store.load_identity().ok().flatten().is_none() {
-            store.forget_band().map_err(|error| {
-                PairFailure::Failed(format!("could not drop the band record: {error}"))
-            })?;
-        }
+        restore_band(store, previous_band.as_ref()).map_err(|error| {
+            PairFailure::Failed(format!("could not restore the band record: {error}"))
+        })?;
     } else if saved || persisted {
         // Belt and braces: the closure / completion paths already saved it.
         store.save_band(&record).map_err(|error| {
@@ -216,4 +223,12 @@ pub async fn pair_band<T: Transport, C: PairClient>(
         LinkEnd::Failed(message) => PairFailure::Failed(message),
         other => PairFailure::Failed(format!("the claim didn't finish: {other}")),
     })
+}
+
+/// Put back the band record from before this pairing run (or none).
+fn restore_band(store: &Store, previous: Option<&BandRecord>) -> std::io::Result<()> {
+    match previous {
+        Some(band) => store.save_band(band),
+        None => store.forget_band(),
+    }
 }

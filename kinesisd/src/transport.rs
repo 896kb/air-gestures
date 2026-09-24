@@ -65,6 +65,7 @@ struct SimState {
     band_key: SigningKey,
     reject_identity: Option<u32>,
     reject_claim: Option<u32>,
+    reject_finish: Option<u32>,
     /// SHA-256 of the owner's app point; kept across connections like a real band.
     owner: Option<[u8; 32]>,
     /// ConfigResp hand (0 right, 1 left); kept across connections.
@@ -94,6 +95,7 @@ impl SimTransport {
                 band_key,
                 reject_identity: None,
                 reject_claim: None,
+                reject_finish: None,
                 owner: None,
                 hand: 0,
                 inject: None,
@@ -118,6 +120,11 @@ impl SimTransport {
 
     pub fn set_reject_claim(&self, code: Option<u32>) {
         self.lock().reject_claim = code;
+    }
+
+    /// Answer FinishChangeOwner with this result word; the band doesn't commit.
+    pub fn set_reject_finish(&self, code: Option<u32>) {
+        self.lock().reject_finish = code;
     }
 
     /// Make the band already owned by `identity` (as if a claim had happened).
@@ -188,6 +195,7 @@ impl Transport for SimTransport {
             let mut responder = Responder::new(mode, state.band_key.clone());
             responder.reject_identity = state.reject_identity;
             responder.reject_claim = state.reject_claim;
+            responder.reject_finish = state.reject_finish;
             responder.set_owner(state.owner);
             responder.hand = state.hand;
             responder

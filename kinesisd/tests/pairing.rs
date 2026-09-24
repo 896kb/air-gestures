@@ -240,3 +240,43 @@ async fn a_stale_pending_key_does_not_keep_a_failed_claims_band() {
     assert!(matches!(failure, PairFailure::SessionExpired(_)));
     assert!(store.load_band().unwrap().is_none());
 }
+
+#[tokio::test(start_paused = true)]
+async fn a_claim_rejected_at_finish_restores_the_previous_band() {
+    let transport = SimTransport::new(SimMode::Legacy);
+    transport.set_reject_finish(Some(0x03001045));
+    let client = FakeFactory {
+        device_point: Some(transport.band_point()),
+        fail: None,
+    }
+    .client(None)
+    .unwrap();
+    let (_dir, store) = store();
+    let previous = kinesisd::store::BandRecord {
+        address: "11:22:33:44:55:66".into(),
+        name: "Meta Band A".into(),
+    };
+    let old = band_core::identity::EnrollmentIdentity::new(
+        p256::ecdsa::SigningKey::random(&mut rand_core::OsRng),
+        None,
+    );
+    store.save_band(&previous).unwrap();
+    store.save_identity(&old).unwrap();
+    let failure = pair_band(
+        &transport,
+        &client,
+        &store,
+        None,
+        Clock::new(),
+        |_: &str| {},
+    )
+    .await
+    .unwrap_err();
+    assert!(matches!(failure, PairFailure::Rejected(_)), "{failure:?}");
+    assert_eq!(store.load_band().unwrap(), Some(previous));
+    assert!(store.load_pending().unwrap().is_none());
+    assert_eq!(
+        store.load_identity().unwrap().unwrap().private_bytes(),
+        old.private_bytes()
+    );
+}
