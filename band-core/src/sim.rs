@@ -30,18 +30,27 @@ pub struct SimBand {
     pub stamp: u64,
 }
 
-impl SimBand {
-    /// Run the transport handshake against a fresh `session` (fed one byte at a
-    /// time at time 100) and return the band plus the frames the host sent once
-    /// encryption was up.
-    pub fn connect(session: &mut BandSession) -> Result<(SimBand, Vec<DataXFrame>)> {
-        let request = session.request()?;
-        if request.len() < 12 {
-            return Err(perr("sim: request is too short"));
+/// The band side of the transport handshake, driven from raw host bytes.
+pub struct SimHandshake {
+    transport: SecretKey,
+    transport_point: Vec<u8>,
+    band_challenge: Vec<u8>,
+    band_seed: Vec<u8>,
+    iv: [u8; 16],
+    host_point: Vec<u8>,
+    host_challenge: Vec<u8>,
+}
+
+impl SimHandshake {
+    /// Answer the host's RequestEncryption frame (exactly one frame) with the
+    /// band's RequestEncryption + EnableEncryption bytes.
+    pub fn accept(host_request: &[u8]) -> Result<(SimHandshake, Vec<u8>)> {
+        if host_request.len() < 12 {
+            return Err(perr("sim: short RequestEncryption"));
         }
-        let local = ProtoFields::parse(&request[12..])?;
-        let host_point = local.bytes(1)?.to_vec();
-        let host_challenge = local.bytes(2)?.to_vec();
+        let local = ProtoFields::parse(&host_request[12..])?;
+        let host_point = local.bytes_len(1, 64)?.to_vec();
+        let host_challenge = local.bytes_len(2, 16)?.to_vec();
         let mut scalar = [0u8; 32];
         scalar[31] = 1;
         let transport = SecretKey::from_slice(&scalar).expect("scalar 1 is a valid key");
@@ -73,8 +82,73 @@ impl SimBand {
             ]
             .concat(),
         )?;
+        let handshake = SimHandshake {
+            transport,
+            transport_point,
+            band_challenge,
+            band_seed,
+            iv,
+            host_point,
+            host_challenge,
+        };
+        Ok((handshake, [peer_request, peer_enable].concat()))
+    }
+
+    /// Take the host's EnableEncryption frame (exactly one frame) and derive both directions.
+    pub fn finish(self, host_enable: &[u8]) -> Result<SimBand> {
+        if host_enable.len() < 8 {
+            return Err(perr("sim: short EnableEncryption"));
+        }
+        let enable = ProtoFields::parse(&host_enable[8..])?;
+        if enable.bytes(1)? != self.host_point.as_slice() || enable.integer(5)? != 3 {
+            return Err(perr("sim: unexpected EnableEncryption"));
+        }
+        let host_key = PublicKey::from_sec1_bytes(&[&[4u8][..], &self.host_point].concat())
+            .map_err(|_| perr("sim: invalid host key"))?;
+        let shared = ecdh::diffie_hellman(self.transport.to_nonzero_scalar(), host_key.as_affine());
+        let host_seed = enable.bytes_len(2, 32)?.to_vec();
+        let host_iv: [u8; 16] = enable.bytes_len(3, 16)?.try_into().expect("length checked");
+        let host_counter =
+            u32::try_from(enable.integer(4)?).map_err(|_| perr("sim: invalid counter"))?;
+        Ok(SimBand {
+            sender: AirShieldCipher::new(
+                AirShieldKeys::derive(
+                    shared.raw_secret_bytes().as_slice(),
+                    &self.host_challenge,
+                    &self.band_seed,
+                )?,
+                self.iv,
+                42,
+            ),
+            receiver: AirShieldReceiver::new(AirShieldCipher::new(
+                AirShieldKeys::derive(
+                    shared.raw_secret_bytes().as_slice(),
+                    &self.band_challenge,
+                    &host_seed,
+                )?,
+                host_iv,
+                host_counter,
+            )),
+            datax: DataXReceiver::default(),
+            transport_point: self.transport_point,
+            host_point: self.host_point,
+            host_challenge: self.host_challenge,
+            host_seed,
+            band_challenge: self.band_challenge,
+            band_seed: self.band_seed,
+            stamp: 1_000_000,
+        })
+    }
+}
+
+impl SimBand {
+    /// Run the transport handshake against a fresh `session` (fed one byte at a
+    /// time at time 100) and return the band plus the frames the host sent once
+    /// encryption was up.
+    pub fn connect(session: &mut BandSession) -> Result<(SimBand, Vec<DataXFrame>)> {
+        let (handshake, peer) = SimHandshake::accept(&session.request()?)?;
         let mut output = Vec::new();
-        for byte in [peer_request, peer_enable].concat() {
+        for byte in peer {
             let result = session.feed(&[byte], 100.0)?;
             if !result.events.is_empty() {
                 return Err(perr("sim: unexpected events during the handshake"));
@@ -88,38 +162,7 @@ impl SimBand {
         if size < 8 || output.len() < size {
             return Err(perr("sim: truncated EnableEncryption"));
         }
-        let enable = ProtoFields::parse(&output[8..size])?;
-        if enable.bytes(1)? != host_point.as_slice() || enable.integer(5)? != 3 {
-            return Err(perr("sim: unexpected EnableEncryption"));
-        }
-        let host_key = PublicKey::from_sec1_bytes(&[&[4u8][..], &host_point].concat())
-            .map_err(|_| perr("sim: invalid host key"))?;
-        let shared = ecdh::diffie_hellman(transport.to_nonzero_scalar(), host_key.as_affine());
-        let secret = shared.raw_secret_bytes().as_slice();
-        let host_seed = enable.bytes(2)?.to_vec();
-        let host_iv: [u8; 16] = enable.bytes_len(3, 16)?.try_into().expect("length checked");
-        let host_counter =
-            u32::try_from(enable.integer(4)?).map_err(|_| perr("sim: invalid counter"))?;
-        let mut band = SimBand {
-            sender: AirShieldCipher::new(
-                AirShieldKeys::derive(secret, &host_challenge, &band_seed)?,
-                iv,
-                42,
-            ),
-            receiver: AirShieldReceiver::new(AirShieldCipher::new(
-                AirShieldKeys::derive(secret, &band_challenge, &host_seed)?,
-                host_iv,
-                host_counter,
-            )),
-            datax: DataXReceiver::default(),
-            transport_point,
-            host_point,
-            host_challenge,
-            host_seed,
-            band_challenge,
-            band_seed,
-            stamp: 1_000_000,
-        };
+        let mut band = handshake.finish(&output[..size])?;
         let startup = band.requests(&output[size..])?;
         Ok((band, startup))
     }

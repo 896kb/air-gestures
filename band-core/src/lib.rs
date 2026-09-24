@@ -13,6 +13,7 @@ pub mod events;
 pub mod gestures;
 pub mod identity;
 pub mod proto;
+pub mod responder;
 pub mod session;
 pub mod sim;
 
