@@ -5,6 +5,7 @@
 //! typed events back; nothing here touches sockets, clocks or files.
 
 pub mod airshield;
+pub mod ceremony;
 pub mod datax;
 pub mod dial;
 pub mod error;

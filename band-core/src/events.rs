@@ -1,7 +1,9 @@
 //! Typed values the session reports (kinesis `Gestures.swift` BandEvent/BandGesture,
 //! `EMGReadings.swift`, `BandBatteryStatus.swift`).
 
+use crate::ceremony::CeremonyHttpRequest;
 use crate::error::{perr, Result};
+use crate::identity::EnrollmentIdentity;
 use crate::proto::ProtoFields;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -142,4 +144,9 @@ pub enum Event {
     RawEmgState(bool),
     RawEmgFailure(String),
     CeremonyStage(String),
+    /// The session needs an ownership HTTP exchange; resume it with
+    /// `BandSession::ceremony_pair_request_completed` / `ceremony_pair_completed`.
+    CeremonyHttp(CeremonyHttpRequest),
+    /// The band confirmed this host as owner. Persist the identity; trust setup continues.
+    CeremonyCompleted(EnrollmentIdentity),
 }
