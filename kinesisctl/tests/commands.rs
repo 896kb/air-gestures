@@ -82,6 +82,25 @@ async fn subscriptions_deliver_changes() {
     let mut subscription = client::Subscription::status(&daemon.socket).await.unwrap();
     let first: Status = subscription.next_status().await.unwrap();
     assert_eq!(first.version, 1);
+
+    let mut state = first.state;
+    while state != LinkState::Connected {
+        let next = tokio::time::timeout(
+            std::time::Duration::from_secs(20),
+            subscription.next_status(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        state = next.state;
+    }
+
+    // Now that we're connected (whether the first status already was, or we
+    // waited for it), trigger a change and make sure the subscription
+    // actually reports it, rather than replaying a status that predates it.
+    client::request(&daemon.socket, &Request::Pause)
+        .await
+        .unwrap();
     loop {
         let next = tokio::time::timeout(
             std::time::Duration::from_secs(20),
@@ -90,10 +109,40 @@ async fn subscriptions_deliver_changes() {
         .await
         .unwrap()
         .unwrap();
-        if next.state == LinkState::Connected {
+        if next.paused {
             break;
         }
     }
+}
+
+#[tokio::test]
+async fn a_rejected_subscribe_does_not_hang() {
+    use tokio::io::AsyncWriteExt;
+
+    let dir = tempfile::tempdir().unwrap();
+    let socket_path = dir.path().join("reject.sock");
+    let listener = tokio::net::UnixListener::bind(&socket_path).unwrap();
+    let server = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.unwrap();
+        let (_read, mut write) = stream.into_split();
+        write
+            .write_all(b"{\"ok\":false,\"error\":\"bad request\"}\n")
+            .await
+            .unwrap();
+        // Keep the connection open: a prompt `None` here must come from
+        // seeing `ok: false`, not from the daemon hanging up (EOF).
+        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+    });
+
+    let mut subscription = client::Subscription::status(&socket_path).await.unwrap();
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        subscription.next_status(),
+    )
+    .await
+    .expect("next_status() should return promptly on a rejected subscribe, not hang");
+    assert!(result.is_none());
+    server.abort();
 }
 
 #[test]

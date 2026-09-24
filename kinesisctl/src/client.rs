@@ -88,11 +88,14 @@ impl Subscription {
         Self::open(path, &Request::SubscribeSemg).await
     }
 
+    /// `None` on EOF, a broken line, or a rejected subscribe (`ok: false`):
+    /// none of those ever produce a status or sEMG frame, so a caller waiting
+    /// on one must not be left hanging.
     async fn next_response(&mut self) -> Option<Response> {
         loop {
             let line = self.lines.next_line().await.ok()??;
             if let Ok(response) = serde_json::from_str::<Response>(&line) {
-                return Some(response);
+                return if response.ok { Some(response) } else { None };
             }
         }
     }

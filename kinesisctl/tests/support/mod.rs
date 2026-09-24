@@ -29,7 +29,43 @@ pub struct TestDaemon {
 pub async fn start(mode: SimMode, paired: bool) -> TestDaemon {
     let dir = tempfile::tempdir().unwrap();
     let socket = dir.path().join("kinesis.sock");
-    let store = Store::open(dir.path().join("state")).unwrap();
+    let (transport, runner, store) = spawn(&socket, dir.path(), mode, paired).await;
+    TestDaemon {
+        socket,
+        transport,
+        runner,
+        store,
+        dir,
+    }
+}
+
+/// Like `start`, but binds the daemon's control socket at `socket` instead of
+/// picking a fresh temp dir for it — for tests that need to see what a
+/// client observes at a path before any daemon exists there. The caller owns
+/// (and must keep alive) `socket`'s directory; the daemon's own state (store,
+/// config) lives in a separate private temp dir, held by the returned
+/// `TestDaemon` so it isn't cleaned up while the daemon is still running.
+pub async fn start_at(socket: PathBuf, mode: SimMode, paired: bool) -> TestDaemon {
+    let dir = tempfile::tempdir().unwrap();
+    let (transport, runner, store) = spawn(&socket, dir.path(), mode, paired).await;
+    TestDaemon {
+        socket,
+        transport,
+        runner,
+        store,
+        dir,
+    }
+}
+
+/// Set up the store/transport/daemon and start serving `socket`; `state_dir`
+/// holds the store and config file (a subdirectory of it each).
+async fn spawn(
+    socket: &std::path::Path,
+    state_dir: &std::path::Path,
+    mode: SimMode,
+    paired: bool,
+) -> (SimTransport, RecordingRunner, Store) {
+    let store = Store::open(state_dir.join("state")).unwrap();
     let transport = SimTransport::new(mode);
     if paired {
         store
@@ -53,9 +89,9 @@ pub async fn start(mode: SimMode, paired: bool) -> TestDaemon {
         runner.clone(),
         factory,
         store.clone(),
-        dir.path().join("config.toml"),
+        state_dir.join("config.toml"),
     );
-    let listener = ipc::bind(&socket).unwrap();
+    let listener = ipc::bind(socket).unwrap();
     let (calls, call_rx) = mpsc::channel(16);
     tokio::spawn(ipc::serve(
         listener,
@@ -66,13 +102,7 @@ pub async fn start(mode: SimMode, paired: bool) -> TestDaemon {
         },
     ));
     tokio::spawn(daemon.run(call_rx, std::future::pending()));
-    TestDaemon {
-        socket,
-        transport,
-        runner,
-        store,
-        dir,
-    }
+    (transport, runner, store)
 }
 
 impl TestDaemon {

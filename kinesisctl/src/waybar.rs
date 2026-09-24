@@ -47,20 +47,32 @@ pub fn line(status: Option<&Status>) -> Value {
     } else {
         json!(base)
     };
-    json!({ "text": text, "tooltip": tooltip(status), "class": class, "alt": base })
+    json!({ "text": escape(&text), "tooltip": tooltip(status), "class": class, "alt": base })
+}
+
+/// Waybar renders `text` and `tooltip` as Pango markup: anything free-form
+/// (band name, error text, pairing stage, gesture name) must be escaped so a
+/// literal `&`, `<` or `>` in it can't be read as markup.
+fn escape(text: &str) -> String {
+    text.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
 }
 
 fn tooltip(status: &Status) -> String {
-    let mut lines = vec![status.band.clone().unwrap_or_else(|| "Neural Band".into())];
+    let mut lines = vec![escape(status.band.as_deref().unwrap_or("Neural Band"))];
     lines.push(match status.state {
         LinkState::Idle => "not connected".into(),
         LinkState::Connecting => "connecting…".into(),
         LinkState::Connected if status.paused => "connected · controls paused".into(),
         LinkState::Connected => "connected".into(),
-        LinkState::Pairing => format!("pairing: {}", status.pairing.as_deref().unwrap_or("…")),
+        LinkState::Pairing => format!(
+            "pairing: {}",
+            escape(status.pairing.as_deref().unwrap_or("…"))
+        ),
     });
     if let Some(hand) = &status.hand {
-        lines.push(format!("hand: {hand}"));
+        lines.push(format!("hand: {}", escape(hand)));
     }
     let dial = match status.dial {
         DialTarget::Volume => "volume",
@@ -69,7 +81,7 @@ fn tooltip(status: &Status) -> String {
     };
     lines.push(format!("dial: {dial}"));
     if let Some(gesture) = &status.last_gesture {
-        lines.push(format!("last: {gesture} ({})", status.gestures));
+        lines.push(format!("last: {} ({})", escape(gesture), status.gestures));
     }
     if let Some(seconds) = status.reconnect_in {
         lines.push(format!("reconnecting in {seconds} s"));
@@ -78,7 +90,7 @@ fn tooltip(status: &Status) -> String {
         .into_iter()
         .flatten()
     {
-        lines.push(format!("⚠ {message}"));
+        lines.push(format!("⚠ {}", escape(message)));
     }
     lines.push("click: connect/disconnect · right: pause · middle: dial".into());
     lines.join("\n")

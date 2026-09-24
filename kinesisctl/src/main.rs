@@ -107,8 +107,15 @@ fn main() -> ExitCode {
             waybar: true,
             follow: false,
         } => {
+            use std::io::Write;
             let status = runtime().block_on(kinesisctl::client::status(&socket)).ok();
-            println!("{}", kinesisctl::waybar::line(status.as_ref()));
+            // Ignore write failures (e.g. a broken pipe): waybar may already
+            // have stopped reading, and that's not a reason to panic.
+            let _ = writeln!(
+                std::io::stdout(),
+                "{}",
+                kinesisctl::waybar::line(status.as_ref())
+            );
             ExitCode::SUCCESS
         }
         Command::Status {
@@ -133,6 +140,10 @@ fn main() -> ExitCode {
                 .map(|s| s.state);
             match state {
                 Ok(LinkState::Idle) => simple(&socket, Request::Connect),
+                Ok(LinkState::Pairing) => {
+                    println!("a pairing is running");
+                    ExitCode::SUCCESS
+                }
                 Ok(_) => simple(&socket, Request::Disconnect),
                 Err(error) => {
                     eprintln!("{error}");

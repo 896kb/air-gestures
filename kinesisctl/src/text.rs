@@ -55,11 +55,14 @@ pub fn describe(status: &Status) -> String {
     for (label, message) in [
         ("error", &status.error),
         ("pairing failed", &status.pairing_error),
-        ("config", &status.config_error),
     ] {
         if let Some(message) = message {
             lines.push(format!("{label}: {message}"));
         }
+    }
+    // Already reads "config: ..." (the daemon prefixes it itself).
+    if let Some(message) = &status.config_error {
+        lines.push(message.clone());
     }
     lines.join("\n")
 }
