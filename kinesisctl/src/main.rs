@@ -64,6 +64,9 @@ enum Command {
     /// Forget the band (keys, record, Bluetooth bond). Factory reset it afterwards.
     Forget,
     /// Sign in to Meta (needed once to claim a band). Opens Meta's own page.
+    ///
+    /// Always talks to the real Meta service; `--dry-run` only picks the
+    /// dry-run state directory the session is saved in.
     Signin,
     /// Delete the saved Meta sign-in.
     Signout,
@@ -92,7 +95,10 @@ fn sign_in(store_dir: &std::path::Path) -> Result<(), String> {
         "Opening Meta's sign-in page. You type your password there; kinesis only keeps the resulting session token."
     );
     let tokens = runtime().block_on(metaauth::tokens_query())?;
-    let Some(callback) = kinesisctl::signin::open(&metaauth::auth_entry_url(&tokens))? else {
+    let native = tokens.native_sso_token.clone();
+    let accept = move |url: &str| metaauth::accepts_callback(url, &native);
+    let Some(callback) = kinesisctl::signin::open(&metaauth::auth_entry_url(&tokens), accept)?
+    else {
         return Err("sign-in cancelled".into());
     };
     let (token, blob) = metaauth::parse_callback(&callback).unwrap_or((None, None));

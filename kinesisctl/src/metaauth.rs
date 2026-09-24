@@ -100,6 +100,15 @@ pub fn parse_callback(url: &str) -> Option<(Option<String>, Option<String>)> {
     Some((token, blob))
 }
 
+/// A callback the window may accept: a non-empty blob and the token digest of
+/// `native_sso_token`.
+pub fn accepts_callback(url: &str, native_sso_token: &str) -> bool {
+    matches!(
+        parse_callback(url),
+        Some((token, Some(blob))) if !blob.is_empty() && callback_matches(token.as_deref(), native_sso_token)
+    )
+}
+
 fn percent_decode(text: &str) -> String {
     let bytes = text.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
