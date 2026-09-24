@@ -26,6 +26,8 @@ use crate::store::{BandRecord, IdentitySource, Store};
 use crate::transport::Transport;
 
 const TICK: Duration = Duration::from_millis(250);
+/// Raw sEMG is turned off after this long without a viewer attached.
+const SEMG_IDLE: f64 = 3.0;
 /// Identity result code: the band is enrolled to a different key.
 const DIFFERENT_KEY: u32 = 0x1043;
 const ALREADY_PAIRED: &str =
@@ -71,6 +73,8 @@ pub struct Daemon<T: Transport, R: Runner, F: ClientFactory> {
     progress_rx: mpsc::UnboundedReceiver<String>,
     semg_wanted: bool,
     semg_on: bool,
+    /// Since when sEMG has been on (or wanted) with no viewer subscribed.
+    semg_unwatched_since: Option<f64>,
     band_name: Option<String>,
 }
 
@@ -138,6 +142,7 @@ impl<T: Transport, R: Runner, F: ClientFactory> Daemon<T, R, F> {
             progress_rx,
             semg_wanted: false,
             semg_on: false,
+            semg_unwatched_since: None,
             band_name,
         };
         daemon.publish();
@@ -418,7 +423,24 @@ impl<T: Transport, R: Runner, F: ClientFactory> Daemon<T, R, F> {
             self.reconnect_at = None;
             self.start_link();
         }
+        self.stop_unwatched_semg(now);
         self.reload_config();
+    }
+
+    /// sEMG streaming is tied to viewers: with none attached for
+    /// `SEMG_IDLE` seconds, turn it off (and don't turn it on at reconnect).
+    fn stop_unwatched_semg(&mut self, now: f64) {
+        if !(self.semg_on || self.semg_wanted) || self.semg.receiver_count() > 0 {
+            self.semg_unwatched_since = None;
+            return;
+        }
+        let since = *self.semg_unwatched_since.get_or_insert(now);
+        if now - since >= SEMG_IDLE {
+            tracing::info!("no sEMG viewer attached; turning raw sEMG off");
+            self.semg_wanted = false;
+            self.semg_unwatched_since = None;
+            self.send_link(LinkCommand::RawEmg(false));
+        }
     }
 
     fn reload_config(&mut self) {

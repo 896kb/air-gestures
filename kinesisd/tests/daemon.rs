@@ -16,7 +16,7 @@ use kinesisd::store::{BandRecord, Store};
 use kinesisd::transport::{SIM_ADDRESS, SIM_NAME, SimInject, SimTransport};
 use p256::ecdsa::SigningKey;
 use rand_core::OsRng;
-use tokio::sync::{mpsc, oneshot, watch};
+use tokio::sync::{broadcast, mpsc, oneshot, watch};
 
 const SWIPE_LEFT: SimInject = SimInject::Gesture {
     action: 8,
@@ -27,6 +27,7 @@ const SWIPE_LEFT: SimInject = SimInject::Gesture {
 struct Harness {
     calls: mpsc::Sender<Call>,
     status: watch::Receiver<Status>,
+    semg: broadcast::Sender<Vec<u8>>,
     runner: RecordingRunner,
     transport: SimTransport,
     store: Store,
@@ -70,11 +71,13 @@ fn start_seeded<F: ClientFactory>(
         config_path.clone(),
     );
     let status = daemon.status();
+    let semg = daemon.semg();
     let (calls, call_rx) = mpsc::channel(8);
     tokio::spawn(daemon.run(call_rx, std::future::pending()));
     Harness {
         calls,
         status,
+        semg,
         runner,
         transport,
         store,
@@ -546,4 +549,42 @@ async fn a_confirmed_key_rejected_with_another_code_is_retried() {
     transport.set_reject_identity(None);
     daemon.connected().await;
     assert!(daemon.status.borrow().error.is_none());
+}
+
+#[tokio::test(start_paused = true)]
+async fn semg_without_a_viewer_is_turned_off_again() {
+    let transport = SimTransport::new(SimMode::Enrolled);
+    let mut daemon = start(transport.clone(), true, fake(&transport));
+    daemon.connected().await;
+    assert!(daemon.call(Request::Semg { on: true }).await.ok);
+    daemon.wait("sEMG on", |s| s.semg).await;
+    let on_at = tokio::time::Instant::now();
+    daemon.wait("sEMG off", |s| !s.semg).await;
+    let after = on_at.elapsed();
+    assert!(
+        after <= Duration::from_secs(5),
+        "turned off after {after:?}"
+    );
+    // Not turned back on by a reconnect either.
+    daemon.transport.inject(SimInject::Close);
+    daemon
+        .wait("the drop", |s| s.state != LinkState::Connected)
+        .await;
+    daemon.connected().await;
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    assert!(!daemon.status.borrow().semg);
+}
+
+#[tokio::test(start_paused = true)]
+async fn semg_stays_on_while_a_viewer_is_attached() {
+    let transport = SimTransport::new(SimMode::Enrolled);
+    let mut daemon = start(transport.clone(), true, fake(&transport));
+    daemon.connected().await;
+    let viewer = daemon.semg.subscribe();
+    assert!(daemon.call(Request::Semg { on: true }).await.ok);
+    daemon.wait("sEMG on", |s| s.semg).await;
+    tokio::time::sleep(Duration::from_secs(10)).await;
+    assert!(daemon.status.borrow().semg, "kept on for the viewer");
+    drop(viewer);
+    daemon.wait("sEMG off", |s| !s.semg).await;
 }
