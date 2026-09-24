@@ -2,3 +2,4 @@
 
 pub mod client;
 pub mod text;
+pub mod waybar;

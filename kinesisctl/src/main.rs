@@ -37,7 +37,14 @@ enum HandArg {
 #[derive(Subcommand)]
 enum Command {
     /// Show the band's state.
-    Status,
+    Status {
+        /// Print a waybar JSON line instead of text.
+        #[arg(long)]
+        waybar: bool,
+        /// Keep printing a line on every change (waybar `exec` without `interval`).
+        #[arg(long, requires = "waybar")]
+        follow: bool,
+    },
     /// Connect to the paired band.
     Connect,
     /// Disconnect from the band.
@@ -95,7 +102,29 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
     let socket = socket(cli.dry_run);
     match cli.command {
-        Command::Status => simple(&socket, Request::Status),
+        Command::Status { waybar: false, .. } => simple(&socket, Request::Status),
+        Command::Status {
+            waybar: true,
+            follow: false,
+        } => {
+            let status = runtime().block_on(kinesisctl::client::status(&socket)).ok();
+            println!("{}", kinesisctl::waybar::line(status.as_ref()));
+            ExitCode::SUCCESS
+        }
+        Command::Status {
+            waybar: true,
+            follow: true,
+        } => runtime().block_on(async {
+            use std::io::Write;
+            let mut lines = kinesisctl::waybar::next_lines(socket.clone());
+            while let Some(line) = lines.recv().await {
+                let mut out = std::io::stdout().lock();
+                if writeln!(out, "{line}").and_then(|_| out.flush()).is_err() {
+                    break; // waybar went away
+                }
+            }
+            ExitCode::SUCCESS
+        }),
         Command::Connect => simple(&socket, Request::Connect),
         Command::Disconnect => simple(&socket, Request::Disconnect),
         Command::ToggleConnection => {
