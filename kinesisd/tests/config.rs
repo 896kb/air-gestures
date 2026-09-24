@@ -127,3 +127,9 @@ fn the_dial_target_cycles_between_volume_and_brightness() {
     assert_eq!(DialTarget::Brightness.next(), DialTarget::Volume);
     assert_eq!(DialTarget::Off.next(), DialTarget::Volume);
 }
+
+#[test]
+fn the_documented_config_is_the_default_config() {
+    let text = include_str!("../../contrib/config.toml");
+    assert_eq!(Config::parse(text).unwrap(), Config::default());
+}

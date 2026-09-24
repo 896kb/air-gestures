@@ -1,0 +1,25 @@
+# kinesisd config: ~/.config/kinesis/config.toml (reloaded on save).
+# Every gesture runs a shell command through `sh -c`; "" leaves it unassigned.
+
+[band]
+hand = "band"        # "band" = whatever the band reports | "left" | "right"
+autostart = true     # connect and enable controls when kinesisd starts
+
+[gestures]
+swipe_left    = "hyprctl dispatch workspace e-1"
+swipe_right   = "hyprctl dispatch workspace e+1"
+swipe_up      = "wofi --show drun"
+swipe_down    = "hyprctl dispatch sendshortcut , Escape, activewindow"
+index_tap     = ""
+index_double  = "playerctl play-pause"
+middle_tap    = ""
+middle_double = "wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle"
+middle_hold   = ""
+
+[dial]               # pinch thumb + index, hold a moment, then turn your wrist
+target = "volume"    # "volume" | "brightness" | "off"
+sensitivity = 1.0    # 0.5–4; 1.0 = one step per 2° of wrist turn
+volume_up       = "wpctl set-volume -l 1.0 @DEFAULT_AUDIO_SINK@ 2%+"
+volume_down     = "wpctl set-volume @DEFAULT_AUDIO_SINK@ 2%-"
+brightness_up   = "brightnessctl -q set 2%+"
+brightness_down = "brightnessctl -q set 2%-"

@@ -2,6 +2,7 @@
 //! gestures into desktop actions.
 
 pub mod actions;
+pub mod bluez;
 pub mod clock;
 pub mod config;
 pub mod controller;

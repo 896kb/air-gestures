@@ -1,0 +1,16 @@
+[Unit]
+Description=Meta Neural Band controls (kinesis-linux)
+Documentation=https://gitlab.com/896kb/kinesis-linux
+After=bluetooth.target graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+ExecStart=%h/.cargo/bin/kinesisd
+Restart=on-failure
+RestartSec=3
+Environment=KINESIS_LOG=info
+# Leave apps launched by gestures running when the daemon restarts.
+KillMode=process
+
+[Install]
+WantedBy=graphical-session.target

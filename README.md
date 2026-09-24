@@ -23,7 +23,7 @@ Linux/BlueZ.
 | crate | what it is |
 |---|---|
 | `band-core` | sans-IO protocol core: AirShield encryption, DataX framing, session state machine (handshake, owner trust, ownership ceremony, input subscription), gestures, pinch dial, handedness, battery, raw sEMG, and `SimBand` — a scripted simulated band for tests and dry runs |
-| `kinesisd` | *(planned)* BlueZ daemon: gestures → configurable shell actions, control socket |
+| `kinesisd` | BlueZ daemon: gestures → configurable shell actions, pinch dial, ownership claim, control socket (`kinesisd --dry-run` runs it against a simulated band) |
 | `kinesisctl` | *(planned)* pairing/sign-in, status for waybar, hand setting, sEMG viewer/recorder |
 
 Design: [`docs/superpowers/specs/2026-09-24-kinesis-linux-design.md`](docs/superpowers/specs/2026-09-24-kinesis-linux-design.md).
@@ -33,7 +33,8 @@ Design: [`docs/superpowers/specs/2026-09-24-kinesis-linux-design.md`](docs/super
 Rust ≥ 1.88.
 
 ```sh
-cargo test -p band-core
+cargo test --workspace
+cargo run -p kinesisd -- --dry-run      # the whole daemon against a simulated band
 ```
 
 All tests run offline against the simulated band.
