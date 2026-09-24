@@ -173,3 +173,58 @@ async fn a_second_daemon_cannot_take_a_live_socket_but_a_stale_one_is_replaced()
     assert!(stale.exists());
     ipc::bind(&stale).unwrap();
 }
+
+#[tokio::test]
+async fn a_subscriber_that_hangs_up_is_let_go() {
+    let dir = tempfile::tempdir().unwrap();
+    let (path, status, _semg) = serve(dir.path()).await;
+    let baseline = status.receiver_count();
+    let stream = UnixStream::connect(&path).await.unwrap();
+    let (read, mut write) = stream.into_split();
+    let mut lines = BufReader::new(read).lines();
+    write.write_all(b"{\"cmd\":\"subscribe\"}\n").await.unwrap();
+    lines.next_line().await.unwrap().unwrap();
+    assert!(status.receiver_count() > baseline);
+    drop(lines);
+    drop(write);
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(
+        status.receiver_count(),
+        baseline,
+        "the connection task still holds the status"
+    );
+}
+
+#[tokio::test]
+async fn an_overlong_request_is_refused_and_the_connection_closed() {
+    let dir = tempfile::tempdir().unwrap();
+    let (path, _status, _semg) = serve(dir.path()).await;
+    let stream = UnixStream::connect(&path).await.unwrap();
+    let (read, mut write) = stream.into_split();
+    let mut lines = BufReader::new(read).lines();
+    let mut request = vec![b'x'; 70 * 1024];
+    request.push(b'\n');
+    // The server may close before reading all of it.
+    let _ = write.write_all(&request).await;
+    let line = tokio::time::timeout(Duration::from_secs(5), lines.next_line())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    let refused: Response = serde_json::from_str(&line).unwrap();
+    assert!(!refused.ok && refused.error.unwrap().contains("request too long"));
+    let end = tokio::time::timeout(Duration::from_secs(5), lines.next_line())
+        .await
+        .unwrap();
+    assert!(matches!(end, Ok(None) | Err(_)), "the connection is closed");
+}
+
+#[test]
+fn bind_refuses_to_replace_something_that_is_not_a_socket() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("kinesis.sock");
+    std::fs::write(&path, b"precious").unwrap();
+    let error = ipc::bind(&path).unwrap_err();
+    assert!(error.to_string().contains("not a socket"), "{error}");
+    assert_eq!(std::fs::read(&path).unwrap(), b"precious");
+}

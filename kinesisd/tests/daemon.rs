@@ -2,12 +2,15 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+use band_core::ceremony::{CeremonyPair, CeremonyPairRequest};
 use band_core::identity::{EnrollmentIdentity, verifying_key_from_point64};
 use band_core::responder::SimMode;
 use kinesisd::actions::RecordingRunner;
 use kinesisd::daemon::Daemon;
 use kinesisd::ipc::{Call, HandChoice, Request, Response};
-use kinesisd::meta::{ClientFactory, FakeFactory, HttpFactory};
+use kinesisd::meta::{
+    ClientFactory, FakeFactory, Final, HttpFactory, MetaSession, PairClient, PairError, Pending,
+};
 use kinesisd::status::{LinkState, Status};
 use kinesisd::store::{BandRecord, Store};
 use kinesisd::transport::{SIM_ADDRESS, SIM_NAME, SimInject, SimTransport};
@@ -361,4 +364,78 @@ async fn disconnect_and_connect_on_request() {
     assert_eq!(daemon.transport.opens(), 1);
     daemon.call(Request::Connect).await;
     daemon.connected().await;
+}
+
+/// A Meta client that never answers, so a pairing stays running.
+struct Hanging;
+
+impl PairClient for Hanging {
+    async fn pair_request(&self, _request: &CeremonyPairRequest) -> Result<Pending, PairError> {
+        std::future::pending().await
+    }
+
+    async fn pair(&self, _pair: &CeremonyPair) -> Result<Final, PairError> {
+        std::future::pending().await
+    }
+}
+
+struct HangingFactory;
+
+impl ClientFactory for HangingFactory {
+    type Client = Hanging;
+    fn client(&self, _session: Option<MetaSession>) -> Result<Hanging, Option<String>> {
+        Ok(Hanging)
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_failed_re_pair_reconnects_the_old_band_and_keeps_the_failure_visible() {
+    let transport = SimTransport::new(SimMode::Enrolled);
+    let mut daemon = start(transport.clone(), true, fake(&transport));
+    daemon.connected().await;
+    // No band at that address: the pairing fails before touching the paired band.
+    let response = daemon
+        .call(Request::Pair {
+            address: Some("AA:BB:CC:DD:EE:FF".into()),
+        })
+        .await;
+    assert!(response.ok, "{response:?}");
+    daemon
+        .wait("the pairing failure", |s| {
+            s.state != LinkState::Pairing && s.error.is_some()
+        })
+        .await;
+    daemon.connected().await;
+    assert_eq!(daemon.transport.opens(), 2);
+    let status = daemon.status.borrow().clone();
+    assert!(
+        status
+            .error
+            .as_deref()
+            .is_some_and(|e| e.contains("no band in pairing mode")),
+        "{status:?}"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn forget_and_disconnect_are_refused_while_pairing() {
+    let transport = SimTransport::new(SimMode::Legacy);
+    let mut daemon = start(transport.clone(), false, HangingFactory);
+    daemon
+        .wait("the unpaired error", |s| s.error.is_some())
+        .await;
+    assert!(daemon.call(Request::Pair { address: None }).await.ok);
+    let forget = daemon.call(Request::Forget).await;
+    assert!(!forget.ok && forget.error.unwrap().contains("a pairing is running"));
+    let disconnect = daemon.call(Request::Disconnect).await;
+    assert!(!disconnect.ok && disconnect.error.unwrap().contains("a pairing is running"));
+}
+
+#[tokio::test(start_paused = true)]
+async fn connect_without_a_paired_band_is_an_error() {
+    let transport = SimTransport::new(SimMode::Enrolled);
+    let daemon = start(transport.clone(), false, fake(&transport));
+    let response = daemon.call(Request::Connect).await;
+    assert!(!response.ok);
+    assert!(response.error.unwrap().contains("kinesisctl pair"));
 }

@@ -26,6 +26,7 @@ use crate::store::{BandRecord, IdentitySource, Store};
 use crate::transport::Transport;
 
 const TICK: Duration = Duration::from_millis(250);
+const PAIRING_RUNNING: &str = "a pairing is running; wait for it to finish";
 
 struct ActiveLink {
     commands: mpsc::Sender<LinkCommand>,
@@ -57,6 +58,11 @@ pub struct Daemon<T: Transport, R: Runner, F: ClientFactory> {
     error: Option<String>,
     pairing: Option<PairingTask>,
     pairing_stage: Option<String>,
+    /// Why the last pairing failed; outlives reconnects (cleared by the next
+    /// pairing, a successful one, or `Forget`).
+    pairing_error: Option<String>,
+    /// Reconnect the already-paired band if this pairing fails.
+    resume_after_pairing: bool,
     progress_tx: mpsc::UnboundedSender<String>,
     progress_rx: mpsc::UnboundedReceiver<String>,
     semg_wanted: bool,
@@ -122,6 +128,8 @@ impl<T: Transport, R: Runner, F: ClientFactory> Daemon<T, R, F> {
             error: None,
             pairing: None,
             pairing_stage: None,
+            pairing_error: None,
+            resume_after_pairing: false,
             progress_tx,
             progress_rx,
             semg_wanted: false,
@@ -166,7 +174,11 @@ impl<T: Transport, R: Runner, F: ClientFactory> Daemon<T, R, F> {
                     self.pairing = None;
                     self.on_pairing_end(result);
                 }
-                Some(stage) = self.progress_rx.recv() => self.pairing_stage = Some(stage),
+                Some(stage) = self.progress_rx.recv() => {
+                    if self.pairing.is_some() {
+                        self.pairing_stage = Some(stage);
+                    }
+                }
                 _ = ticker.tick() => self.on_tick(),
             }
             self.publish();
@@ -180,7 +192,11 @@ impl<T: Transport, R: Runner, F: ClientFactory> Daemon<T, R, F> {
     fn publish(&self) {
         let mut status = self.controller.status().clone();
         status.state = self.state;
-        status.error = self.error.clone().or_else(|| self.config_error.clone());
+        status.error = self
+            .error
+            .clone()
+            .or_else(|| self.pairing_error.clone())
+            .or_else(|| self.config_error.clone());
         status.pairing = self.pairing_stage.clone();
         status.semg = self.semg_on;
         status.band = self.band_name.clone();
@@ -275,8 +291,15 @@ impl<T: Transport, R: Runner, F: ClientFactory> Daemon<T, R, F> {
             LinkEnd::IdentityRejected(_)
                 if used_pending && self.store.load_identity().ok().flatten().is_some() =>
             {
-                let _ = self.store.discard_pending();
-                self.reconnect_at = Some(self.clock.now());
+                match self.store.discard_pending() {
+                    Ok(()) => self.reconnect_at = Some(self.clock.now()),
+                    Err(error) => {
+                        self.error = Some(format!(
+                            "could not drop the rejected pending owner key: {error}"
+                        ));
+                        self.schedule_reconnect();
+                    }
+                }
                 return;
             }
             LinkEnd::IdentityRejected(message) => {
@@ -351,6 +374,10 @@ impl<T: Transport, R: Runner, F: ClientFactory> Daemon<T, R, F> {
 
     async fn stop_link(&mut self) {
         let Some(link) = self.link.take() else { return };
+        self.controller.on_disconnect();
+        self.semg_on = false;
+        self.state = LinkState::Idle;
+        self.publish();
         // Dropping the command sender stops the link too, if its queue is full.
         let _ = link.commands.try_send(LinkCommand::Stop);
         drop(link.commands);
@@ -362,9 +389,6 @@ impl<T: Transport, R: Runner, F: ClientFactory> Daemon<T, R, F> {
         {
             task.abort();
         }
-        self.controller.on_disconnect();
-        self.semg_on = false;
-        self.state = LinkState::Idle;
     }
 
     fn on_tick(&mut self) {
@@ -402,24 +426,41 @@ impl<T: Transport, R: Runner, F: ClientFactory> Daemon<T, R, F> {
     }
 
     fn on_pairing_end(&mut self, result: Result<Result<BandRecord, PairFailure>, String>) {
+        // Stages still queued from the finished pairing must not show up later.
+        while self.progress_rx.try_recv().is_ok() {}
         self.pairing_stage = None;
         self.state = LinkState::Idle;
-        match result {
+        let failure = match result {
             Ok(Ok(record)) => {
                 tracing::info!("paired with {}", record.name);
                 self.band_name = Some(record.name);
                 self.error = None;
+                self.pairing_error = None;
                 // The settling reconnect: connect again as the new owner.
                 self.wants_connection = true;
                 self.retries = 0;
                 self.reconnect_at = Some(self.clock.now());
+                return;
             }
             Ok(Err(PairFailure::SessionExpired(message))) => {
                 let _ = self.store.delete_meta_session();
-                self.error = Some(message);
+                message
             }
-            Ok(Err(failure)) => self.error = Some(failure.to_string()),
-            Err(error) => self.error = Some(format!("the pairing crashed: {error}")),
+            Ok(Err(failure)) => failure.to_string(),
+            Err(error) => format!("the pairing crashed: {error}"),
+        };
+        tracing::warn!("pairing failed: {failure}");
+        self.pairing_error = Some(failure);
+        // Go back to the band we had (or the one a possibly committed claim left pending).
+        let has_pending = self.store.load_pending().ok().flatten().is_some();
+        let has_band = self.store.load_band().ok().flatten();
+        if (self.resume_after_pairing || has_pending)
+            && let Some(band) = has_band
+        {
+            self.band_name = Some(band.name);
+            self.wants_connection = true;
+            self.retries = 0;
+            self.reconnect_at = Some(self.clock.now());
         }
     }
 
@@ -437,11 +478,13 @@ impl<T: Transport, R: Runner, F: ClientFactory> Daemon<T, R, F> {
                 );
             }
         };
+        self.resume_after_pairing = self.wants_connection || self.link.is_some();
         self.wants_connection = false;
         self.reconnect_at = None;
         self.stop_link().await;
         self.state = LinkState::Pairing;
         self.error = None;
+        self.pairing_error = None;
         self.pairing_stage = Some("starting".into());
         let transport = self.transport.clone();
         let store = self.store.clone();
@@ -481,10 +524,21 @@ impl<T: Transport, R: Runner, F: ClientFactory> Daemon<T, R, F> {
                 if self.link.is_none() {
                     self.reconnect_at = None;
                     self.start_link();
+                    if self.link.is_none()
+                        && let Some(error) = &self.error
+                    {
+                        let response = Response::error(error.clone());
+                        self.publish();
+                        return response;
+                    }
                 }
             }
             Request::Disconnect => {
+                if self.pairing.is_some() {
+                    return Response::error(PAIRING_RUNNING);
+                }
                 self.wants_connection = false;
+                self.error = None;
                 self.reconnect_at = None;
                 self.stop_link().await;
             }
@@ -517,6 +571,9 @@ impl<T: Transport, R: Runner, F: ClientFactory> Daemon<T, R, F> {
                 return self.start_pairing(address).await;
             }
             Request::Forget => {
+                if self.pairing.is_some() {
+                    return Response::error(PAIRING_RUNNING);
+                }
                 self.wants_connection = false;
                 self.reconnect_at = None;
                 self.stop_link().await;
@@ -530,6 +587,7 @@ impl<T: Transport, R: Runner, F: ClientFactory> Daemon<T, R, F> {
                 }
                 self.band_name = None;
                 self.error = None;
+                self.pairing_error = None;
                 self.publish();
                 return Response::message(
                     self.status.borrow().clone(),

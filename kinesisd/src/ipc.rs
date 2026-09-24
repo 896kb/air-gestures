@@ -1,14 +1,16 @@
 //! The control socket: newline-delimited JSON requests and responses.
 
 use std::io;
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{DirBuilderExt, FileTypeExt, MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as B64;
 use serde::{Deserialize, Serialize};
-use tokio::io::{AsyncBufReadExt, AsyncWrite, AsyncWriteExt, BufReader};
+use tokio::io::{
+    AsyncBufRead, AsyncBufReadExt, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader,
+};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::{broadcast, mpsc, oneshot, watch};
 
@@ -105,8 +107,12 @@ pub struct Handles {
     pub semg: broadcast::Sender<Vec<u8>>,
 }
 
+/// The longest request line accepted (without its newline).
+const MAX_LINE: usize = 64 * 1024;
+
 /// `$KINESIS_SOCKET`, else `$XDG_RUNTIME_DIR/kinesis.sock`
-/// (`kinesis-dry-run.sock` for a dry run), else under `/tmp`.
+/// (`kinesis-dry-run.sock` for a dry run), else in a private
+/// `/tmp/kinesis-<uid>/` directory (created and checked by `bind`).
 pub fn socket_path(dry_run: bool) -> PathBuf {
     if let Some(path) = std::env::var_os("KINESIS_SOCKET") {
         return PathBuf::from(path);
@@ -118,23 +124,70 @@ pub fn socket_path(dry_run: bool) -> PathBuf {
     };
     match std::env::var_os("XDG_RUNTIME_DIR") {
         Some(dir) => PathBuf::from(dir).join(name),
-        None => {
-            let user = std::env::var("USER").unwrap_or_else(|_| "user".into());
-            PathBuf::from(format!("/tmp/{user}-{name}"))
-        }
+        None => fallback_dir().join(name),
     }
 }
 
-/// Bind the socket (0600). A live socket means another daemon runs; a stale file is replaced.
+/// Our uid: the owner of `/proc/self` is the process's effective uid.
+fn uid() -> io::Result<u32> {
+    std::fs::metadata("/proc/self").map(|metadata| metadata.uid())
+}
+
+/// The socket directory when there is no `$XDG_RUNTIME_DIR`.
+fn fallback_dir() -> PathBuf {
+    match uid() {
+        Ok(uid) => PathBuf::from(format!("/tmp/kinesis-{uid}")),
+        // Unknown uid: a name `bind` never trusts as the private directory.
+        Err(_) => PathBuf::from("/tmp/kinesis-unknown"),
+    }
+}
+
+/// Create `dir` (0700) if needed and make sure it is a real directory that
+/// only we can use: `/tmp` is shared, so someone else may have made it first.
+fn ensure_private_dir(dir: &Path) -> io::Result<()> {
+    match std::fs::DirBuilder::new().mode(0o700).create(dir) {
+        Err(error) if error.kind() != io::ErrorKind::AlreadyExists => return Err(error),
+        _ => {}
+    }
+    let metadata = std::fs::symlink_metadata(dir)?;
+    if !metadata.file_type().is_dir() || metadata.uid() != uid()? || metadata.mode() & 0o077 != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!(
+                "unsafe socket directory (not a private directory of ours): {}",
+                dir.display()
+            ),
+        ));
+    }
+    Ok(())
+}
+
+/// Bind the socket (0600). A live socket means another daemon runs; a stale
+/// socket is replaced; anything else at the path is left alone.
 pub fn bind(path: &Path) -> io::Result<UnixListener> {
-    if path.exists() {
-        if std::os::unix::net::UnixStream::connect(path).is_ok() {
-            return Err(io::Error::new(
-                io::ErrorKind::AddrInUse,
-                "kinesisd is already running",
-            ));
+    if let Some(parent) = path.parent()
+        && parent == fallback_dir()
+    {
+        ensure_private_dir(parent)?;
+    }
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) => {
+            if !metadata.file_type().is_socket() {
+                return Err(io::Error::new(
+                    io::ErrorKind::AlreadyExists,
+                    format!("not a socket: {}", path.display()),
+                ));
+            }
+            if std::os::unix::net::UnixStream::connect(path).is_ok() {
+                return Err(io::Error::new(
+                    io::ErrorKind::AddrInUse,
+                    "kinesisd is already running",
+                ));
+            }
+            std::fs::remove_file(path)?;
         }
-        std::fs::remove_file(path)?;
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
     }
     let listener = UnixListener::bind(path)?;
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
@@ -166,10 +219,58 @@ async fn write_line<W: AsyncWrite + Unpin>(writer: &mut W, response: &Response) 
     writer.write_all(&line).await
 }
 
+enum Line {
+    Text(String),
+    TooLong,
+    End,
+}
+
+/// One request line, at most `MAX_LINE` bytes.
+async fn read_line<R: AsyncBufRead + Unpin>(
+    reader: &mut R,
+    buffer: &mut Vec<u8>,
+) -> io::Result<Line> {
+    buffer.clear();
+    let read = (&mut *reader)
+        .take(MAX_LINE as u64 + 1)
+        .read_until(b'\n', buffer)
+        .await?;
+    if read == 0 {
+        return Ok(Line::End);
+    }
+    if buffer.last() == Some(&b'\n') {
+        buffer.pop();
+    } else if buffer.len() > MAX_LINE {
+        return Ok(Line::TooLong);
+    }
+    Ok(Line::Text(String::from_utf8_lossy(buffer).into_owned()))
+}
+
+/// Resolves once the client hangs up (or its side fails); anything it sends
+/// meanwhile is ignored. Cancel-safe.
+async fn hung_up<R: AsyncBufRead + Unpin>(reader: &mut R) {
+    loop {
+        let length = match reader.fill_buf().await {
+            Ok([]) | Err(_) => return,
+            Ok(bytes) => bytes.len(),
+        };
+        reader.consume(length);
+    }
+}
+
 async fn connection(stream: UnixStream, handles: Handles) -> io::Result<()> {
     let (read, mut write) = stream.into_split();
-    let mut lines = BufReader::new(read).lines();
-    while let Some(line) = lines.next_line().await? {
+    let mut reader = BufReader::new(read);
+    let mut buffer = Vec::new();
+    loop {
+        let line = match read_line(&mut reader, &mut buffer).await? {
+            Line::Text(line) => line,
+            Line::End => return Ok(()),
+            Line::TooLong => {
+                write_line(&mut write, &Response::error("request too long")).await?;
+                return Ok(());
+            }
+        };
         if line.trim().is_empty() {
             continue;
         }
@@ -190,15 +291,22 @@ async fn connection(stream: UnixStream, handles: Handles) -> io::Result<()> {
                 loop {
                     let current = status.borrow_and_update().clone();
                     write_line(&mut write, &Response::ok(current)).await?;
-                    if status.changed().await.is_err() {
-                        return Ok(());
+                    tokio::select! {
+                        changed = status.changed() => if changed.is_err() {
+                            return Ok(());
+                        },
+                        () = hung_up(&mut reader) => return Ok(()),
                     }
                 }
             }
             Request::SubscribeSemg => {
                 let mut frames = handles.semg.subscribe();
                 loop {
-                    match frames.recv().await {
+                    let frame = tokio::select! {
+                        frame = frames.recv() => frame,
+                        () = hung_up(&mut reader) => return Ok(()),
+                    };
+                    match frame {
                         Ok(frame) => {
                             let line = Response {
                                 ok: true,
@@ -224,7 +332,6 @@ async fn connection(stream: UnixStream, handles: Handles) -> io::Result<()> {
             }
         }
     }
-    Ok(())
 }
 
 /// One request, one response (for kinesisctl and tests).
