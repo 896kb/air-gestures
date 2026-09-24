@@ -61,6 +61,15 @@ enum Command {
     Dial { target: DialArg },
     /// Tell the band which wrist it's on.
     Hand { hand: HandArg },
+    /// Claim a band in pairing mode for this computer (signs in to Meta if needed).
+    Pair {
+        /// A specific band's Bluetooth address (default: the first one found).
+        #[arg(long)]
+        address: Option<String>,
+        /// Forget the currently paired band first.
+        #[arg(long)]
+        replace: bool,
+    },
     /// Forget the band (keys, record, Bluetooth bond). Factory reset it afterwards.
     Forget,
     /// Sign in to Meta (needed once to claim a band). Opens Meta's own page.
@@ -149,6 +158,80 @@ fn print_status_of(response: kinesisd::ipc::Response) {
     }
     if let Some(status) = &response.status {
         println!("{}", kinesisctl::text::describe(status));
+    }
+}
+
+fn pair(
+    socket: &std::path::Path,
+    address: Option<String>,
+    replace: bool,
+    dry_run: bool,
+) -> ExitCode {
+    let rt = runtime();
+    let paired = rt
+        .block_on(kinesisctl::client::status(socket))
+        .map(|s| s.band.is_some());
+    match paired {
+        Err(error) => {
+            eprintln!("{error}");
+            return ExitCode::FAILURE;
+        }
+        Ok(true) if !replace => {
+            eprintln!(
+                "a band is already paired. to claim a different (or reset) band: `kinesisctl pair --replace`"
+            );
+            return ExitCode::FAILURE;
+        }
+        Ok(true) => {
+            if let Err(error) = rt.block_on(kinesisctl::client::request(socket, &Request::Forget)) {
+                eprintln!("{error}");
+                return ExitCode::FAILURE;
+            }
+            println!(
+                "Forgot the old band. Now factory reset the band ({}),",
+                band_core::ceremony::FACTORY_RESET_HINT
+            );
+            println!(
+                "then hold its button for 3 seconds until it flashes (pairing mode), and press Enter."
+            );
+            let _ = std::io::stdin().read_line(&mut String::new());
+        }
+        Ok(false) => {
+            println!(
+                "Put the band in pairing mode: hold its button for 3 seconds until it flashes."
+            );
+        }
+    }
+    let mut started = rt.block_on(kinesisctl::pair::start_pairing(socket, address.clone()));
+    if let Err(error) = &started
+        && kinesisctl::pair::needs_sign_in(error)
+    {
+        drop(rt);
+        if let Err(error) = sign_in(&store_dir(dry_run)) {
+            eprintln!("{error}");
+            return ExitCode::FAILURE;
+        }
+        started = runtime().block_on(kinesisctl::pair::start_pairing(socket, address));
+    }
+    if let Err(error) = started {
+        eprintln!("{error}");
+        return ExitCode::FAILURE;
+    }
+    match runtime().block_on(kinesisctl::pair::follow_pairing(socket, |stage| {
+        println!("… {stage}");
+    })) {
+        Ok(kinesisctl::pair::Outcome::Paired { band }) => {
+            println!("Paired with {band}. It's yours now — try a swipe.");
+            ExitCode::SUCCESS
+        }
+        Ok(kinesisctl::pair::Outcome::Failed { message }) => {
+            eprintln!("pairing failed: {message}");
+            ExitCode::FAILURE
+        }
+        Err(error) => {
+            eprintln!("{error}");
+            ExitCode::FAILURE
+        }
     }
 }
 
@@ -245,6 +328,7 @@ fn main() -> ExitCode {
                 },
             },
         ),
+        Command::Pair { address, replace } => pair(&socket, address, replace, cli.dry_run),
         Command::Forget => simple(&socket, Request::Forget),
         Command::Signin => report(sign_in(&store_dir(cli.dry_run))),
         Command::Signout => report(sign_out(&store_dir(cli.dry_run))),

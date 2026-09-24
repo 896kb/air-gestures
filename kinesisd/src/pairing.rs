@@ -50,6 +50,17 @@ fn from_pair_error(error: PairError) -> PairFailure {
     }
 }
 
+/// Report a stage and yield once. A real Bluetooth scan or Meta HTTP round
+/// trip always leaves a gap for other work; the simulated ceremony has no
+/// such natural gaps (every step is an already-ready in-memory future), so
+/// without this the whole chain can run start to finish in one uninterrupted
+/// burst, starving any concurrent control-socket client of a turn to observe
+/// the stages in between.
+async fn tell(progress: &mut impl FnMut(&str), stage: &str) {
+    progress(stage);
+    tokio::task::yield_now().await;
+}
+
 /// Claim the band at `address` (or the first one found) for this computer.
 pub async fn pair_band<T: Transport, C: PairClient>(
     transport: &T,
@@ -61,7 +72,7 @@ pub async fn pair_band<T: Transport, C: PairClient>(
 ) -> Result<BandRecord, PairFailure> {
     // Restored if this run's claim is abandoned or rejected before the band commits.
     let previous_band = store.load_band().ok().flatten();
-    progress("looking for a band in pairing mode");
+    tell(&mut progress, "looking for a band in pairing mode").await;
     let found = transport
         .scan(Duration::from_secs(10))
         .await
@@ -78,12 +89,12 @@ pub async fn pair_band<T: Transport, C: PairClient>(
         name: chosen.name,
     };
 
-    progress("preparing Bluetooth pairing");
+    tell(&mut progress, "preparing Bluetooth pairing").await;
     let _pairing = transport
         .prepare_pairing(&record.address)
         .await
         .map_err(PairFailure::Failed)?;
-    progress(&format!("connecting to {}", record.name));
+    tell(&mut progress, &format!("connecting to {}", record.name)).await;
     let io = transport
         .open(&record.address)
         .await
@@ -135,9 +146,9 @@ pub async fn pair_band<T: Transport, C: PairClient>(
             continue;
         };
         match event {
-            Event::CeremonyStage(stage) => progress(&stage),
+            Event::CeremonyStage(stage) => tell(&mut progress, &stage).await,
             Event::CeremonyHttp(CeremonyHttpRequest::PairRequest(request)) => {
-                progress("asking Meta to approve the claim");
+                tell(&mut progress, "asking Meta to approve the claim").await;
                 let next = match client.pair_request(&request).await {
                     Ok(pending) => LinkCommand::ResumePairRequest {
                         signature: pending.signature,
@@ -151,7 +162,7 @@ pub async fn pair_band<T: Transport, C: PairClient>(
                 let _ = commands.send(next).await;
             }
             Event::CeremonyHttp(CeremonyHttpRequest::Pair(pair)) => {
-                progress("confirming the claim with Meta");
+                tell(&mut progress, "confirming the claim with Meta").await;
                 let next = match client.pair(&pair).await {
                     Ok(done) => LinkCommand::ResumePair {
                         signature: done.signature,
@@ -171,7 +182,11 @@ pub async fn pair_band<T: Transport, C: PairClient>(
             {
                 Ok(()) => {
                     saved = true;
-                    progress("the band accepted this computer as its owner");
+                    tell(
+                        &mut progress,
+                        "the band accepted this computer as its owner",
+                    )
+                    .await;
                     if !resolved {
                         resolved = true;
                         resolve_identity(transport, store, &mut record).await;
@@ -185,7 +200,7 @@ pub async fn pair_band<T: Transport, C: PairClient>(
                 }
             },
             Event::Connected => {
-                progress("connected as the owner");
+                tell(&mut progress, "connected as the owner").await;
                 if !resolved {
                     resolved = true;
                     resolve_identity(transport, store, &mut record).await;
