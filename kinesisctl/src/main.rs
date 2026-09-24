@@ -63,10 +63,71 @@ enum Command {
     Hand { hand: HandArg },
     /// Forget the band (keys, record, Bluetooth bond). Factory reset it afterwards.
     Forget,
+    /// Sign in to Meta (needed once to claim a band). Opens Meta's own page.
+    Signin,
+    /// Delete the saved Meta sign-in.
+    Signout,
 }
 
 fn socket(dry_run: bool) -> PathBuf {
     kinesisd::ipc::socket_path(dry_run)
+}
+
+/// Where kinesisd keeps its state; the dry-run daemon uses its own directory
+/// (as in kinesisd's main), so a dry run never touches the real Meta session.
+fn store_dir(dry_run: bool) -> PathBuf {
+    let dir = kinesisd::store::Store::default_dir();
+    if dry_run {
+        dir.with_file_name("kinesis-dry-run")
+    } else {
+        dir
+    }
+}
+
+/// The whole sign-in: tokens query → window → callback check → decrypt → login → save.
+/// Never prints or logs the tokens.
+fn sign_in(store_dir: &std::path::Path) -> Result<(), String> {
+    use kinesisctl::metaauth;
+    println!(
+        "Opening Meta's sign-in page. You type your password there; kinesis only keeps the resulting session token."
+    );
+    let tokens = runtime().block_on(metaauth::tokens_query())?;
+    let Some(callback) = kinesisctl::signin::open(&metaauth::auth_entry_url(&tokens))? else {
+        return Err("sign-in cancelled".into());
+    };
+    let (token, blob) = metaauth::parse_callback(&callback).unwrap_or((None, None));
+    let Some(blob) = blob.filter(|b| {
+        !b.is_empty() && metaauth::callback_matches(token.as_deref(), &tokens.native_sso_token)
+    }) else {
+        return Err("meta didn't confirm this sign-in. try again.".into());
+    };
+    let session = runtime().block_on(async {
+        let frl = metaauth::decrypt_blob(&blob, &tokens.native_sso_token).await?;
+        metaauth::login(&frl).await
+    })?;
+    kinesisd::store::Store::open(store_dir)
+        .and_then(|store| store.save_meta_session(&session))
+        .map_err(|error| format!("could not save the sign-in: {error}"))?;
+    println!("Signed in to Meta.");
+    Ok(())
+}
+
+fn sign_out(store_dir: &std::path::Path) -> Result<(), String> {
+    kinesisd::store::Store::open(store_dir)
+        .and_then(|store| store.delete_meta_session())
+        .map_err(|error| format!("could not delete the sign-in: {error}"))?;
+    println!("Signed out of Meta.");
+    Ok(())
+}
+
+fn report(result: Result<(), String>) -> ExitCode {
+    match result {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("{error}");
+            ExitCode::FAILURE
+        }
+    }
 }
 
 fn runtime() -> tokio::runtime::Runtime {
@@ -179,5 +240,7 @@ fn main() -> ExitCode {
             },
         ),
         Command::Forget => simple(&socket, Request::Forget),
+        Command::Signin => report(sign_in(&store_dir(cli.dry_run))),
+        Command::Signout => report(sign_out(&store_dir(cli.dry_run))),
     }
 }
