@@ -119,8 +119,16 @@ fn the_dial_steps_volume_both_ways() {
         run("wpctl set-volume -l 1.0 @DEFAULT_AUDIO_SINK@ 2%+")
     );
     assert_eq!(
+        controller.status().last_gesture.as_deref(),
+        Some("wrist turn +")
+    );
+    assert_eq!(
         controller.on_event(&Event::DialTurn(-2.0), 2.2),
         run("wpctl set-volume @DEFAULT_AUDIO_SINK@ 2%-")
+    );
+    assert_eq!(
+        controller.status().last_gesture.as_deref(),
+        Some("wrist turn \u{2212}")
     );
 }
 
@@ -234,5 +242,41 @@ fn battery_reports_update_the_status() {
     assert_eq!(
         (controller.status().battery, controller.status().charging),
         (Some(42), None)
+    );
+}
+
+#[test]
+fn a_stale_hand_is_forgotten_on_reconnect() {
+    let mut controller = live(Config::default());
+    controller.on_event(&Event::Handedness(Hand::Right), 1.0);
+    controller.on_disconnect();
+    let mut config = Config::default();
+    config.band.hand = HandSetting::Left;
+    assert!(controller.set_config(config).is_empty());
+    assert!(controller.on_event(&Event::Connected, 3.0).is_empty());
+    assert_eq!(
+        controller.on_event(&Event::Handedness(Hand::Right), 3.5),
+        vec![Command::SetHand(Hand::Left)]
+    );
+}
+
+#[test]
+fn an_explicit_hand_request_overrides_the_config_until_it_reloads() {
+    let mut config = Config::default();
+    config.band.hand = HandSetting::Left;
+    let mut controller = live(config);
+    assert!(
+        controller
+            .on_event(&Event::Handedness(Hand::Left), 1.0)
+            .is_empty()
+    );
+    assert_eq!(
+        controller.request_hand(Hand::Right),
+        vec![Command::SetHand(Hand::Right)]
+    );
+    assert!(
+        controller
+            .on_event(&Event::Handedness(Hand::Right), 1.5)
+            .is_empty()
     );
 }

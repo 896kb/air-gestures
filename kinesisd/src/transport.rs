@@ -172,9 +172,6 @@ impl Transport for SimTransport {
         let responder = {
             let mut state = self.lock();
             let mode = state.next_mode.take().unwrap_or(state.mode);
-            if mode == SimMode::Ceremony {
-                state.mode = SimMode::Enrolled;
-            }
             state.inject = Some(sender);
             state.opens += 1;
             let mut responder = Responder::new(mode, state.band_key.clone());
@@ -193,6 +190,25 @@ impl Transport for SimTransport {
     }
 }
 
+/// Persist whatever changed since the last sync: what a real band remembers
+/// survives the connection, including the mode once the ceremony commits.
+fn sync_state(
+    band: &Responder,
+    synced: &mut (Option<[u8; 32]>, u64, bool),
+    state: &Mutex<SimState>,
+) {
+    let current = (band.owner(), band.hand, band.finish_seen());
+    if current != *synced {
+        let mut state = state.lock().expect("sim transport lock");
+        state.owner = current.0;
+        state.hand = current.1;
+        if current.2 && !synced.2 {
+            state.mode = SimMode::Enrolled;
+        }
+        *synced = current;
+    }
+}
+
 async fn serve(
     mut io: DuplexStream,
     mut band: Responder,
@@ -200,13 +216,8 @@ async fn serve(
     state: Arc<Mutex<SimState>>,
 ) {
     let mut buffer = vec![0u8; 1 << 16];
+    let mut synced = (band.owner(), band.hand, band.finish_seen());
     loop {
-        // What a real band remembers survives the connection.
-        {
-            let mut state = state.lock().expect("sim transport lock");
-            state.owner = band.owner();
-            state.hand = band.hand;
-        }
         tokio::select! {
             read = io.read(&mut buffer) => {
                 let count = match read {
@@ -214,12 +225,12 @@ async fn serve(
                     Ok(count) => count,
                 };
                 match band.respond(&buffer[..count]) {
-                    Ok(reply) if !reply.is_empty() => {
-                        if io.write_all(&reply).await.is_err() {
+                    Ok(reply) => {
+                        sync_state(&band, &mut synced, &state);
+                        if !reply.is_empty() && io.write_all(&reply).await.is_err() {
                             return;
                         }
                     }
-                    Ok(_) => {}
                     Err(_) => return,
                 }
             }
@@ -234,6 +245,7 @@ async fn serve(
                     Some(SimInject::Gyro(x)) => band.gyro(x),
                     Some(SimInject::RawEmg) => band.raw_emg(),
                 };
+                sync_state(&band, &mut synced, &state);
                 if let Ok(bytes) = bytes
                     && io.write_all(&bytes).await.is_err()
                 {

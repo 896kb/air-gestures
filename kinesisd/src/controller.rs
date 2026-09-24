@@ -50,6 +50,9 @@ pub struct Controller {
     hand: Option<Hand>,
     hand_confirmed: bool,
     hand_requested: bool,
+    /// A runtime hand request (e.g. from the control socket) that wins over
+    /// the configured hand until the config reloads.
+    hand_override: Option<Hand>,
     dial_armed: bool,
     dial_engaged: bool,
     dial_turned: bool,
@@ -78,6 +81,7 @@ impl Controller {
             hand: None,
             hand_confirmed: false,
             hand_requested: false,
+            hand_override: None,
             dial_armed: false,
             dial_engaged: false,
             dial_turned: false,
@@ -100,8 +104,17 @@ impl Controller {
             self.status.dial = config.dial.target;
         }
         self.config = config;
+        self.hand_override = None;
         self.hand_requested = false;
         self.reset_dial();
+        self.maybe_request_hand()
+    }
+
+    /// Ask the band to switch hands right now (e.g. from the control socket).
+    /// This overrides the configured hand until the config reloads.
+    pub fn request_hand(&mut self, hand: Hand) -> Vec<Command> {
+        self.hand_override = Some(hand);
+        self.hand_requested = false;
         self.maybe_request_hand()
     }
 
@@ -140,6 +153,7 @@ impl Controller {
 
     pub fn on_disconnect(&mut self) {
         self.live = false;
+        self.hand = None;
         self.hand_confirmed = false;
         self.hand_requested = false;
         self.suspend();
@@ -260,6 +274,14 @@ impl Controller {
         self.last_dial_action = now;
         match self.config.dial.command(self.dial_target, steps > 0) {
             Some(command) => {
+                self.status.last_gesture = Some(
+                    if steps > 0 {
+                        "wrist turn +"
+                    } else {
+                        "wrist turn \u{2212}"
+                    }
+                    .into(),
+                );
                 self.status.last_action = Some(command.to_owned());
                 vec![Command::Run(command.to_owned())]
             }
@@ -268,6 +290,9 @@ impl Controller {
     }
 
     fn desired_hand(&self) -> Option<Hand> {
+        if let Some(hand) = self.hand_override {
+            return Some(hand);
+        }
         match self.config.band.hand {
             HandSetting::Band => None,
             HandSetting::Left => Some(Hand::Left),
@@ -278,7 +303,10 @@ impl Controller {
     fn maybe_request_hand(&mut self) -> Vec<Command> {
         match (self.desired_hand(), self.hand) {
             (Some(wanted), Some(current))
-                if self.live && wanted != current && !self.hand_requested =>
+                if self.live
+                    && self.hand_confirmed
+                    && wanted != current
+                    && !self.hand_requested =>
             {
                 self.hand_requested = true;
                 vec![Command::SetHand(wanted)]
