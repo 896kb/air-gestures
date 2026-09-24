@@ -52,7 +52,8 @@ pub enum Request {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         address: Option<String>,
     },
-    /// Forget the band: keys, record, Meta session and the Bluetooth bond.
+    /// Forget the band: keys, band record and the Bluetooth bond (the Meta
+    /// sign-in is kept; `kinesisctl signout` removes it).
     Forget,
 }
 
