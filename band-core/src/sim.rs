@@ -36,6 +36,9 @@ impl SimBand {
     /// encryption was up.
     pub fn connect(session: &mut BandSession) -> Result<(SimBand, Vec<DataXFrame>)> {
         let request = session.request()?;
+        if request.len() < 12 {
+            return Err(perr("sim: request is too short"));
+        }
         let local = ProtoFields::parse(&request[12..])?;
         let host_point = local.bytes(1)?.to_vec();
         let host_challenge = local.bytes(2)?.to_vec();
@@ -65,23 +68,28 @@ impl SimBand {
             }
             output.extend(result.outgoing);
         }
+        if output.len() < 4 {
+            return Err(perr("sim: no EnableEncryption from the host"));
+        }
         let size = usize::from(be16(&output, 0) & 0x7fff) + 4;
+        if size < 8 || output.len() < size {
+            return Err(perr("sim: truncated EnableEncryption"));
+        }
         let enable = ProtoFields::parse(&output[8..size])?;
         if enable.bytes(1)? != host_point.as_slice() || enable.integer(5)? != 3 {
             return Err(perr("sim: unexpected EnableEncryption"));
         }
         let host_key = PublicKey::from_sec1_bytes(&[&[4u8][..], &host_point].concat())
             .map_err(|_| perr("sim: invalid host key"))?;
-        let secret = ecdh::diffie_hellman(transport.to_nonzero_scalar(), host_key.as_affine())
-            .raw_secret_bytes()
-            .to_vec();
+        let shared = ecdh::diffie_hellman(transport.to_nonzero_scalar(), host_key.as_affine());
+        let secret = shared.raw_secret_bytes().as_slice();
         let host_seed = enable.bytes(2)?.to_vec();
         let host_iv: [u8; 16] = enable.bytes_len(3, 16)?.try_into().expect("length checked");
         let host_counter = u32::try_from(enable.integer(4)?).map_err(|_| perr("sim: invalid counter"))?;
         let mut band = SimBand {
-            sender: AirShieldCipher::new(AirShieldKeys::derive(&secret, &host_challenge, &band_seed)?, iv, 42),
+            sender: AirShieldCipher::new(AirShieldKeys::derive(secret, &host_challenge, &band_seed)?, iv, 42),
             receiver: AirShieldReceiver::new(AirShieldCipher::new(
-                AirShieldKeys::derive(&secret, &band_challenge, &host_seed)?,
+                AirShieldKeys::derive(secret, &band_challenge, &host_seed)?,
                 host_iv,
                 host_counter,
             )),

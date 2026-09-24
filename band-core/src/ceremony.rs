@@ -16,26 +16,56 @@ use crate::proto::{field_bytes, ProtoFields};
 pub const FACTORY_RESET_HINT: &str = "hold its button for about 16 seconds";
 
 /// What a band in pairing mode reports; sent verbatim to the ownership endpoints.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// `Debug` prints lengths only.
+#[derive(Clone, PartialEq, Eq)]
 pub struct BandIdentityInfo {
     pub device_certificate: Vec<u8>,
     pub serial: String,
     pub secondary_certificate: Vec<u8>,
 }
 
-/// Input for the `pair_request` HTTP call.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// Input for the `pair_request` HTTP call. `Debug` prints lengths only.
+#[derive(Clone, PartialEq, Eq)]
 pub struct CeremonyPairRequest {
     pub identity: BandIdentityInfo,
     pub nonce: Vec<u8>,
     pub app_public_key: Vec<u8>,
 }
 
-/// Input for the `pair` HTTP call.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// Input for the `pair` HTTP call. `Debug` prints lengths only.
+#[derive(Clone, PartialEq, Eq)]
 pub struct CeremonyPair {
     pub receipt: String,
     pub signature: Vec<u8>,
+}
+
+impl std::fmt::Debug for BandIdentityInfo {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BandIdentityInfo")
+            .field("device_certificate_len", &self.device_certificate.len())
+            .field("serial_len", &self.serial.len())
+            .field("secondary_certificate_len", &self.secondary_certificate.len())
+            .finish()
+    }
+}
+
+impl std::fmt::Debug for CeremonyPairRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CeremonyPairRequest")
+            .field("identity", &self.identity)
+            .field("nonce_len", &self.nonce.len())
+            .field("app_public_key_len", &self.app_public_key.len())
+            .finish()
+    }
+}
+
+impl std::fmt::Debug for CeremonyPair {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CeremonyPair")
+            .field("receipt_len", &self.receipt.len())
+            .field("signature_len", &self.signature.len())
+            .finish()
+    }
 }
 
 /// An exchange the band ceremony cannot answer by itself.
@@ -164,7 +194,8 @@ impl OwnershipCeremony {
     }
 
     /// FinishChangeOwner, same field map as StartChangeOwner. A missing device
-    /// key is tolerated (the band's trust proof then stays unverified).
+    /// key is tolerated (the band's trust proof then stays unverified). A given
+    /// key is the 64-byte `x || y` point or its 65-byte `0x04`-prefixed form.
     pub fn pair_completed(&mut self, signature: &[u8], receipt: &str, device_public_key: Option<&[u8]>) -> Result<Vec<u8>> {
         if self.stage != Stage::FinishChangeOwner {
             return Err(perr("The enrollment isn't waiting for its final receipt"));
@@ -172,13 +203,17 @@ impl OwnershipCeremony {
         if signature.is_empty() || receipt.is_empty() {
             return Err(perr("The server didn't return a final ownership receipt"));
         }
-        // Validate a full device key before the band is asked to commit.
-        if let Some(point) = device_public_key
-            && point.len() == 64
-        {
+        // Validate the device key before the band is asked to commit.
+        let device_point = match device_public_key {
+            None => None,
+            Some(point) if point.len() == 64 => Some(point),
+            Some(point) if point.len() == 65 && point[0] == 4 => Some(&point[1..]),
+            Some(_) => return Err(perr("The server returned an invalid band key")),
+        };
+        if let Some(point) = device_point {
             verifying_key_from_point64(point)?;
         }
-        self.device_public_key = device_public_key.map(<[u8]>::to_vec);
+        self.device_public_key = device_point.map(<[u8]>::to_vec);
         self.stage = Stage::Done;
         encode_frame(0x8002, &[0x02002004], &[field_bytes(1, signature), field_bytes(2, receipt.as_bytes())].concat())
     }

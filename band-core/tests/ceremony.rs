@@ -175,3 +175,33 @@ fn an_invalid_device_key_fails_before_the_band_commits() {
     assert!(ceremony.pair_completed(&final_signature(), FINAL_RECEIPT, Some(&[0xff; 64])).is_err());
     assert_eq!(ceremony.stage(), Stage::FinishChangeOwner);
 }
+
+#[test]
+fn a_prefixed_device_key_is_accepted_and_other_lengths_are_rejected() {
+    let mut ceremony = at_pair_stage();
+    ceremony
+        .start_change_owner(&[fb(1, &device_signature()), fb(2, DEVICE_RECEIPT.as_bytes())].concat())
+        .unwrap();
+    let band_key = SigningKey::random(&mut OsRng);
+    let x963 = [vec![4u8], point64(band_key.verifying_key())].concat();
+    assert!(ceremony.pair_completed(&final_signature(), FINAL_RECEIPT, Some(&x963[..33])).is_err());
+    assert!(ceremony.pair_completed(&final_signature(), FINAL_RECEIPT, Some(&[0u8; 0])).is_err());
+    let mut wrong_prefix = x963.clone();
+    wrong_prefix[0] = 2;
+    assert!(ceremony.pair_completed(&final_signature(), FINAL_RECEIPT, Some(&wrong_prefix)).is_err());
+    assert_eq!(ceremony.stage(), Stage::FinishChangeOwner);
+    ceremony.pair_completed(&final_signature(), FINAL_RECEIPT, Some(&x963)).unwrap();
+    let identity = ceremony.complete(&[0x02002005], &[]).unwrap();
+    assert_eq!(identity.band_public_key, Some(*band_key.verifying_key()));
+}
+
+#[test]
+fn ceremony_debug_never_prints_receipts() {
+    let mut ceremony = at_pair_stage();
+    let pair = ceremony
+        .start_change_owner(&[fb(1, &device_signature()), fb(2, DEVICE_RECEIPT.as_bytes())].concat())
+        .unwrap();
+    let text = format!("{:?}", pair);
+    assert!(!text.contains(DEVICE_RECEIPT), "{text}");
+    assert!(text.contains("receipt_len"), "{text}");
+}

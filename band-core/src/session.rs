@@ -1,5 +1,9 @@
 //! The band handshake, trust setup and input subscription (kinesis `BandSession.swift`).
 //! It never exports session keys.
+//!
+//! Any `Err` from `feed` is terminal: drop the session. If a ceremony was
+//! running, first persist `enrollment()` (set once the band confirmed
+//! ownership) — the band may already have changed owner.
 
 use std::collections::HashMap;
 
@@ -238,6 +242,10 @@ impl BandSession {
     pub fn enrollment(&self) -> Option<&EnrollmentIdentity> {
         self.enrollment.as_ref()
     }
+    /// Whether the band's trust proof is checked: the enrollment knows the band's key.
+    pub fn band_verified(&self) -> bool {
+        self.enrollment.as_ref().is_some_and(|identity| identity.band_public_key.is_some())
+    }
 
     /// The first bytes to write after the L2CAP channel opens: RequestEncryption.
     pub fn request(&self) -> Result<Vec<u8>> {
@@ -265,6 +273,10 @@ impl BandSession {
     }
 
     /// Feed bytes read from the band's L2CAP channel at monotonic `time` (seconds).
+    ///
+    /// Any `Err` from `feed` is terminal: drop the session. If a ceremony was
+    /// running, first persist `enrollment()` (set once the band confirmed
+    /// ownership) — the band may already have changed owner.
     pub fn feed(&mut self, bytes: &[u8], time: f64) -> Result<FeedResult> {
         self.pending.extend_from_slice(bytes);
         let mut outgoing = Vec::new();
@@ -317,17 +329,17 @@ impl BandSession {
                         _ => return Err(perr("Unexpected band encryption response")),
                     };
                     let shared = ecdh::diffie_hellman(self.secret.to_nonzero_scalar(), peer.as_affine());
-                    let secret = shared.raw_secret_bytes().to_vec();
+                    let secret = shared.raw_secret_bytes().as_slice();
                     let peer_seed = fields.bytes_len(2, 32)?.to_vec();
                     let peer_iv: [u8; 16] = fields.bytes_len(3, 16)?.try_into().expect("length checked");
                     let peer_counter = u32::try_from(fields.integer(4)?).map_err(|_| perr("Invalid band packet counter"))?;
                     self.transmitter = Some(AirShieldCipher::new(
-                        AirShieldKeys::derive(&secret, &peer_challenge, &self.seed)?,
+                        AirShieldKeys::derive(secret, &peer_challenge, &self.seed)?,
                         self.iv,
                         self.base,
                     ));
                     self.receiver = Some(AirShieldReceiver::new(AirShieldCipher::new(
-                        AirShieldKeys::derive(&secret, &self.challenge, &peer_seed)?,
+                        AirShieldKeys::derive(secret, &self.challenge, &peer_seed)?,
                         peer_iv,
                         peer_counter,
                     )));
@@ -398,10 +410,10 @@ impl BandSession {
     /// Update the existing input subscription. Gesture and motion flags stay on.
     pub fn set_raw_emg_enabled(&mut self, enabled: bool, time: f64) -> Result<Vec<u8>> {
         if self.stopping {
-            return Err(perr("Wait for the band to reconnect before changing readings."));
+            return Err(BandError::Busy("Wait for the band to reconnect before changing readings.".into()));
         }
         if self.raw_request.is_some() {
-            return Err(perr("Wait for the current EMG change to finish."));
+            return Err(BandError::Busy("Wait for the current EMG change to finish.".into()));
         }
         self.raw_emg = enabled;
         if !self.streams_enabled {
@@ -437,7 +449,7 @@ impl BandSession {
     /// Write the band's hand setting, then confirm it with an independent read.
     pub fn set_handedness(&mut self, hand: Hand, time: f64) -> Result<Vec<u8>> {
         if !self.streams_enabled || self.stopping || self.hand.is_none() || self.hand_request.is_some() {
-            return Err(perr("Wait for the band to report its hand before changing it."));
+            return Err(BandError::Busy("Wait for the band to report its hand before changing it.".into()));
         }
         self.dial = PinchDial::default();
         self.request_hand(Some(hand), false, time)
@@ -518,8 +530,10 @@ impl BandSession {
         self.stream_request(5, None)
     }
 
-    /// Disable the streams (including raw sEMG if it was requested). Wait up to
-    /// three seconds for `stop_acknowledged()` before closing the channel.
+    /// Disable the streams (including raw sEMG if it was requested).
+    ///
+    /// An empty return means there is nothing to acknowledge — close the channel
+    /// now. Otherwise write the bytes and wait up to 3 s for `stop_acknowledged()`.
     pub fn stop(&mut self) -> Result<Vec<u8>> {
         if self.stopping {
             return Ok(Vec::new());
@@ -536,6 +550,9 @@ impl BandSession {
 
     /// Resume the ceremony after the `pair_request` HTTP exchange.
     pub fn ceremony_pair_request_completed(&mut self, signature: &[u8], receipt: &str) -> Result<Vec<u8>> {
+        if self.stopping {
+            return Ok(Vec::new());
+        }
         let frame = self
             .ceremony
             .as_mut()
@@ -546,6 +563,9 @@ impl BandSession {
 
     /// Resume the ceremony after the `pair` HTTP exchange.
     pub fn ceremony_pair_completed(&mut self, signature: &[u8], receipt: &str, device_public_key: Option<&[u8]>) -> Result<Vec<u8>> {
+        if self.stopping {
+            return Ok(Vec::new());
+        }
         let frame = self
             .ceremony
             .as_mut()
