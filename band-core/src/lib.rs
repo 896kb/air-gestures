@@ -4,6 +4,7 @@
 //! received bytes plus a monotonic time in seconds and get outgoing bytes and
 //! typed events back; nothing here touches sockets, clocks or files.
 
+pub mod datax;
 pub mod error;
 pub mod proto;
 
