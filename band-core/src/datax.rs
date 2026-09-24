@@ -45,7 +45,7 @@ pub struct DataXReceiver {
 
 impl DataXReceiver {
     pub fn feed(&mut self, plaintext: &[u8]) -> Result<Vec<DataXFrame>> {
-        if plaintext.is_empty() || plaintext.len() % 16 != 0 {
+        if plaintext.is_empty() || !plaintext.len().is_multiple_of(16) {
             return Err(perr("Unaligned DataX plaintext"));
         }
         let mut bytes = plaintext;

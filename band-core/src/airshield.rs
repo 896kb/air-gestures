@@ -103,7 +103,7 @@ impl AirShieldCipher {
             return Err(perr("Band packet authentication failed"));
         }
         let ciphertext = &packet[10..];
-        if ciphertext.is_empty() || ciphertext.len() % 16 != 0 {
+        if ciphertext.is_empty() || !ciphertext.len().is_multiple_of(16) {
             return Err(perr("Invalid AES block shape"));
         }
         let plaintext = cbc::Decryptor::<Aes256>::new_from_slices(&self.keys.encryption, &self.iv)
