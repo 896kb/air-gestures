@@ -146,3 +146,27 @@ fn an_aligned_record_ending_in_0xc1_does_not_corrupt_the_next_record() {
     assert_eq!(frames[0].words, vec![0x02000315]);
     assert_eq!(frames[0].payload, second);
 }
+
+/// Newer firmware pads a block-aligned frame with a whole block of 0xd0 (seen
+/// on hardware: a 1888-byte identity reply in a 1904-byte record); the block
+/// must go, or the next record's frame is parsed from the padding.
+#[test]
+fn a_whole_block_of_padding_after_an_aligned_frame_is_dropped() {
+    let mut receiver = DataXReceiver::default();
+    let first: Vec<u8> = (0..24).collect();
+    let aligned = encode_frame(2, &[0x02003001], &first).unwrap();
+    assert_eq!(aligned.len(), 32);
+    let record = [aligned, vec![0xd0; 16]].concat();
+    let frames = receiver.feed(&record).unwrap();
+    assert_eq!(frames.len(), 1);
+    assert_eq!(frames[0].payload, first);
+    assert_eq!(receiver.pending_len(), 0);
+
+    let second: Vec<u8> = (0..18).collect();
+    let frame = encode_frame(2, &[0x02002001], &second).unwrap();
+    assert_eq!(frame.len(), 26);
+    let frames = receiver.feed(&[frame, vec![0xc6; 6]].concat()).unwrap();
+    assert_eq!(frames.len(), 1);
+    assert_eq!(frames[0].words, vec![0x02002001]);
+    assert_eq!(frames[0].payload, second);
+}

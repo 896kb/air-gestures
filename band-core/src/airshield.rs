@@ -18,6 +18,9 @@ pub struct AirShieldKeys {
     pub mac: [u8; 32],
     /// Bytes the MAC covers before the counter (`02 02 00 00` for scheme 31).
     pub mac_prefix: &'static [u8],
+    /// Pad a block-aligned frame with a whole block, as newer firmware does
+    /// (scheme 3 sends aligned frames unpadded).
+    pub pad_aligned: bool,
 }
 
 /// Where a scheme's MAC key comes from.
@@ -145,6 +148,7 @@ impl AirShieldKeys {
             } else {
                 &[]
             },
+            pad_aligned: variant.announce != 3,
         })
     }
 
@@ -153,6 +157,7 @@ impl AirShieldKeys {
             encryption,
             mac,
             mac_prefix: &[],
+            pad_aligned: false,
         }
     }
 }
@@ -178,7 +183,10 @@ impl AirShieldCipher {
     }
 
     pub fn encrypt(&mut self, frame: &[u8]) -> Result<Vec<u8>> {
-        let count = (16 - frame.len() % 16) % 16;
+        let count = match 16 - frame.len() % 16 {
+            16 if !self.keys.pad_aligned => 0,
+            count => count,
+        };
         let mut padded = frame.to_vec();
         padded.extend(std::iter::repeat_n(0xc0 + count as u8, count));
         if padded.is_empty() || padded.len() > 4096 {

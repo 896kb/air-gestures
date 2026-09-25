@@ -128,7 +128,9 @@ impl DataXReceiver {
             return;
         };
         let count = usize::from(marker.wrapping_sub(0xc0));
-        if !(1..=15).contains(&count) || count > self.pending.len() {
+        // Newer firmware pads every record by 1..=16 bytes: a frame that ends on a
+        // block boundary is followed by a whole block of 0xd0 (seen on hardware).
+        if !(1..=16).contains(&count) || count > self.pending.len() {
             return;
         }
         let tail = self.pending.len() - count;
