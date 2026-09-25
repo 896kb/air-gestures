@@ -4,7 +4,7 @@
 use band_core::events::{Event, Hand};
 use band_core::gestures::{ActionGate, DialRouter, GestureRouter, Recognized, Swipe, Tap};
 
-use crate::config::{Config, DialTarget, HandSetting, ToggleTap};
+use crate::config::{Config, DialTarget, HandSetting, ToggleGesture};
 use crate::status::Status;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -45,11 +45,12 @@ struct HeldTap {
 /// needs them under ~0.33 s apart; a triple tap is a little slower).
 pub const TRIPLE_TAP_GAP: f64 = 0.45;
 
-fn toggle_finger(tap: Tap) -> ToggleTap {
+/// The triple-tap toggle this tap could be part of.
+fn triple_of(tap: Tap) -> ToggleGesture {
     match tap {
-        Tap::IndexTap | Tap::IndexDoubleTap => ToggleTap::Index,
-        Tap::MiddleTap | Tap::MiddleDoubleTap => ToggleTap::Middle,
-        Tap::MiddleHold => ToggleTap::None,
+        Tap::IndexTap | Tap::IndexDoubleTap => ToggleGesture::IndexTriple,
+        Tap::MiddleTap | Tap::MiddleDoubleTap => ToggleGesture::MiddleTriple,
+        Tap::MiddleHold => ToggleGesture::None,
     }
 }
 
@@ -280,9 +281,19 @@ impl Controller {
         {
             return Vec::new();
         }
+        if gesture == Recognized::Tap(Tap::MiddleHold)
+            && self.config.band.toggle == ToggleGesture::MiddleHold
+        {
+            // One toggle per hold, however often the band repeats it.
+            if now - self.toggled_at < 1.0 {
+                return Vec::new();
+            }
+            self.toggled_at = now;
+            return self.toggle_by_tap(now);
+        }
         if let Recognized::Tap(tap) = gesture
-            && self.config.band.toggle_tap != ToggleTap::None
-            && toggle_finger(tap) == self.config.band.toggle_tap
+            && self.config.band.toggle != ToggleGesture::None
+            && triple_of(tap) == self.config.band.toggle
         {
             if double_of(tap).is_some() {
                 if self

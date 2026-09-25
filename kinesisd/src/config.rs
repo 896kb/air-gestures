@@ -16,14 +16,18 @@ pub enum HandSetting {
     Right,
 }
 
-/// The finger whose triple tap turns the controls off and on.
+/// The gesture that turns the controls off and on (it works while they are off).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum ToggleTap {
+#[serde(rename_all = "snake_case")]
+pub enum ToggleGesture {
     #[default]
     None,
-    Index,
-    Middle,
+    /// The band's own middle-finger hold (long press).
+    MiddleHold,
+    /// Three taps, each within 0.45 s of the last; that finger's double tap
+    /// then waits 0.45 s for a third. Fast tapping only.
+    IndexTriple,
+    MiddleTriple,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -50,10 +54,9 @@ pub struct BandConfig {
     pub hand: HandSetting,
     /// Connect and enable controls when the daemon starts.
     pub autostart: bool,
-    /// A triple tap of this finger turns the controls off and on (works
-    /// while they are off). Its double tap then waits ~0.45 s for a third tap.
-    pub toggle_tap: ToggleTap,
-    /// Run after a triple tap toggled the controls, with `KINESIS_ENABLED=1`
+    /// The gesture that turns the controls off and on.
+    pub toggle: ToggleGesture,
+    /// Run after that gesture toggled the controls, with `KINESIS_ENABLED=1`
     /// or `0` in its environment (e.g. an OSD).
     pub on_toggle: String,
 }
@@ -63,7 +66,7 @@ impl Default for BandConfig {
         Self {
             hand: HandSetting::Band,
             autostart: true,
-            toggle_tap: ToggleTap::None,
+            toggle: ToggleGesture::None,
             on_toggle: String::new(),
         }
     }

@@ -4,9 +4,10 @@
 [band]
 hand = "band"        # "band" = whatever the band reports | "left" | "right"
 autostart = true     # connect and enable controls when kinesisd starts
-toggle_tap = "none"   # "index" | "middle": a triple tap of that finger turns controls off/on
-                      # (its double tap then waits ~0.45 s to rule out a third tap)
-on_toggle = ""        # run after a triple tap, with KINESIS_ENABLED=1|0 set (e.g. an OSD)
+toggle = "none"       # gesture that turns controls off/on (works while off):
+                      # "middle_hold" (long press) | "index_triple" | "middle_triple"
+                      # (triple: taps <0.45 s apart; that finger's double tap waits 0.45 s)
+on_toggle = ""        # run after toggling, with KINESIS_ENABLED=1|0 set (e.g. an OSD)
 
 [gestures]
 swipe_left    = "hyprctl dispatch workspace e-1"

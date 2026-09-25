@@ -378,7 +378,7 @@ fn a_disconnect_drops_a_held_tap() {
 
 fn with_toggle_tap() -> Controller {
     let mut config = Config::default();
-    config.band.toggle_tap = kinesisd::config::ToggleTap::Middle;
+    config.band.toggle = kinesisd::config::ToggleGesture::MiddleTriple;
     config.band.on_toggle = "osd".into();
     live(config)
 }
@@ -452,4 +452,44 @@ fn slow_taps_are_not_a_triple_tap() {
         controller.on_event(&gesture(sequence, "middle", "tap", at), at);
     }
     assert!(!controller.status().paused);
+}
+
+fn with_hold_toggle() -> Controller {
+    let mut config = Config::default();
+    config.band.toggle = kinesisd::config::ToggleGesture::MiddleHold;
+    config.band.on_toggle = "osd".into();
+    config.gestures.middle_hold = "never-runs".into();
+    live(config)
+}
+
+#[test]
+fn a_middle_hold_toggles_the_controls_even_while_off() {
+    let mut controller = with_hold_toggle();
+    assert_eq!(
+        controller.on_event(&gesture(1, "middle", "hold", 2.0), 2.0),
+        run("export KINESIS_ENABLED=0; osd")
+    );
+    assert!(controller.status().paused);
+    assert!(
+        controller
+            .on_event(&gesture(2, "middle", "hold", 2.3), 2.3)
+            .is_empty(),
+        "one toggle per hold"
+    );
+    assert_eq!(
+        controller.on_event(&gesture(3, "middle", "hold", 4.0), 4.0),
+        run("export KINESIS_ENABLED=1; osd")
+    );
+    assert!(!controller.status().paused);
+}
+
+#[test]
+fn with_a_hold_toggle_the_middle_double_tap_runs_at_once() {
+    let mut controller = with_hold_toggle();
+    controller.on_event(&gesture(1, "middle", "tap", 2.0), 2.0);
+    controller.on_event(&gesture(2, "middle", "tap", 2.25), 2.25);
+    assert_eq!(
+        controller.on_event(&gesture(3, "middle", "doubletap", 2.25), 2.25),
+        run("wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle")
+    );
 }
