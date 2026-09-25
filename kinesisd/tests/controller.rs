@@ -311,3 +311,67 @@ fn an_explicit_hand_request_overrides_the_config_until_it_reloads() {
             .is_empty()
     );
 }
+
+fn with_index_tap() -> Controller {
+    let mut config = Config::default();
+    config.gestures.index_tap = "kinesis-dial toggle".into();
+    live(config)
+}
+
+#[test]
+fn an_index_tap_waits_out_its_double_tap_then_runs() {
+    let mut controller = with_index_tap();
+    assert!(
+        controller
+            .on_event(&gesture(1, "index", "tap", 2.0), 2.0)
+            .is_empty()
+    );
+    let due = controller.held_tap_due().expect("the tap is held");
+    assert!(controller.fire_held_tap(due - 0.01).is_empty());
+    assert_eq!(controller.fire_held_tap(due), run("kinesis-dial toggle"));
+    assert!(controller.held_tap_due().is_none());
+    assert!(controller.fire_held_tap(due + 1.0).is_empty(), "runs once");
+}
+
+/// On the band a double tap is: tap, then ~0.3 s later tap + doubletap at once.
+#[test]
+fn a_double_tap_runs_only_its_own_action() {
+    let mut controller = with_index_tap();
+    assert!(
+        controller
+            .on_event(&gesture(1, "index", "tap", 2.0), 2.0)
+            .is_empty()
+    );
+    assert!(
+        controller
+            .on_event(&gesture(2, "index", "tap", 2.3), 2.3)
+            .is_empty()
+    );
+    assert_eq!(
+        controller.on_event(&gesture(3, "index", "doubletap", 2.3), 2.3),
+        run("playerctl play-pause")
+    );
+    assert!(controller.held_tap_due().is_none());
+    assert!(controller.fire_held_tap(5.0).is_empty());
+}
+
+#[test]
+fn a_tap_without_a_double_tap_action_runs_at_once() {
+    let mut config = Config::default();
+    config.gestures.index_tap = "kinesis-dial toggle".into();
+    config.gestures.index_double = String::new();
+    let mut controller = live(config);
+    assert_eq!(
+        controller.on_event(&gesture(1, "index", "tap", 2.0), 2.0),
+        run("kinesis-dial toggle")
+    );
+    assert!(controller.held_tap_due().is_none());
+}
+
+#[test]
+fn a_disconnect_drops_a_held_tap() {
+    let mut controller = with_index_tap();
+    controller.on_event(&gesture(1, "index", "tap", 2.0), 2.0);
+    controller.on_disconnect();
+    assert!(controller.fire_held_tap(5.0).is_empty());
+}

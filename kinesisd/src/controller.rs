@@ -29,6 +29,26 @@ fn label(gesture: Recognized) -> &'static str {
     }
 }
 
+/// How long a single tap waits for its double tap. On the band the second tap
+/// follows 0.25–0.33 s after the first, and the double tap arrives with it.
+pub const DOUBLE_TAP_WAIT: f64 = 0.4;
+
+/// A single tap held back while its finger's double tap may still come.
+#[derive(Debug, Clone, Copy)]
+struct HeldTap {
+    tap: Tap,
+    fire_at: f64,
+    received_at: f64,
+}
+
+fn double_of(tap: Tap) -> Option<Tap> {
+    match tap {
+        Tap::IndexTap => Some(Tap::IndexDoubleTap),
+        Tap::MiddleTap => Some(Tap::MiddleDoubleTap),
+        _ => None,
+    }
+}
+
 fn hand_name(hand: Hand) -> &'static str {
     match hand {
         Hand::Left => "left",
@@ -61,6 +81,7 @@ pub struct Controller {
     dial_turned: bool,
     dial_ended_at: f64,
     last_dial_action: f64,
+    held_tap: Option<HeldTap>,
     status: Status,
 }
 
@@ -91,6 +112,7 @@ impl Controller {
             dial_turned: false,
             dial_ended_at: f64::NEG_INFINITY,
             last_dial_action: f64::NEG_INFINITY,
+            held_tap: None,
             status,
         }
     }
@@ -164,6 +186,7 @@ impl Controller {
         self.hand_requested = false;
         self.hand_retry_used = false;
         self.suspend();
+        self.held_tap = None;
         self.router.reset();
         self.status.charging = None;
     }
@@ -233,12 +256,75 @@ impl Controller {
         {
             return Vec::new();
         }
+        if let Recognized::Tap(tap) = gesture {
+            // A double tap supersedes the single tap(s) it was made of.
+            if self
+                .held_tap
+                .is_some_and(|held| double_of(held.tap) == Some(tap))
+            {
+                self.held_tap = None;
+            }
+            // A single tap whose double has an action waits to see whether it
+            // is the first half of that double tap.
+            if let Some(double) = double_of(tap)
+                && !self
+                    .config
+                    .gestures
+                    .command(Recognized::Tap(tap))
+                    .is_empty()
+                && !self
+                    .config
+                    .gestures
+                    .command(Recognized::Tap(double))
+                    .is_empty()
+            {
+                match &mut self.held_tap {
+                    // The double's second tap: its double tap comes right with it.
+                    Some(held) if held.tap == tap => held.fire_at = held.fire_at.max(now + 0.08),
+                    _ => {
+                        self.held_tap = Some(HeldTap {
+                            tap,
+                            fire_at: now + DOUBLE_TAP_WAIT,
+                            received_at: message.received_at,
+                        })
+                    }
+                }
+                return Vec::new();
+            }
+        }
         self.status.gestures += 1;
         self.status.last_gesture = Some(label(gesture).into());
         let command = self.config.gestures.command(gesture).to_owned();
         if !self.enabled
             || command.is_empty()
             || !self.gate.allows(message.received_at, now, self.live, true)
+        {
+            return Vec::new();
+        }
+        self.status.last_action = Some(command.clone());
+        vec![Command::Run(command)]
+    }
+
+    /// When a held single tap is due (see `fire_held_tap`).
+    pub fn held_tap_due(&self) -> Option<f64> {
+        self.held_tap.map(|held| held.fire_at)
+    }
+
+    /// Run a held single tap whose double tap never came.
+    pub fn fire_held_tap(&mut self, now: f64) -> Vec<Command> {
+        let Some(held) = self.held_tap.filter(|held| now >= held.fire_at) else {
+            return Vec::new();
+        };
+        self.held_tap = None;
+        let gesture = Recognized::Tap(held.tap);
+        self.status.gestures += 1;
+        self.status.last_gesture = Some(label(gesture).into());
+        let command = self.config.gestures.command(gesture).to_owned();
+        if !self.enabled
+            || command.is_empty()
+            || !self
+                .gate
+                .allows_held(held.received_at, true, now, self.live)
         {
             return Vec::new();
         }

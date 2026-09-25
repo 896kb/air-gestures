@@ -231,6 +231,19 @@ impl ActionGate {
         self.armed_at = f64::INFINITY;
     }
 
+    /// For an action held back on purpose (a single tap waiting out its
+    /// double tap): the event must have been fresh (`fresh`) and after `arm`;
+    /// the rate limit counts from `now`.
+    pub fn allows_held(&mut self, event_time: f64, fresh: bool, now: f64, live: bool) -> bool {
+        if !(live && fresh && event_time >= self.armed_at)
+            || now - self.last_action < self.minimum_interval
+        {
+            return false;
+        }
+        self.last_action = now;
+        true
+    }
+
     pub fn allows(&mut self, event_time: f64, now: f64, live: bool, trusted: bool) -> bool {
         let age = now - event_time;
         if !(live && trusted && event_time >= self.armed_at && (-0.1..=0.35).contains(&age))

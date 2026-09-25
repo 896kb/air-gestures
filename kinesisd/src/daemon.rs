@@ -191,6 +191,12 @@ impl<T: Transport, R: Runner, F: ClientFactory> Daemon<T, R, F> {
                     }
                 }
                 _ = ticker.tick() => self.on_tick(),
+                _ = until(self.controller.held_tap_due(), self.clock) => {
+                    let now = self.clock.now();
+                    for command in self.controller.fire_held_tap(now) {
+                        self.apply(command);
+                    }
+                }
             }
             self.publish();
         }
@@ -678,5 +684,13 @@ impl<T: Transport, R: Runner, F: ClientFactory> Daemon<T, R, F> {
         }
         self.publish();
         Response::ok(self.status.borrow().clone())
+    }
+}
+
+/// Sleeps until `deadline` on `clock`; never finishes without one.
+async fn until(deadline: Option<f64>, clock: Clock) {
+    match deadline {
+        Some(at) => tokio::time::sleep(Duration::from_secs_f64((at - clock.now()).max(0.0))).await,
+        None => std::future::pending().await,
     }
 }
