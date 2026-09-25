@@ -378,6 +378,16 @@ impl Transport for BluezTransport {
         .map_err(|error| format!("opening the band's input channel failed: {error}"))
     }
 
+    async fn release(&self, address: &str) {
+        let Ok(target) = parse(address) else { return };
+        if let Ok(Some(device)) = self.existing_device(target).await
+            && device.is_connected().await.unwrap_or(false)
+            && let Err(error) = device.disconnect().await
+        {
+            tracing::debug!("could not drop the band's Bluetooth link: {error}");
+        }
+    }
+
     async fn forget(&self, address: &str) -> Result<(), String> {
         let target = parse(address)?;
         // The object may live under a different (private) address than the identity we saved.

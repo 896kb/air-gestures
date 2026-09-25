@@ -621,6 +621,10 @@ impl<T: Transport, R: Runner, F: ClientFactory> Daemon<T, R, F> {
                 self.error = None;
                 self.reconnect_at = None;
                 self.stop_link().await;
+                // Let go of the band entirely, so a phone can connect to it.
+                if let Ok(Some(band)) = self.store.load_band() {
+                    self.transport.release(&band.address).await;
+                }
             }
             Request::Pause => self.controller.pause(),
             Request::Resume => self.controller.resume(now),

@@ -40,6 +40,9 @@ pub trait Transport: Send + Sync + 'static {
     fn open(&self, address: &str) -> impl Future<Output = Result<Self::Io, String>> + Send;
     /// Remove the system's bond with `address`.
     fn forget(&self, address: &str) -> impl Future<Output = Result<(), String>> + Send;
+    /// Drop the system's Bluetooth link to `address` (the bond stays), so another
+    /// device can reach the band; a closed channel alone can leave BlueZ connected.
+    fn release(&self, address: &str) -> impl Future<Output = ()> + Send;
     /// The band's stable address once bonded: a band advertising a resolvable
     /// private address is known by its identity address afterwards. Returns
     /// `address` unchanged when there is nothing better.
@@ -230,6 +233,8 @@ impl Transport for SimTransport {
         tokio::spawn(serve(band, responder, mode, receiver, self.state.clone()));
         Ok(host)
     }
+
+    async fn release(&self, _address: &str) {}
 
     async fn forget(&self, _address: &str) -> Result<(), String> {
         Ok(())
