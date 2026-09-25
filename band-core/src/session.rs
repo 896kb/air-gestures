@@ -26,6 +26,13 @@ use crate::identity::{EnrollmentIdentity, trust_digest};
 use crate::proto::{ProtoFields, field_bytes, field_int};
 
 const STREAM_FIELDS: [u32; 3] = [3, 6, 8];
+/// The channel as the protocol logic knows it: the direction flag and the low
+/// byte. Newer firmware sets extra bits (0x1c00) on channels it answers or
+/// opens: 0x9c01 for 0x8001, 0x9c02 for 0x8002.
+fn route(channel: u16) -> u16 {
+    channel & 0x80ff
+}
+
 const STREAM_CHANNEL: u16 = 0x8005;
 const CONFIGURATION_CHANNEL: u16 = 0x8006;
 const CONFIG_SERVICE_CHANNEL: u16 = 0x8007;
@@ -955,7 +962,7 @@ impl BandSession {
         let Some(&kind) = frame.words.last() else {
             return Ok(Vec::new());
         };
-        if kind & 0xff00_0000 == 0x0300_0000 && frame.channel == 2 {
+        if kind & 0xff00_0000 == 0x0300_0000 && route(frame.channel) == 2 {
             if kind != 0x03001000 {
                 let code = kind & 0x00ff_ffff;
                 if code == 0x1043 {
@@ -972,7 +979,7 @@ impl BandSession {
                 });
             }
             self.app_trusted = true;
-        } else if kind == 0x02001001 && frame.channel & 0x8000 != 0 {
+        } else if kind == 0x02001001 && route(frame.channel) & 0x8000 != 0 {
             if self.band_trusted {
                 return Err(perr("The band sent a duplicate identity proof"));
             }
@@ -998,7 +1005,7 @@ impl BandSession {
             self.band_trusted = true;
             let ack = encode_frame(frame.channel & 0x7fff, &[0x03001000], &[])?;
             outgoing.extend(self.encrypt(&ack)?);
-        } else if kind == LINK_SETUP && frame.channel == 0x8001 && self.end_link_sent {
+        } else if kind == LINK_SETUP && route(frame.channel) == 0x8001 && self.end_link_sent {
             let fields = ProtoFields::parse(&frame.payload)?;
             if fields.required_integer(1)? != 1 || fields.bytes(2)?.len() != 16 {
                 return Err(perr("Unexpected band link setup response"));
@@ -1072,7 +1079,7 @@ impl BandSession {
             return self.receive_identity(frame, outgoing);
         }
         if kind == LINK_SETUP
-            && frame.channel == 0x8001
+            && route(frame.channel) == 0x8001
             && self.setup_stage == SetupStage::Link
             && !self.stopping
         {
@@ -1087,7 +1094,7 @@ impl BandSession {
             outgoing.extend(self.encrypt(&info)?);
             return Ok(Vec::new());
         }
-        if frame.channel & 0x7fff == BATTERY_CHANNEL & 0x7fff && !self.stopping {
+        if route(frame.channel) & 0x7fff == BATTERY_CHANNEL & 0x7fff && !self.stopping {
             if kind == SERVICE_REJECTED {
                 self.battery_request = None;
                 self.battery_unavailable = true;
@@ -1112,23 +1119,24 @@ impl BandSession {
             return Ok(Vec::new());
         }
         if kind == SERVICE_REJECTED && !self.stopping {
-            if frame.channel == 3 && self.setup_stage == SetupStage::DeviceInfo {
+            if route(frame.channel) == 3 && self.setup_stage == SetupStage::DeviceInfo {
                 return Err(perr("The band rejected gesture setup. Try reconnecting."));
             }
             if let Some(raw) = self.raw_request
-                && (frame.channel == 7 || (frame.channel == 5 && raw.stage != RawStage::Config))
+                && (route(frame.channel) == 7
+                    || (route(frame.channel) == 5 && raw.stage != RawStage::Config))
             {
                 self.raw_request = None;
                 return Ok(vec![Event::RawEmgFailure(
                     "The band rejected the EMG request.".into(),
                 )]);
             }
-            if frame.channel == 5 && self.setup_stage == SetupStage::Input {
+            if route(frame.channel) == 5 && self.setup_stage == SetupStage::Input {
                 return Err(perr(
                     "The band rejected the input subscription. Try reconnecting.",
                 ));
             }
-            if frame.channel == 6 && self.hand_request.is_some() {
+            if route(frame.channel) == 6 && self.hand_request.is_some() {
                 self.hand_request = None;
                 self.hand = None;
                 return Ok(vec![Event::HandednessFailure(
@@ -1142,7 +1150,7 @@ impl BandSession {
             return Ok(Vec::new());
         }
         if kind == RPC_RESPONSE
-            && frame.channel == 3
+            && route(frame.channel) == 3
             && self.setup_stage == SetupStage::DeviceInfo
             && !self.stopping
         {
@@ -1165,7 +1173,7 @@ impl BandSession {
         if self.setup_stage != SetupStage::Input {
             return Ok(Vec::new());
         }
-        if kind == RPC_RESPONSE && frame.channel & 0x7fff == CONFIGURATION_CHANNEL & 0x7fff {
+        if kind == RPC_RESPONSE && route(frame.channel) & 0x7fff == CONFIGURATION_CHANNEL & 0x7fff {
             if self.stopping {
                 return Ok(Vec::new());
             }
@@ -1179,7 +1187,7 @@ impl BandSession {
         {
             return Ok(events);
         }
-        if kind == RPC_RESPONSE && frame.channel != STREAM_CHANNEL & 0x7fff {
+        if kind == RPC_RESPONSE && route(frame.channel) != STREAM_CHANNEL & 0x7fff {
             return Ok(Vec::new());
         }
         if kind == RPC_RESPONSE {
@@ -1308,7 +1316,7 @@ impl BandSession {
         } else {
             STREAM_CHANNEL
         };
-        if frame.channel & 0x7fff != expected & 0x7fff || fields.integer(1)? != pending.id {
+        if route(frame.channel) & 0x7fff != expected & 0x7fff || fields.integer(1)? != pending.id {
             return Ok(None);
         }
         if fields.integer(2)? != 1 {

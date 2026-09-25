@@ -28,6 +28,8 @@ pub struct SimBand {
     pub band_seed: Vec<u8>,
     /// The band's own clock for `spin`, in microseconds.
     pub stamp: u64,
+    /// Bits newer firmware sets on flagged (0x8000) channels it sends on.
+    pub channel_tag: u16,
 }
 
 /// The band side of the transport handshake, driven from raw host bytes.
@@ -157,6 +159,7 @@ impl SimHandshake {
             band_challenge: self.band_challenge,
             band_seed: self.band_seed,
             stamp: 1_000_000,
+            channel_tag: if self.firmware.is_some() { 0x1c00 } else { 0 },
         })
     }
 }
@@ -198,7 +201,19 @@ impl SimBand {
 
     /// Encrypt one or more concatenated band → host frames as a single record.
     pub fn encrypt(&mut self, frames: &[u8]) -> Result<Vec<u8>> {
-        self.sender.encrypt(frames)
+        if self.channel_tag == 0 {
+            return self.sender.encrypt(frames);
+        }
+        let mut tagged = frames.to_vec();
+        let mut at = 0;
+        while at + 4 <= tagged.len() {
+            let channel = be16(&tagged, at + 2);
+            if channel & 0x8000 != 0 {
+                tagged[at + 2..at + 4].copy_from_slice(&(channel | self.channel_tag).to_be_bytes());
+            }
+            at += usize::from(be16(&tagged, at) & 0x7fff) + 4;
+        }
+        self.sender.encrypt(&tagged)
     }
 
     /// Send one typed frame at `100 + now`; return the session's events and requests.
