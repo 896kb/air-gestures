@@ -232,7 +232,23 @@ async fn drive<IO: AsyncRead + AsyncWrite + Unpin>(
                 };
                 let now = clock.now();
                 last_read = now;
-                let result = match session.feed(&buffer[..count], now) {
+                let result = session.feed(&buffer[..count], now);
+                // Setup is where unknown firmware shows up: log what arrived
+                // (sizes and types only) until the input streams are live.
+                for note in session.take_diagnostics() {
+                    if live {
+                        tracing::debug!("{note}");
+                    } else {
+                        tracing::info!("{note}");
+                    }
+                }
+                if !live {
+                    tracing::info!(
+                        "setup: read {count} bytes, {} authenticated packets so far",
+                        session.authenticated_packets()
+                    );
+                }
+                let result = match result {
                     Ok(result) => result,
                     Err(error) => return from_error(error),
                 };

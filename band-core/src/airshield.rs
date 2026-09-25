@@ -237,6 +237,8 @@ impl AirShieldCipher {
 pub struct AirShieldReceiver {
     pub cipher: AirShieldCipher,
     pending: Vec<u8>,
+    /// Skipped records, described for the log (drained by the session).
+    pub skipped: Vec<String>,
 }
 
 impl AirShieldReceiver {
@@ -244,6 +246,7 @@ impl AirShieldReceiver {
         Self {
             cipher,
             pending: Vec::new(),
+            skipped: Vec::new(),
         }
     }
 
@@ -255,6 +258,10 @@ impl AirShieldReceiver {
         while let Some(&marker) = self.pending.first() {
             let short_control = marker == 0x81 || marker == 0x82;
             if short_control && self.pending.len() >= 2 && self.pending[1] <= 1 {
+                self.skipped.push(format!(
+                    "control record {marker:02x} {:02x}",
+                    self.pending[1]
+                ));
                 self.pending.drain(..2);
                 continue;
             }
@@ -266,6 +273,10 @@ impl AirShieldReceiver {
                 if self.pending.len() < size {
                     break;
                 }
+                self.skipped.push(format!(
+                    "relay record on channel {marker}, {} bytes",
+                    size - 3
+                ));
                 self.pending.drain(..size);
                 continue;
             }
@@ -285,6 +296,9 @@ impl AirShieldReceiver {
             if marker == 0x40 {
                 let packet = self.pending[..size].to_vec();
                 plaintext.push(self.cipher.decrypt(&packet)?);
+            } else {
+                self.skipped
+                    .push(format!("encrypted relay record {marker:02x}, {size} bytes"));
             }
             self.pending.drain(..size);
         }

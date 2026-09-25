@@ -160,6 +160,8 @@ pub struct BandSession {
     variant: Variant,
     /// The band offered a newer scheme, so `variant` is a guess.
     guessing: bool,
+    /// Traffic the session skipped, described for the log.
+    diagnostics: Vec<String>,
     peer_seed: Option<Vec<u8>>,
     pending: Vec<u8>,
     transmitter: Option<AirShieldCipher>,
@@ -223,6 +225,7 @@ impl BandSession {
             scheme_guess: 0,
             variant: SCHEME_3,
             guessing: false,
+            diagnostics: Vec::new(),
             peer_seed: None,
             pending: Vec::new(),
             transmitter: None,
@@ -276,6 +279,15 @@ impl BandSession {
     /// The guess in use, if the band offered a newer scheme.
     pub fn scheme_guess(&self) -> Option<usize> {
         self.guessing.then_some(self.scheme_guess)
+    }
+
+    /// Describe what was skipped since the last call (relay/control records,
+    /// frames nothing handles), for the log. Types and sizes only, no payloads.
+    pub fn take_diagnostics(&mut self) -> Vec<String> {
+        if let Some(receiver) = self.receiver.as_mut() {
+            self.diagnostics.append(&mut receiver.skipped);
+        }
+        std::mem::take(&mut self.diagnostics)
     }
 
     pub fn authenticated_packets(&self) -> usize {
@@ -897,7 +909,15 @@ impl BandSession {
                     Event::CeremonyStage("establishing trust".into()),
                 ])
             }
-            _ => Ok(Vec::new()),
+            _ => {
+                self.diagnostics.push(format!(
+                    "unhandled ceremony frame: channel {:#x}, words {:08x?}, {} payload bytes",
+                    frame.channel,
+                    frame.words,
+                    frame.payload.len()
+                ));
+                Ok(Vec::new())
+            }
         }
     }
 
