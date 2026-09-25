@@ -302,6 +302,14 @@ impl Transport for BluezTransport {
         self.ensure_powered().await?;
         let device = self.known_device(target).await?;
         if !device.is_connected().await.map_err(describe)? {
+            // Scan while connecting: the band advertises a private address that
+            // changes, and BlueZ only learns the current one from a scan. Without
+            // it, a band that was away (e.g. on the phone) never answers the
+            // stale address. Dropped (discovery stops) once connected.
+            let _discovery = match self.set_le_filter().await {
+                Ok(()) => self.adapter.discover_devices().await.ok(),
+                Err(_) => None,
+            };
             let mut attempt = tokio::time::timeout(CONNECT, device.connect()).await;
             // BlueZ sometimes aborts the first LE connect right after discovery stops.
             if matches!(&attempt, Ok(Err(error)) if error.to_string().contains("abort-by-local")) {
