@@ -158,7 +158,13 @@ pub fn open(url: &str, accept: impl Fn(&str) -> bool + 'static) -> Result<Option
                 let _ = load_proxy.send_event(UserEvent::Committed(target));
             }
         })
-        .build_gtk(window.gtk_window())
+        // tao already puts a GtkBox in the window (a GtkBin holds one child),
+        // so the web view must go into that box, not the window itself.
+        .build_gtk(
+            window
+                .default_vbox()
+                .ok_or("the sign-in window has no container for the web view")?,
+        )
         .map_err(|error| format!("could not start the web view: {error}"))?;
 
     let mut result = None;
