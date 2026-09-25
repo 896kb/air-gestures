@@ -30,8 +30,7 @@ const REDISCOVER: Duration = Duration::from_secs(15);
 const CONNECT: Duration = Duration::from_secs(30);
 /// The band talks to one host at a time; a phone running air-gestures-android
 /// (or the Meta AI app) keeps it from answering.
-const BUSY: &str =
-    "the band didn't answer the connection (is it nearby and awake, and not connected to your phone?)";
+const BUSY: &str = "the band didn't answer the connection (is it nearby and awake, and not connected to your phone?)";
 /// GATT service discovery after connecting.
 const SERVICES: Duration = Duration::from_secs(30);
 /// The PSM read, which may include Bluetooth pairing.

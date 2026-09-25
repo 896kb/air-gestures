@@ -80,6 +80,24 @@ enum Command {
     Signin,
     /// Delete the saved Meta sign-in.
     Signout,
+    /// Save the owner key and band record to a file, to use the band from another
+    /// device (`air-gestures import`, or Import in the Android app).
+    Export {
+        /// Where to write it.
+        #[arg(default_value = air_gestures::transfer::DEFAULT_FILE)]
+        path: PathBuf,
+        /// Overwrite the file if it exists.
+        #[arg(long)]
+        force: bool,
+    },
+    /// Use the band's owner key from another device (a file from `air-gestures
+    /// export` or the Android app's Export, or a raw owner.key).
+    Import {
+        file: PathBuf,
+        /// Don't ask before replacing the key on this computer.
+        #[arg(long)]
+        yes: bool,
+    },
     /// Raw sEMG readings.
     Semg {
         #[command(subcommand)]
@@ -151,6 +169,72 @@ fn sign_out(store_dir: &std::path::Path) -> Result<(), String> {
         .map_err(|error| format!("could not delete the sign-in: {error}"))?;
     println!("Signed out of Meta.");
     Ok(())
+}
+
+fn export(store_dir: &std::path::Path, path: &std::path::Path, force: bool) -> Result<(), String> {
+    let store = air_gesturesd::store::Store::open(store_dir)
+        .map_err(|error| format!("could not open {}: {error}", store_dir.display()))?;
+    air_gestures::transfer::export(&store, path, force)?;
+    println!("Exported the band to {}", path.display());
+    println!("Keep it private: anyone holding this file can control the band.");
+    Ok(())
+}
+
+fn import(
+    socket: &std::path::Path,
+    store_dir: &std::path::Path,
+    file: &std::path::Path,
+    yes: bool,
+) -> Result<(), String> {
+    let bytes = std::fs::read(file)
+        .map_err(|error| format!("could not read {}: {error}", file.display()))?;
+    let imported = air_gestures::transfer::parse(&bytes)?;
+    let store = air_gesturesd::store::Store::open(store_dir)
+        .map_err(|error| format!("could not open {}: {error}", store_dir.display()))?;
+    // An unreadable key counts as one: it's still what gets replaced.
+    let has_key = !matches!(store.load_identity(), Ok(None)) || store.has_pending();
+    if has_key && !yes {
+        print!(
+            "This replaces the owner key on this computer. If only this computer holds it, the band has to be claimed again to get it back. Continue? [y/N] "
+        );
+        use std::io::Write;
+        let _ = std::io::stdout().flush();
+        let mut answer = String::new();
+        let _ = std::io::stdin().read_line(&mut answer);
+        if !matches!(answer.trim(), "y" | "Y" | "yes") {
+            return Err("import cancelled".into());
+        }
+    }
+    air_gestures::transfer::import(&store, &imported)?;
+    match &imported.band {
+        Some(band) => println!("Imported the owner key for {}.", band.name),
+        None if store.load_band().is_ok_and(|band| band.is_some()) => {
+            println!(
+                "Imported the owner key (the file had no band record; the current one is kept)."
+            )
+        }
+        None => {
+            println!(
+                "Imported the owner key. The file had no band record, so air-gesturesd doesn't know which band to connect to: import a file from `air-gestures export` that has one."
+            );
+            return Ok(());
+        }
+    }
+    // The daemon reads the key on each connect: reconnect so it uses the new one.
+    if runtime()
+        .block_on(air_gestures::client::status(socket))
+        .is_err()
+    {
+        println!("air-gesturesd isn't running; it uses the new key when it starts.");
+        return Ok(());
+    }
+    runtime()
+        .block_on(async {
+            air_gestures::client::request(socket, &Request::Disconnect).await?;
+            air_gestures::client::request(socket, &Request::Connect).await
+        })
+        .map(print_status_of)
+        .map_err(|error| format!("imported, but reconnecting failed: {error}"))
 }
 
 fn report(result: Result<(), String>) -> ExitCode {
@@ -409,6 +493,10 @@ fn main() -> ExitCode {
         Command::Forget => simple(&socket, Request::Forget),
         Command::Signin => report(sign_in(&store_dir(cli.dry_run))),
         Command::Signout => report(sign_out(&store_dir(cli.dry_run))),
+        Command::Export { path, force } => report(export(&store_dir(cli.dry_run), &path, force)),
+        Command::Import { file, yes } => {
+            report(import(&socket, &store_dir(cli.dry_run), &file, yes))
+        }
         Command::Semg {
             what: SemgCommand::View,
         } => report(runtime().block_on(air_gestures::semg::view(&socket))),

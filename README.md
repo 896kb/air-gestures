@@ -96,6 +96,19 @@ systemctl --user daemon-reload && systemctl --user enable --now air-gesturesd
 Gestures and the dial are configured in `~/.config/air-gestures/config.toml` (reloaded on save).
 `AIR_GESTURES_LOG=air-gesturesd=debug` in the service logs every gesture and frame.
 
+## Moving the band between devices
+
+The band trusts one owner key; to use it from another computer or the
+[Android app](https://gitlab.com/896kb/air-gestures-android), move that key instead of claiming again:
+
+1. On the device that has it: `air-gestures export` writes `air-gestures-band.json` (the key
+   and the band's address); in the Android app, **Setup → Export**.
+2. On the other: `air-gestures import air-gestures-band.json`, or **Setup → Owner key →
+   Import** in the app. The daemon reconnects with the new key.
+
+The band talks to one device at a time: `air-gestures disconnect` on the one you're leaving.
+Keep the file private and delete it once imported: anyone holding it can control the band.
+
 ## Build and test
 
 Rust ≥ 1.88.

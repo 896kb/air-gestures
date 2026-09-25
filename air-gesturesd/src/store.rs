@@ -36,6 +36,26 @@ pub enum IdentitySource {
     Confirmed,
 }
 
+/// An owner key file's bytes: the 32-byte private key, optionally followed by
+/// the 65-byte X9.63 band key (32 or 97 bytes total; anything else is corrupt).
+pub fn identity_bytes(identity: &EnrollmentIdentity) -> Vec<u8> {
+    let mut bytes = identity.private_bytes().to_vec();
+    if let Some(band_key) = identity.band_key_x963() {
+        bytes.extend(band_key);
+    }
+    bytes
+}
+
+/// The inverse of [`identity_bytes`]; the error never contains key material.
+pub fn identity_from_bytes(bytes: &[u8]) -> Result<EnrollmentIdentity, String> {
+    let (private, band) = match bytes.len() {
+        32 => (&bytes[..32], None),
+        97 => (&bytes[..32], Some(&bytes[32..])),
+        length => return Err(format!("invalid identity file length ({length} bytes)")),
+    };
+    EnrollmentIdentity::from_bytes(private, band).map_err(|error| error.to_string())
+}
+
 #[derive(Debug, Clone)]
 pub struct Store {
     dir: PathBuf,
@@ -107,31 +127,15 @@ impl Store {
         self.sync_dir()
     }
 
-    /// One file: the 32-byte private key, optionally followed by the 65-byte
-    /// X9.63 band key (32 or 97 bytes total; anything else is corrupt).
     fn write_identity(&self, name: &str, identity: &EnrollmentIdentity) -> io::Result<()> {
-        let mut bytes = identity.private_bytes().to_vec();
-        if let Some(band_key) = identity.band_key_x963() {
-            bytes.extend(band_key);
-        }
-        self.write_secret(name, &bytes)
+        self.write_secret(name, &identity_bytes(identity))
     }
 
     fn read_identity(&self, name: &str) -> io::Result<Option<EnrollmentIdentity>> {
         let Some(bytes) = self.read(name)? else {
             return Ok(None);
         };
-        let (private, band) = match bytes.len() {
-            32 => (&bytes[..32], None),
-            97 => (&bytes[..32], Some(&bytes[32..])),
-            length => {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!("{name}: invalid identity file length ({length} bytes)"),
-                ));
-            }
-        };
-        EnrollmentIdentity::from_bytes(private, band)
+        identity_from_bytes(&bytes)
             .map(Some)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, format!("{name}: {error}")))
     }
@@ -153,6 +157,11 @@ impl Store {
 
     pub fn load_pending(&self) -> io::Result<Option<EnrollmentIdentity>> {
         self.read_identity(PENDING_OWNER)
+    }
+
+    /// Whether a pending identity file is there at all (readable or not).
+    pub fn has_pending(&self) -> bool {
+        self.path(PENDING_OWNER).exists()
     }
 
     /// Drop the pending identity without confirming it.
