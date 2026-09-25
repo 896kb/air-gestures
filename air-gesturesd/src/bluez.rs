@@ -28,6 +28,10 @@ const PSM_CHARACTERISTIC: Uuid = Uuid::from_u128(0x2d41da7c_82b6_42aa_b34e_e2e01
 /// `prepare_pairing` removed a stale bond).
 const REDISCOVER: Duration = Duration::from_secs(15);
 const CONNECT: Duration = Duration::from_secs(30);
+/// The band talks to one host at a time; a phone running air-gestures-android
+/// (or the Meta AI app) keeps it from answering.
+const BUSY: &str =
+    "the band didn't answer the connection (is it nearby and awake, and not connected to your phone?)";
 /// GATT service discovery after connecting.
 const SERVICES: Duration = Duration::from_secs(30);
 /// The PSM read, which may include Bluetooth pairing.
@@ -309,11 +313,24 @@ impl Transport for BluezTransport {
                 Err(_) => {
                     // Cancel BlueZ's pending Connect so it doesn't linger.
                     let _ = device.disconnect().await;
-                    return Err(
-                        "the band didn't answer the connection (is it nearby and awake?)".into(),
-                    );
+                    return Err(BUSY.into());
                 }
                 Ok(Err(error)) if error.kind == ErrorKind::AlreadyConnected => {}
+                // An earlier Connect is still pending in BlueZ: wait for it instead
+                // of stacking retries on top (each would fail "In Progress").
+                Ok(Err(error)) if error.kind == ErrorKind::InProgress => {
+                    let connected = tokio::time::timeout(CONNECT, async {
+                        while !device.is_connected().await.unwrap_or(false) {
+                            tokio::time::sleep(Duration::from_millis(500)).await;
+                        }
+                    })
+                    .await
+                    .is_ok();
+                    if !connected {
+                        let _ = device.disconnect().await;
+                        return Err(BUSY.into());
+                    }
+                }
                 Ok(Err(error)) => return Err(describe(error)),
                 Ok(Ok(())) => {}
             }
