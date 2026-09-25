@@ -407,7 +407,7 @@ fn a_triple_tap_toggles_the_controls_even_while_off() {
     let mut controller = with_toggle_tap();
     assert_eq!(
         triple(&mut controller, 1, 2.0),
-        run("KINESIS_ENABLED=0 osd")
+        run("export KINESIS_ENABLED=0; osd")
     );
     assert!(controller.status().paused);
     assert!(
@@ -422,7 +422,7 @@ fn a_triple_tap_toggles_the_controls_even_while_off() {
     );
     assert_eq!(
         triple(&mut controller, 20, 6.0),
-        run("KINESIS_ENABLED=1 osd")
+        run("export KINESIS_ENABLED=1; osd")
     );
     assert!(!controller.status().paused);
 }

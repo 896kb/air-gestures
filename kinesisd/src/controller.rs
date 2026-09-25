@@ -268,6 +268,11 @@ impl Controller {
         let Some(gesture) = self.router.gesture(message, now) else {
             return Vec::new();
         };
+        tracing::debug!(
+            gesture = label(gesture),
+            enabled = self.enabled,
+            "recognized"
+        );
         // Releasing a wrist turn must not also trigger an index-finger assignment.
         if let Recognized::Tap(tap) = gesture
             && tap.finger() == "index"
@@ -366,8 +371,10 @@ impl Controller {
         if command.is_empty() {
             return Vec::new();
         }
+        // Exported, not a prefix assignment: the command's own `$KINESIS_ENABLED`
+        // must see it (a prefix only reaches the first simple command's environment).
         vec![Command::Run(format!(
-            "KINESIS_ENABLED={} {command}",
+            "export KINESIS_ENABLED={}; {command}",
             u8::from(self.enabled)
         ))]
     }
