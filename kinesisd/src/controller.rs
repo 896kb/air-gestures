@@ -205,7 +205,10 @@ impl Controller {
                 self.status.charging = None;
                 Vec::new()
             }
-            Event::Gesture(message) => self.gesture(message, now),
+            Event::Gesture(message) => {
+                tracing::debug!(?message, "gesture");
+                self.gesture(message, now)
+            }
             Event::DialState(engaged) => {
                 self.dial_state(*engaged, now);
                 Vec::new()

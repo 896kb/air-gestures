@@ -169,6 +169,8 @@ pub struct BandSession {
     guessing: bool,
     /// Traffic the session skipped, described for the log.
     diagnostics: Vec<String>,
+    /// Describe every frame once streaming, too (debug logging).
+    log_frames: bool,
     peer_seed: Option<Vec<u8>>,
     pending: Vec<u8>,
     transmitter: Option<AirShieldCipher>,
@@ -233,6 +235,7 @@ impl BandSession {
             variant: SCHEME_3,
             guessing: false,
             diagnostics: Vec::new(),
+            log_frames: false,
             peer_seed: None,
             pending: Vec::new(),
             transmitter: None,
@@ -286,6 +289,11 @@ impl BandSession {
     /// The guess in use, if the band offered a newer scheme.
     pub fn scheme_guess(&self) -> Option<usize> {
         self.guessing.then_some(self.scheme_guess)
+    }
+
+    /// Also describe every frame after setup (channel, type words, size).
+    pub fn set_log_frames(&mut self, on: bool) {
+        self.log_frames = on;
     }
 
     /// Describe what was skipped since the last call (relay/control records,
@@ -552,6 +560,14 @@ impl BandSession {
                     ));
                 }
                 for frame in frames {
+                    if self.log_frames && self.setup_stage == SetupStage::Input {
+                        self.diagnostics.push(format!(
+                            "frame ch {:#x} words {:08x?} {}B",
+                            frame.channel,
+                            frame.words,
+                            frame.payload.len()
+                        ));
+                    }
                     let produced = self.input(&frame, time, &mut outgoing)?;
                     events.extend(produced);
                 }

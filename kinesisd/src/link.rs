@@ -169,6 +169,7 @@ async fn drive<IO: AsyncRead + AsyncWrite + Unpin>(
     persist_pending: &mut impl FnMut(&EnrollmentIdentity) -> std::io::Result<()>,
 ) -> LinkEnd {
     let start = clock.now();
+    session.set_log_frames(tracing::enabled!(tracing::Level::DEBUG));
     let ceremony = session.ceremony().is_some();
     let mut deadline = start
         + if ceremony {
