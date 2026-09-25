@@ -150,6 +150,8 @@ pub struct BandSession {
     base: u32,
     peer_key: Option<Vec<u8>>,
     peer_challenge: Option<Vec<u8>>,
+    /// The scheme the band's EnableEncryption named (3 on the firmware kinesis knows).
+    peer_parameters: u64,
     peer_seed: Option<Vec<u8>>,
     pending: Vec<u8>,
     transmitter: Option<AirShieldCipher>,
@@ -209,6 +211,7 @@ impl BandSession {
             base: u32::from_le_bytes(random()),
             peer_key: None,
             peer_challenge: None,
+            peer_parameters: 3,
             peer_seed: None,
             pending: Vec::new(),
             transmitter: None,
@@ -394,9 +397,10 @@ impl BandSession {
                 0x02000002 => {
                     let parameters = fields.integer(5)?;
                     let peer_challenge = match (&self.peer_key, &self.peer_challenge) {
-                        (Some(key), Some(challenge)) if *key == point && parameters == 3 => {
-                            challenge.clone()
-                        }
+                        // Newer firmware names 26 here even when offered only 3; the
+                        // keys are derived as for 3 and the first authenticated packet
+                        // tells whether that holds (see `peer_parameters`).
+                        (Some(key), Some(challenge)) if *key == point => challenge.clone(),
                         _ => {
                             return Err(perr(format!(
                                 "Unexpected band encryption response (same key: {}, parameters {parameters})",
@@ -404,6 +408,7 @@ impl BandSession {
                             )));
                         }
                     };
+                    self.peer_parameters = parameters;
                     let shared =
                         ecdh::diffie_hellman(self.secret.to_nonzero_scalar(), peer.as_affine());
                     let secret = shared.raw_secret_bytes().as_slice();
@@ -451,7 +456,17 @@ impl BandSession {
                 .receiver
                 .as_mut()
                 .expect("checked")
-                .feed(&self.pending)?;
+                .feed(&self.pending)
+                .map_err(|error| {
+                    if self.authenticated_packets == 0 && self.peer_parameters != 3 {
+                        perr(format!(
+                            "{error} (the band chose encryption scheme {}, whose keys differ from scheme 3's)",
+                            self.peer_parameters
+                        ))
+                    } else {
+                        error
+                    }
+                })?;
             self.pending.clear();
             for plaintext in records {
                 self.authenticated_packets += 1;
