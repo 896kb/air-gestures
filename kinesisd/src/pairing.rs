@@ -7,6 +7,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
+use band_core::airshield::SCHEME_26_GUESSES;
 use band_core::ceremony::{CeremonyHttpRequest, OwnershipCeremony};
 use band_core::events::Event;
 use band_core::session::BandSession;
@@ -87,6 +88,7 @@ pub async fn pair_band<T: Transport, C: PairClient>(
     let mut record = BandRecord {
         address: chosen.address,
         name: chosen.name,
+        scheme_guess: None,
     };
 
     tell(&mut progress, "preparing Bluetooth pairing").await;
@@ -95,132 +97,169 @@ pub async fn pair_band<T: Transport, C: PairClient>(
         .await
         .map_err(PairFailure::Failed)?;
     record.address = address;
-    tell(&mut progress, &format!("connecting to {}", record.name)).await;
-    let io = transport
-        .open(&record.address)
-        .await
-        .map_err(PairFailure::Failed)?;
-    // Bonded now: learn the identity address before anything is saved, so the
-    // pending record written below already carries it. In memory only — the
-    // band record is saved once the band may commit (the later calls are a
-    // fallback for a band that resolves late).
-    let identity = transport.identity_address(&record.address).await;
-    if identity != record.address {
-        tracing::info!("the band's identity address is {identity}");
-        record.address = identity;
-    }
-
-    let (commands, command_rx) = mpsc::channel(8);
-    let (event_tx, mut events) = mpsc::channel(64);
-    // The band record is saved together with the pending key (band first):
-    // once the band may commit, a later connect needs both to try the key.
-    let pending_store = store.clone();
-    let pending_record = record.clone();
+    // Newer band firmware uses an undocumented encryption scheme (26): each
+    // guess that the band drops before a single packet authenticates is
+    // harmless (nothing is decrypted, so nothing can be claimed); try the next.
     let persisted_this_run = Arc::new(AtomicBool::new(false));
-    let persisted = persisted_this_run.clone();
-    let closure_previous = previous_band.clone();
-    let session = BandSession::new(None, Some(OwnershipCeremony::default()), false);
-    let link = tokio::spawn(run_link(
-        io,
-        session,
-        clock,
-        command_rx,
-        event_tx,
-        move |identity| {
-            pending_store.save_band(&pending_record)?;
-            if let Err(error) = pending_store.save_pending(identity) {
-                // The claim is abandoned before FinishChangeOwner is written:
-                // put the previous band record back (best effort).
-                let _ = restore_band(&pending_store, closure_previous.as_ref());
-                return Err(error);
-            }
-            persisted.store(true, Ordering::SeqCst);
-            Ok(())
-        },
-    ));
+    let mut guess = 0;
+    let (outcome, failure, saved, persisted) = loop {
+        if guess == 0 {
+            tell(&mut progress, &format!("connecting to {}", record.name)).await;
+        } else {
+            tell(
+                &mut progress,
+                &format!(
+                    "trying encryption guess {} of {}",
+                    guess + 1,
+                    SCHEME_26_GUESSES.len()
+                ),
+            )
+            .await;
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        }
+        record.scheme_guess = Some(guess);
+        let io = transport
+            .open(&record.address)
+            .await
+            .map_err(PairFailure::Failed)?;
+        // Bonded now: learn the identity address before anything is saved, so the
+        // pending record written below already carries it. In memory only — the
+        // band record is saved once the band may commit (the later calls are a
+        // fallback for a band that resolves late).
+        let identity = transport.identity_address(&record.address).await;
+        if identity != record.address {
+            tracing::info!("the band's identity address is {identity}");
+            record.address = identity;
+        }
 
-    let mut failure: Option<PairFailure> = None;
-    let mut saved = false;
-    let mut resolved = false;
-    while let Some(event) = events.recv().await {
-        let LinkEvent::Band(event) = event else {
-            continue;
-        };
-        match event {
-            Event::CeremonyStage(stage) => tell(&mut progress, &stage).await,
-            Event::CeremonyHttp(CeremonyHttpRequest::PairRequest(request)) => {
-                tell(&mut progress, "asking Meta to approve the claim").await;
-                let next = match client.pair_request(&request).await {
-                    Ok(pending) => LinkCommand::ResumePairRequest {
-                        signature: pending.signature,
-                        receipt: pending.receipt,
-                    },
-                    Err(error) => {
-                        failure = Some(from_pair_error(error));
-                        LinkCommand::Stop
+        let (commands, command_rx) = mpsc::channel(8);
+        let (event_tx, mut events) = mpsc::channel(64);
+        // The band record is saved together with the pending key (band first):
+        // once the band may commit, a later connect needs both to try the key.
+        let pending_store = store.clone();
+        let pending_record = record.clone();
+        let persisted = persisted_this_run.clone();
+        let closure_previous = previous_band.clone();
+        let session = BandSession::new(None, Some(OwnershipCeremony::default()), false)
+            .with_scheme_guess(guess);
+        let link = tokio::spawn(run_link(
+            io,
+            session,
+            clock,
+            command_rx,
+            event_tx,
+            move |identity| {
+                pending_store.save_band(&pending_record)?;
+                if let Err(error) = pending_store.save_pending(identity) {
+                    // The claim is abandoned before FinishChangeOwner is written:
+                    // put the previous band record back (best effort).
+                    let _ = restore_band(&pending_store, closure_previous.as_ref());
+                    return Err(error);
+                }
+                persisted.store(true, Ordering::SeqCst);
+                Ok(())
+            },
+        ));
+
+        let mut failure: Option<PairFailure> = None;
+        let mut saved = false;
+        let mut resolved = false;
+        while let Some(event) = events.recv().await {
+            let LinkEvent::Band(event) = event else {
+                continue;
+            };
+            match event {
+                Event::CeremonyStage(stage) => tell(&mut progress, &stage).await,
+                Event::CeremonyHttp(CeremonyHttpRequest::PairRequest(request)) => {
+                    tell(&mut progress, "asking Meta to approve the claim").await;
+                    let next = match client.pair_request(&request).await {
+                        Ok(pending) => LinkCommand::ResumePairRequest {
+                            signature: pending.signature,
+                            receipt: pending.receipt,
+                        },
+                        Err(error) => {
+                            failure = Some(from_pair_error(error));
+                            LinkCommand::Stop
+                        }
+                    };
+                    let _ = commands.send(next).await;
+                }
+                Event::CeremonyHttp(CeremonyHttpRequest::Pair(pair)) => {
+                    tell(&mut progress, "confirming the claim with Meta").await;
+                    let next = match client.pair(&pair).await {
+                        Ok(done) => LinkCommand::ResumePair {
+                            signature: done.signature,
+                            receipt: done.receipt,
+                            device_public_key: done.device_public_key,
+                        },
+                        Err(error) => {
+                            failure = Some(from_pair_error(error));
+                            LinkCommand::Stop
+                        }
+                    };
+                    let _ = commands.send(next).await;
+                }
+                Event::CeremonyCompleted(identity) => match store
+                    .save_band(&record)
+                    .and_then(|()| store.save_identity(&identity))
+                {
+                    Ok(()) => {
+                        saved = true;
+                        tell(
+                            &mut progress,
+                            "the band accepted this computer as its owner",
+                        )
+                        .await;
+                        if !resolved {
+                            resolved = true;
+                            resolve_identity(transport, store, &mut record).await;
+                        }
                     }
-                };
-                let _ = commands.send(next).await;
-            }
-            Event::CeremonyHttp(CeremonyHttpRequest::Pair(pair)) => {
-                tell(&mut progress, "confirming the claim with Meta").await;
-                let next = match client.pair(&pair).await {
-                    Ok(done) => LinkCommand::ResumePair {
-                        signature: done.signature,
-                        receipt: done.receipt,
-                        device_public_key: done.device_public_key,
-                    },
                     Err(error) => {
-                        failure = Some(from_pair_error(error));
-                        LinkCommand::Stop
+                        failure = Some(PairFailure::Failed(format!(
+                            "could not save the owner key: {error}"
+                        )));
+                        let _ = commands.send(LinkCommand::Stop).await;
                     }
-                };
-                let _ = commands.send(next).await;
-            }
-            Event::CeremonyCompleted(identity) => match store
-                .save_band(&record)
-                .and_then(|()| store.save_identity(&identity))
-            {
-                Ok(()) => {
-                    saved = true;
-                    tell(
-                        &mut progress,
-                        "the band accepted this computer as its owner",
-                    )
-                    .await;
+                },
+                Event::Connected => {
+                    tell(&mut progress, "connected as the owner").await;
                     if !resolved {
                         resolved = true;
                         resolve_identity(transport, store, &mut record).await;
                     }
-                }
-                Err(error) => {
-                    failure = Some(PairFailure::Failed(format!(
-                        "could not save the owner key: {error}"
-                    )));
                     let _ = commands.send(LinkCommand::Stop).await;
                 }
-            },
-            Event::Connected => {
-                tell(&mut progress, "connected as the owner").await;
-                if !resolved {
-                    resolved = true;
-                    resolve_identity(transport, store, &mut record).await;
-                }
-                let _ = commands.send(LinkCommand::Stop).await;
+                _ => {}
             }
-            _ => {}
         }
-    }
-    let outcome = link
-        .await
-        .map_err(|error| PairFailure::Failed(format!("the pairing task failed: {error}")))?;
-    if !saved
-        && let Some(identity) = &outcome.enrollment
-        && store.save_identity(identity).is_ok()
-    {
-        saved = true;
-    }
-    let persisted = persisted_this_run.load(Ordering::SeqCst);
+        let outcome = link
+            .await
+            .map_err(|error| PairFailure::Failed(format!("the pairing task failed: {error}")))?;
+        if !saved
+            && let Some(identity) = &outcome.enrollment
+            && store.save_identity(identity).is_ok()
+        {
+            saved = true;
+        }
+        let persisted = persisted_this_run.load(Ordering::SeqCst);
+        let retry = outcome.scheme_guess.is_some()
+            && !outcome.authenticated
+            && !saved
+            && !persisted
+            && failure.is_none()
+            && matches!(
+                outcome.end,
+                LinkEnd::StreamEnded | LinkEnd::StartupTimeout | LinkEnd::Failed(_)
+            )
+            && guess + 1 < SCHEME_26_GUESSES.len();
+        if !retry {
+            break (outcome, failure, saved, persisted);
+        }
+        tracing::info!("encryption guess {guess} failed: {}", outcome.end);
+        guess += 1;
+    };
+    record.scheme_guess = outcome.scheme_guess;
     // Band-record rule: band.json is kept when this run confirmed an owner, or
     // saved a pending key the band may have committed to. A pending key from an
     // earlier run never counts. An explicit ownership rejection means the band

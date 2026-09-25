@@ -90,3 +90,43 @@ fn encrypt_rejects_empty_and_oversized_frames() {
     assert!(sender.encrypt(&vec![0; 4097]).is_err());
     assert!(sender.encrypt(&vec![0; 4096]).is_ok());
 }
+
+/// Scheme 31's published vectors (zhuowei/Starcruiser-mac `key_derivation_test.swift`):
+/// raw-secret HKDF, a separate "hmac_derive" MAC key and the `02 02 00 00` MAC prefix.
+#[test]
+fn scheme_31_matches_the_public_vectors() {
+    use band_core::airshield::{AirShieldCipher, AirShieldKeys, SCHEME_31};
+    let secret =
+        hex::decode("f2f6f1f1a56fb52122ec338ed887338b42b976290253dbd6f48f3cc0b15b2ba8").unwrap();
+    let rx = AirShieldKeys::derive_variant(
+        SCHEME_31,
+        &secret,
+        &hex::decode("c75051fb3e50142ba10c15a023777c6b").unwrap(),
+        &[b'A'; 32],
+    )
+    .unwrap();
+    assert_eq!(
+        hex::encode(rx.encryption),
+        "d70b81653601bbc46f13c6749324fa2b680af0064592a2c663a0891d7a43875d"
+    );
+    let tx = AirShieldKeys::derive_variant(
+        SCHEME_31,
+        &secret,
+        b"0123456789abcdef",
+        &hex::decode("c58e0f4bf291a0b2f50a40955b0bd53c9c7fd5a9f5fdbf7b14272efed585ca14").unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        hex::encode(tx.encryption),
+        "2f72596312c1120bf869dd69b0c6b4aa6cc05981723a45a4bb294343a11793cc"
+    );
+    // The packet's MAC checks out (counter 0xba8d8b80); its IV isn't published,
+    // so only the tag is compared — a MAC failure would be the first error.
+    let packet = hex::decode("40f4d00bc5a22d9ecd0055ff7a63ea6ac9f1723721ffa9d7f4a7").unwrap();
+    let mut cipher = AirShieldCipher::new(tx, [0; 16], 0xba8d8b80);
+    let result = cipher.decrypt(&packet);
+    assert!(
+        !matches!(&result, Err(error) if error.to_string().contains("authentication")),
+        "{result:?}"
+    );
+}

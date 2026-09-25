@@ -6,7 +6,7 @@ use band_core::session::BandSession;
 use common::*;
 
 #[test]
-fn the_request_offers_only_the_parameter_3_scheme() {
+fn the_request_opens_encryption_with_parameters_31() {
     let session = BandSession::new(None, None, false);
     let request = session.request().unwrap();
     assert_eq!(hex::encode(&request[..12]), "806280018100000502000001");
@@ -19,7 +19,7 @@ fn the_request_offers_only_the_parameter_3_scheme() {
             fields.integer(4).unwrap(),
             fields.integer(7).unwrap()
         ),
-        (0, 3, 16)
+        (0, 31, 16)
     );
 }
 
@@ -295,10 +295,11 @@ fn the_sim_band_reports_an_oversized_record_instead_of_panicking() {
     assert!(peer.band.encrypt(&[0; 5000]).is_err());
 }
 
-/// Newer band firmware offers a bitmask of schemes (27 seen on hardware) that
-/// still includes the parameter-3 scheme; the host must accept it and pick 3.
+/// Newer band firmware offers 27 (seen on hardware); the host accepts it and
+/// names 26, which that firmware uses. An offer with neither 3's nor 31's
+/// extra bits fails.
 #[test]
-fn a_band_offering_more_schemes_than_three_is_accepted() {
+fn a_newer_band_offer_is_answered_with_scheme_26() {
     use p256::elliptic_curve::sec1::ToEncodedPoint;
     let mut session = BandSession::new(None, None, false);
     session.request().unwrap();
@@ -327,11 +328,11 @@ fn a_band_offering_more_schemes_than_three_is_accepted() {
     let enable = ProtoFields::parse(&reply.outgoing[8..size]).unwrap();
     assert_eq!(
         enable.integer(5).unwrap(),
-        3,
-        "the host picks the parameter-3 scheme"
+        26,
+        "the host names the scheme newer firmware uses"
     );
     let mut other = BandSession::new(None, None, false);
     other.request().unwrap();
-    let error = other.feed(&offer(24), 100.0).unwrap_err();
-    assert!(error.to_string().contains("parameters 24"), "{error}");
+    let error = other.feed(&offer(4), 100.0).unwrap_err();
+    assert!(error.to_string().contains("parameters 4"), "{error}");
 }

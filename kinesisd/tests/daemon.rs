@@ -54,6 +54,7 @@ fn start_seeded<F: ClientFactory>(
             .save_band(&BandRecord {
                 address: SIM_ADDRESS.into(),
                 name: SIM_NAME.into(),
+                scheme_guess: None,
             })
             .unwrap();
         let band_key = verifying_key_from_point64(&transport.band_point()).unwrap();
@@ -330,6 +331,7 @@ async fn a_pending_key_the_band_accepts_becomes_the_confirmed_one() {
         .save_band(&BandRecord {
             address: SIM_ADDRESS.into(),
             name: SIM_NAME.into(),
+            scheme_guess: None,
         })
         .unwrap();
     let band_key = verifying_key_from_point64(&transport.band_point()).unwrap();

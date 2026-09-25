@@ -23,6 +23,9 @@ const LEGACY_PENDING_BAND_KEY: &str = "band.pending.pub";
 pub struct BandRecord {
     pub address: String,
     pub name: String,
+    /// Which `SCHEME_26_GUESSES` entry a newer-firmware band answered to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scheme_guess: Option<usize>,
 }
 
 /// Which identity file `Store::connect_identity` returned.

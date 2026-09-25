@@ -299,6 +299,8 @@ impl<T: Transport, R: Runner, F: ClientFactory> Daemon<T, R, F> {
         let outcome = link.task.await.unwrap_or_else(|error| LinkOutcome {
             end: LinkEnd::Failed(error.to_string()),
             enrollment: None,
+            scheme_guess: None,
+            authenticated: false,
         });
         self.controller.on_disconnect();
         self.semg_on = false;
@@ -383,7 +385,8 @@ impl<T: Transport, R: Runner, F: ClientFactory> Daemon<T, R, F> {
         let (commands, command_rx) = mpsc::channel(16);
         let (event_tx, events) = mpsc::channel(256);
         let transport = self.transport.clone();
-        let session = BandSession::new(identity, None, self.semg_wanted);
+        let session = BandSession::new(identity, None, self.semg_wanted)
+            .with_scheme_guess(band.scheme_guess.unwrap_or(0));
         let clock = self.clock;
         let task = tokio::spawn(async move {
             match transport.open(&band.address).await {
@@ -391,6 +394,8 @@ impl<T: Transport, R: Runner, F: ClientFactory> Daemon<T, R, F> {
                 Err(error) => LinkOutcome {
                     end: LinkEnd::Failed(format!("could not reach {}: {error}", band.name)),
                     enrollment: None,
+                    scheme_guess: None,
+                    authenticated: false,
                 },
             }
         });

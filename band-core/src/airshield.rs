@@ -16,6 +16,80 @@ use crate::error::{Result, perr};
 pub struct AirShieldKeys {
     pub encryption: [u8; 32],
     pub mac: [u8; 32],
+    /// Bytes the MAC covers before the counter (`02 02 00 00` for scheme 31).
+    pub mac_prefix: &'static [u8],
+}
+
+/// Where a scheme's MAC key comes from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MacKey {
+    /// The encryption key itself (scheme 3).
+    Encryption,
+    /// `HKDF(S, salt: SHA256(R || C || "hmac_derive"))` (scheme 31).
+    Derived,
+    /// `HKDF(H, salt: SHA256(R || C || "hmac_derive" || H))` (scheme 7 notes).
+    DerivedHashed,
+}
+
+/// One way of turning the ECDH secret into record keys. Schemes 3 (band) and
+/// 31 (glasses) are verified on hardware; newer band firmware negotiates 26,
+/// whose rules are unknown, so pairing tries `SCHEME_26_GUESSES` in turn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Variant {
+    /// HKDF input `H = SHA256(S)` with salt `SHA256(H || C || R)` (scheme 3),
+    /// else `S` with salt `SHA256(C || R)` (scheme 31).
+    pub hashed_secret: bool,
+    pub mac_key: MacKey,
+    /// The MAC covers `02 02 00 00` first (scheme 31).
+    pub mac_prefix: bool,
+    /// The scheme number our EnableEncryption names.
+    pub announce: u64,
+}
+
+pub const SCHEME_3: Variant = Variant {
+    hashed_secret: true,
+    mac_key: MacKey::Encryption,
+    mac_prefix: false,
+    announce: 3,
+};
+
+pub const SCHEME_31: Variant = Variant {
+    hashed_secret: false,
+    mac_key: MacKey::Derived,
+    mac_prefix: true,
+    announce: 31,
+};
+
+const fn guess(hashed_secret: bool, mac_key: MacKey, mac_prefix: bool) -> Variant {
+    Variant {
+        hashed_secret,
+        mac_key,
+        mac_prefix,
+        announce: 26,
+    }
+}
+
+/// Candidates for scheme 26 (0b11010: 31 without bits 0 and 2), likeliest
+/// first. Bit 2 is what separates the notes' 7 from 3 (a derived MAC key), so
+/// 26 probably shares 31's key derivation and prefix but keeps the encryption
+/// key as its MAC key.
+pub const SCHEME_26_GUESSES: [Variant; 8] = [
+    guess(false, MacKey::Encryption, true),
+    guess(false, MacKey::Derived, true),
+    guess(true, MacKey::Encryption, false),
+    guess(false, MacKey::Encryption, false),
+    guess(true, MacKey::Encryption, true),
+    guess(false, MacKey::Derived, false),
+    guess(true, MacKey::DerivedHashed, false),
+    guess(true, MacKey::DerivedHashed, true),
+];
+
+fn hkdf(ikm: &[u8], salt: &[u8]) -> [u8; 32] {
+    let mut key = [0u8; 32];
+    Hkdf::<Sha256>::new(Some(salt), ikm)
+        .expand(b"AirShield", &mut key)
+        .expect("32 bytes is a valid HKDF-SHA256 length");
+    key
 }
 
 impl std::fmt::Debug for AirShieldKeys {
@@ -29,23 +103,57 @@ impl AirShieldKeys {
     /// `hashed = SHA256(secret)`, `key = HKDF-SHA256(ikm: hashed,
     /// salt: SHA256(hashed || challenge || seed), info: "AirShield", 32)`.
     pub fn derive(secret: &[u8], challenge: &[u8], seed: &[u8]) -> Result<Self> {
+        Self::derive_variant(SCHEME_3, secret, challenge, seed)
+    }
+
+    /// Keys for one direction: `challenge` is the receiver's RequestEncryption
+    /// challenge (C), `seed` the sender's EnableEncryption seed (R).
+    pub fn derive_variant(
+        variant: Variant,
+        secret: &[u8],
+        challenge: &[u8],
+        seed: &[u8],
+    ) -> Result<Self> {
         if secret.len() != 32 || challenge.len() != 16 || seed.len() != 32 {
             return Err(perr("Invalid AirShield key material"));
         }
         let hashed = Sha256::digest(secret);
-        let salt = Sha256::digest([hashed.as_slice(), challenge, seed].concat());
-        let mut key = [0u8; 32];
-        Hkdf::<Sha256>::new(Some(&salt), &hashed)
-            .expand(b"AirShield", &mut key)
-            .expect("32 bytes is a valid HKDF-SHA256 length");
+        let encryption = if variant.hashed_secret {
+            hkdf(
+                &hashed,
+                &Sha256::digest([hashed.as_slice(), challenge, seed].concat()),
+            )
+        } else {
+            hkdf(secret, &Sha256::digest([challenge, seed].concat()))
+        };
+        let mac = match variant.mac_key {
+            MacKey::Encryption => encryption,
+            MacKey::Derived => hkdf(
+                secret,
+                &Sha256::digest([seed, challenge, b"hmac_derive"].concat()),
+            ),
+            MacKey::DerivedHashed => hkdf(
+                &hashed,
+                &Sha256::digest([seed, challenge, b"hmac_derive", hashed.as_slice()].concat()),
+            ),
+        };
         Ok(Self {
-            encryption: key,
-            mac: key,
+            encryption,
+            mac,
+            mac_prefix: if variant.mac_prefix {
+                &[2, 2, 0, 0]
+            } else {
+                &[]
+            },
         })
     }
 
     pub fn fixed(encryption: [u8; 32], mac: [u8; 32]) -> Self {
-        Self { encryption, mac }
+        Self {
+            encryption,
+            mac,
+            mac_prefix: &[],
+        }
     }
 }
 
@@ -63,6 +171,7 @@ impl AirShieldCipher {
     fn tag(&self, body: &[u8]) -> [u8; 32] {
         let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(&self.keys.mac)
             .expect("HMAC accepts any key length");
+        mac.update(self.keys.mac_prefix);
         mac.update(&self.counter.to_le_bytes());
         mac.update(body);
         mac.finalize().into_bytes().into()

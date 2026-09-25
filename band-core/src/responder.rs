@@ -4,6 +4,7 @@
 
 use p256::ecdsa::SigningKey;
 
+use crate::airshield::Variant;
 use crate::datax::{DataXFrame, be16, encode_frame};
 use crate::error::Result;
 use crate::identity::point64;
@@ -49,6 +50,10 @@ pub struct Responder {
     pub battery: (u64, Option<u64>),
     /// Stop answering (the band went quiet); requests are still decrypted.
     pub silent: bool,
+    /// Newer firmware keying with this variant (`None`: the scheme-3 band).
+    pub firmware: Option<Variant>,
+    /// A host packet has authenticated (the keys agreed).
+    decrypted: bool,
     /// SHA-256 of the trusted owner's 64-byte app point (EnableTrust field 1).
     /// `None` accepts (and adopts) whichever key claims trust first.
     owner: Option<[u8; 32]>,
@@ -86,6 +91,8 @@ impl Responder {
             hand: 0,
             battery: (80, Some(0)),
             silent: false,
+            firmware: None,
+            decrypted: false,
             owner: None,
             trusted: false,
             streams: 0,
@@ -117,6 +124,11 @@ impl Responder {
     }
 
     /// True once the band acknowledged a stop request.
+    /// Whether any host packet has authenticated on this connection.
+    pub fn decrypted(&self) -> bool {
+        self.decrypted
+    }
+
     pub fn stopped(&self) -> bool {
         self.stopped
     }
@@ -133,7 +145,7 @@ impl Responder {
                         break;
                     };
                     let request: Vec<u8> = self.pending.drain(..size).collect();
-                    let (handshake, answer) = SimHandshake::accept(&request)?;
+                    let (handshake, answer) = SimHandshake::accept(&request, self.firmware)?;
                     out.extend(answer);
                     self.state = State::Enable(handshake);
                 }
@@ -148,6 +160,7 @@ impl Responder {
                 State::Ready(mut band) => {
                     let bytes = std::mem::take(&mut self.pending);
                     let frames = band.requests(&bytes);
+                    self.decrypted |= frames.as_ref().is_ok_and(|frames| !frames.is_empty());
                     let result = frames.and_then(|frames| {
                         let mut answers = Vec::new();
                         for frame in &frames {

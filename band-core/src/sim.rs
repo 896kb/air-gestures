@@ -6,7 +6,7 @@ use p256::ecdsa::{Signature, SigningKey};
 use p256::elliptic_curve::sec1::ToEncodedPoint;
 use p256::{PublicKey, SecretKey, ecdh};
 
-use crate::airshield::{AirShieldCipher, AirShieldKeys, AirShieldReceiver};
+use crate::airshield::{AirShieldCipher, AirShieldKeys, AirShieldReceiver, SCHEME_3, Variant};
 use crate::datax::{DataXFrame, DataXReceiver, be16, be32, encode_frame};
 use crate::error::{Result, perr};
 use crate::events::Event;
@@ -39,12 +39,19 @@ pub struct SimHandshake {
     iv: [u8; 16],
     host_point: Vec<u8>,
     host_challenge: Vec<u8>,
+    /// `Some` = newer firmware: offers 27, names 26 and keys with this variant.
+    firmware: Option<Variant>,
 }
 
 impl SimHandshake {
     /// Answer the host's RequestEncryption frame (exactly one frame) with the
     /// band's RequestEncryption + EnableEncryption bytes.
-    pub fn accept(host_request: &[u8]) -> Result<(SimHandshake, Vec<u8>)> {
+    /// `firmware`: `None` is the scheme-3 band kinesis knows; `Some(variant)`
+    /// is newer firmware that offers 27, names 26 and keys with `variant`.
+    pub fn accept(
+        host_request: &[u8],
+        firmware: Option<Variant>,
+    ) -> Result<(SimHandshake, Vec<u8>)> {
         if host_request.len() < 12 {
             return Err(perr("sim: short RequestEncryption"));
         }
@@ -69,7 +76,7 @@ impl SimHandshake {
                 field_bytes(1, &transport_point),
                 field_bytes(2, &band_challenge),
                 field_int(3, 0),
-                field_int(4, 3),
+                field_int(4, if firmware.is_some() { 27 } else { 3 }),
             ]
             .concat(),
         )?;
@@ -81,7 +88,7 @@ impl SimHandshake {
                 field_bytes(2, &band_seed),
                 field_bytes(3, &iv),
                 field_int(4, 42),
-                field_int(5, 3),
+                field_int(5, if firmware.is_some() { 26 } else { 3 }),
             ]
             .concat(),
         )?;
@@ -93,6 +100,7 @@ impl SimHandshake {
             iv,
             host_point,
             host_challenge,
+            firmware,
         };
         Ok((handshake, [peer_request, peer_enable].concat()))
     }
@@ -106,7 +114,10 @@ impl SimHandshake {
             return Err(perr("sim: expected an EnableEncryption frame"));
         }
         let enable = ProtoFields::parse(&host_enable[8..])?;
-        if enable.bytes(1)? != self.host_point.as_slice() || enable.integer(5)? != 3 {
+        // Newer firmware ignores the scheme the host names.
+        if enable.bytes(1)? != self.host_point.as_slice()
+            || (self.firmware.is_none() && enable.integer(5)? != 3)
+        {
             return Err(perr("sim: unexpected EnableEncryption"));
         }
         let host_key = PublicKey::from_sec1_bytes(&[&[4u8][..], &self.host_point].concat())
@@ -116,9 +127,11 @@ impl SimHandshake {
         let host_iv: [u8; 16] = enable.bytes_len(3, 16)?.try_into().expect("length checked");
         let host_counter =
             u32::try_from(enable.integer(4)?).map_err(|_| perr("sim: invalid counter"))?;
+        let variant = self.firmware.unwrap_or(SCHEME_3);
         Ok(SimBand {
             sender: AirShieldCipher::new(
-                AirShieldKeys::derive(
+                AirShieldKeys::derive_variant(
+                    variant,
                     shared.raw_secret_bytes().as_slice(),
                     &self.host_challenge,
                     &self.band_seed,
@@ -127,7 +140,8 @@ impl SimHandshake {
                 42,
             ),
             receiver: AirShieldReceiver::new(AirShieldCipher::new(
-                AirShieldKeys::derive(
+                AirShieldKeys::derive_variant(
+                    variant,
                     shared.raw_secret_bytes().as_slice(),
                     &self.band_challenge,
                     &host_seed,
@@ -152,7 +166,7 @@ impl SimBand {
     /// time at time 100) and return the band plus the frames the host sent once
     /// encryption was up.
     pub fn connect(session: &mut BandSession) -> Result<(SimBand, Vec<DataXFrame>)> {
-        let (handshake, peer) = SimHandshake::accept(&session.request()?)?;
+        let (handshake, peer) = SimHandshake::accept(&session.request()?, None)?;
         let mut output = Vec::new();
         for byte in peer {
             let result = session.feed(&[byte], 100.0)?;

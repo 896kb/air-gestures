@@ -79,6 +79,7 @@ async fn spawn(
             .save_band(&BandRecord {
                 address: SIM_ADDRESS.into(),
                 name: SIM_NAME.into(),
+                scheme_guess: None,
             })
             .unwrap();
         let band_key = verifying_key_from_point64(&transport.band_point()).unwrap();

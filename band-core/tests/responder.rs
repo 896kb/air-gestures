@@ -269,3 +269,32 @@ fn an_injected_gesture_before_streams_are_enabled_yields_nothing() {
     let bytes = band.gesture(8, 1, 0).unwrap();
     assert!(bytes.is_empty());
 }
+
+/// Newer firmware (offers 27, names 26): only the matching key guess
+/// connects; a wrong one fails on the band's side before anything is decrypted.
+#[test]
+fn a_newer_band_connects_only_with_the_matching_key_guess() {
+    use band_core::airshield::SCHEME_26_GUESSES;
+    let actual = 3;
+    for guess in 0..SCHEME_26_GUESSES.len() {
+        let mut band = Responder::new(SimMode::Legacy, SigningKey::random(&mut OsRng));
+        band.firmware = Some(SCHEME_26_GUESSES[actual]);
+        let mut session = BandSession::new(None, None, false).with_scheme_guess(guess);
+        let result = start(&mut session, &mut band);
+        assert_eq!(session.scheme_guess(), Some(guess));
+        if guess == actual {
+            assert!(connected(&result.unwrap()), "guess {guess}");
+        } else {
+            assert!(result.is_err(), "guess {guess} should fail");
+            assert_eq!(session.authenticated_packets(), 0);
+        }
+    }
+}
+
+#[test]
+fn a_scheme_3_band_ignores_the_key_guess() {
+    let mut band = Responder::new(SimMode::Legacy, SigningKey::random(&mut OsRng));
+    let mut session = BandSession::new(None, None, false).with_scheme_guess(5);
+    assert!(connected(&start(&mut session, &mut band).unwrap()));
+    assert_eq!(session.scheme_guess(), None);
+}

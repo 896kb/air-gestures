@@ -14,7 +14,9 @@ use p256::{PublicKey, SecretKey, ecdh};
 use rand_core::{OsRng, RngCore};
 use sha2::{Digest, Sha256};
 
-use crate::airshield::{AirShieldCipher, AirShieldKeys, AirShieldReceiver};
+use crate::airshield::{
+    AirShieldCipher, AirShieldKeys, AirShieldReceiver, SCHEME_3, SCHEME_26_GUESSES, Variant,
+};
 use crate::ceremony::{CeremonyHttpRequest, OwnershipCeremony, failure_message};
 use crate::datax::{DataXFrame, DataXReceiver, be16, be32, encode_frame};
 use crate::dial::PinchDial;
@@ -152,6 +154,12 @@ pub struct BandSession {
     peer_challenge: Option<Vec<u8>>,
     /// The scheme the band's EnableEncryption named (3 on the firmware kinesis knows).
     peer_parameters: u64,
+    /// Which of `SCHEME_26_GUESSES` to use if the band offers a newer scheme.
+    scheme_guess: usize,
+    /// The key rules in use, fixed once the band's RequestEncryption arrives.
+    variant: Variant,
+    /// The band offered a newer scheme, so `variant` is a guess.
+    guessing: bool,
     peer_seed: Option<Vec<u8>>,
     pending: Vec<u8>,
     transmitter: Option<AirShieldCipher>,
@@ -212,6 +220,9 @@ impl BandSession {
             peer_key: None,
             peer_challenge: None,
             peer_parameters: 3,
+            scheme_guess: 0,
+            variant: SCHEME_3,
+            guessing: false,
             peer_seed: None,
             pending: Vec::new(),
             transmitter: None,
@@ -255,6 +266,18 @@ impl BandSession {
     pub fn stop_acknowledged(&self) -> bool {
         self.stop_acknowledged
     }
+    /// Use guess `index` of `SCHEME_26_GUESSES` if the band offers a newer
+    /// encryption scheme (no effect on a scheme-3 band).
+    pub fn with_scheme_guess(mut self, index: usize) -> Self {
+        self.scheme_guess = index;
+        self
+    }
+
+    /// The guess in use, if the band offered a newer scheme.
+    pub fn scheme_guess(&self) -> Option<usize> {
+        self.guessing.then_some(self.scheme_guess)
+    }
+
     pub fn authenticated_packets(&self) -> usize {
         self.authenticated_packets
     }
@@ -300,10 +323,9 @@ impl BandSession {
                 field_bytes(1, &self.public),
                 field_bytes(2, &self.challenge),
                 field_int(3, 0),
-                // The schemes we support, as a bitmask. kinesis offers 31, but
-                // newer firmware (it offers 27 itself) then picks 26, a scheme
-                // whose key derivation we don't know; offer only 3.
-                field_int(4, 3),
+                // The schemes we support, as a bitmask: what the phone app offers.
+                // (Offering only 3 doesn't change what newer firmware picks.)
+                field_int(4, 31),
                 field_int(7, 16),
             ]
             .concat(),
@@ -367,10 +389,11 @@ impl BandSession {
                 0x02000001 => {
                     let curve = fields.integer(3)?;
                     let parameters = fields.integer(4)?;
-                    // `parameters` is a bitmask of the band's supported schemes; older
-                    // firmware offered exactly 3, newer offers more (27 seen) — all we
-                    // need is the parameter-3 scheme (bits 0 and 1), which we pick.
-                    if self.peer_key.is_some() || curve != 0 || parameters & 3 != 3 {
+                    // `parameters` is a bitmask of the band's supported schemes. Older
+                    // firmware offers exactly 3; newer offers 27 and then uses 26,
+                    // whose key rules are guessed (bits 3 and 4 are 31's).
+                    let newer = parameters & 24 != 0;
+                    if self.peer_key.is_some() || curve != 0 || !(newer || parameters & 3 == 3) {
                         return Err(perr(format!(
                             "Unsupported band encryption parameters (repeated request: {}, curve {curve}, parameters {parameters}, field 7: {})",
                             self.peer_key.is_some(),
@@ -381,6 +404,12 @@ impl BandSession {
                     }
                     self.peer_challenge = Some(fields.bytes_len(2, 16)?.to_vec());
                     self.peer_key = Some(point);
+                    self.guessing = newer;
+                    self.variant = if newer {
+                        SCHEME_26_GUESSES[self.scheme_guess % SCHEME_26_GUESSES.len()]
+                    } else {
+                        SCHEME_3
+                    };
                     outgoing.extend(encode_frame(
                         1,
                         &[0x02000002],
@@ -389,7 +418,7 @@ impl BandSession {
                             field_bytes(2, &self.seed),
                             field_bytes(3, &self.iv),
                             field_int(4, u64::from(self.base)),
-                            field_int(5, 3),
+                            field_int(5, self.variant.announce),
                         ]
                         .concat(),
                     )?);
@@ -397,9 +426,8 @@ impl BandSession {
                 0x02000002 => {
                     let parameters = fields.integer(5)?;
                     let peer_challenge = match (&self.peer_key, &self.peer_challenge) {
-                        // Newer firmware names 26 here even when offered only 3; the
-                        // keys are derived as for 3 and the first authenticated packet
-                        // tells whether that holds (see `peer_parameters`).
+                        // Newer firmware names 26 here whatever we offered; whether
+                        // `variant` is right shows in the first packet either way.
                         (Some(key), Some(challenge)) if *key == point => challenge.clone(),
                         _ => {
                             return Err(perr(format!(
@@ -418,12 +446,22 @@ impl BandSession {
                     let peer_counter = u32::try_from(fields.integer(4)?)
                         .map_err(|_| perr("Invalid band packet counter"))?;
                     self.transmitter = Some(AirShieldCipher::new(
-                        AirShieldKeys::derive(secret, &peer_challenge, &self.seed)?,
+                        AirShieldKeys::derive_variant(
+                            self.variant,
+                            secret,
+                            &peer_challenge,
+                            &self.seed,
+                        )?,
                         self.iv,
                         self.base,
                     ));
                     self.receiver = Some(AirShieldReceiver::new(AirShieldCipher::new(
-                        AirShieldKeys::derive(secret, &self.challenge, &peer_seed)?,
+                        AirShieldKeys::derive_variant(
+                            self.variant,
+                            secret,
+                            &self.challenge,
+                            &peer_seed,
+                        )?,
                         peer_iv,
                         peer_counter,
                     )));
@@ -458,10 +496,10 @@ impl BandSession {
                 .expect("checked")
                 .feed(&self.pending)
                 .map_err(|error| {
-                    if self.authenticated_packets == 0 && self.peer_parameters != 3 {
+                    if self.authenticated_packets == 0 && self.guessing {
                         perr(format!(
-                            "{error} (the band chose encryption scheme {}, whose keys differ from scheme 3's)",
-                            self.peer_parameters
+                            "{error} (the band chose encryption scheme {}; key guess {} was wrong)",
+                            self.peer_parameters, self.scheme_guess
                         ))
                     } else {
                         error

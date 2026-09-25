@@ -93,6 +93,10 @@ pub struct LinkOutcome {
     /// The session's owner identity at the end — after a claim, the new one,
     /// even if the connection failed right after the band confirmed it.
     pub enrollment: Option<EnrollmentIdentity>,
+    /// The key guess used with a newer-firmware band (`None`: scheme 3).
+    pub scheme_guess: Option<usize>,
+    /// At least one band packet authenticated.
+    pub authenticated: bool,
 }
 
 fn from_error(error: BandError) -> LinkEnd {
@@ -146,6 +150,8 @@ where
     LinkOutcome {
         end,
         enrollment: session.enrollment().cloned(),
+        scheme_guess: session.scheme_guess(),
+        authenticated: session.authenticated_packets() > 0,
     }
 }
 

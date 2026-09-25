@@ -30,6 +30,7 @@ fn the_directory_and_every_file_are_private() {
         .save_band(&BandRecord {
             address: "AA:BB:CC:DD:EE:FF".into(),
             name: "Meta Band 1234".into(),
+            scheme_guess: None,
         })
         .unwrap();
     // A single `owner.key` now holds the private key plus any band key
@@ -143,6 +144,7 @@ fn the_band_record_round_trips_and_forget_removes_everything_but_the_meta_sessio
     let band = BandRecord {
         address: "AA:BB:CC:DD:EE:FF".into(),
         name: "Meta Band 1234".into(),
+        scheme_guess: None,
     };
     store.save_band(&band).unwrap();
     assert_eq!(store.load_band().unwrap(), Some(band));

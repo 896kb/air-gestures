@@ -83,6 +83,7 @@ struct SimState {
     drop_after_finish: bool,
     /// The identity address the band resolves to once bonded (None = SIM_ADDRESS).
     identity_address: Option<String>,
+    firmware: Option<band_core::airshield::Variant>,
 }
 
 #[derive(Clone)]
@@ -111,6 +112,7 @@ impl SimTransport {
                 opens: 0,
                 drop_after_finish: false,
                 identity_address: None,
+                firmware: None,
             })),
         }
     }
@@ -154,6 +156,11 @@ impl SimTransport {
     /// either address.
     pub fn set_identity_address(&self, address: Option<String>) {
         self.lock().identity_address = address;
+    }
+
+    /// Test knob: newer band firmware keying with `variant` (scheme 26).
+    pub fn set_firmware(&self, variant: Option<band_core::airshield::Variant>) {
+        self.lock().firmware = variant;
     }
 
     /// The band's current owner hash (None until a claim or the first enrolled connection).
@@ -216,9 +223,11 @@ impl Transport for SimTransport {
             responder.reject_finish = state.reject_finish;
             responder.set_owner(state.owner);
             responder.hand = state.hand;
-            responder
+            responder.firmware = state.firmware;
+            (responder, mode)
         };
-        tokio::spawn(serve(band, responder, receiver, self.state.clone()));
+        let (responder, mode) = responder;
+        tokio::spawn(serve(band, responder, mode, receiver, self.state.clone()));
         Ok(host)
     }
 
@@ -256,6 +265,7 @@ fn sync_state(
 async fn serve(
     mut io: DuplexStream,
     mut band: Responder,
+    mode: SimMode,
     mut inject: mpsc::UnboundedReceiver<SimInject>,
     state: Arc<Mutex<SimState>>,
 ) {
@@ -279,7 +289,14 @@ async fn serve(
                             return;
                         }
                     }
-                    Err(_) => return,
+                    Err(_) => {
+                        // Keys that never agreed (a wrong encryption guess): the
+                        // band drops the link but stays in the same mode.
+                        if !band.decrypted() {
+                            state.lock().expect("sim transport lock").next_mode.get_or_insert(mode);
+                        }
+                        return;
+                    }
                 }
             }
             what = inject.recv() => {
