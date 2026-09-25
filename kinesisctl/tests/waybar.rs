@@ -6,7 +6,8 @@ use kinesisctl::waybar::{line, next_lines};
 use kinesisd::ipc::Request;
 use kinesisd::status::{LinkState, PairResult, Status};
 
-const HAND: &str = "\u{f256}";
+const HAND: &str = "\u{f0a4f}";
+const HAND_OFF: &str = "\u{f1831}";
 const BOLT: &str = "\u{f0e7}";
 
 #[test]
@@ -174,4 +175,17 @@ async fn follow_reconnects_once_the_daemon_appears_without_repeating_a_line() {
             break;
         }
     }
+}
+
+#[test]
+fn paused_controls_strike_the_hand_through() {
+    let status = Status {
+        state: LinkState::Connected,
+        paused: true,
+        battery: Some(64),
+        ..Status::default()
+    };
+    let json = line(Some(&status));
+    assert_eq!(json["text"], format!("{HAND_OFF} 64%"));
+    assert_eq!(json["class"], "paused");
 }

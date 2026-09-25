@@ -10,8 +10,10 @@ use tokio::sync::mpsc;
 
 use crate::client::Subscription;
 
-/// Font Awesome hand (in Nerd Fonts) and bolt.
-const HAND: &str = "\u{f256}";
+/// Material Design hand-back-right and its struck-through "off" twin (both
+/// in Nerd Fonts, so the two states match), and Font Awesome's bolt.
+const HAND: &str = "\u{f0a4f}";
+const HAND_OFF: &str = "\u{f1831}";
 const BOLT: &str = "\u{f0e7}";
 
 pub fn line(status: Option<&Status>) -> Value {
@@ -23,7 +25,13 @@ pub fn line(status: Option<&Status>) -> Value {
             "alt": "off",
         });
     };
-    let mut text = HAND.to_string();
+    // Controls off: the hand is struck through.
+    let hand = if status.state == LinkState::Connected && status.paused {
+        HAND_OFF
+    } else {
+        HAND
+    };
+    let mut text = hand.to_string();
     if status.state == LinkState::Connected
         && let Some(level) = status.battery
     {
