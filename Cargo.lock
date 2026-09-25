@@ -23,6 +23,50 @@ dependencies = [
 ]
 
 [[package]]
+name = "air-gestures"
+version = "0.1.0"
+dependencies = [
+ "air-gesturesd",
+ "band-core",
+ "base64 0.22.1",
+ "clap",
+ "p256",
+ "rand_core 0.6.4",
+ "ratatui",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tao",
+ "tempfile",
+ "tokio",
+ "url",
+ "uuid",
+ "wry",
+]
+
+[[package]]
+name = "air-gesturesd"
+version = "0.1.0"
+dependencies = [
+ "band-core",
+ "base64 0.22.1",
+ "bluer",
+ "futures",
+ "p256",
+ "rand_core 0.6.4",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "tokio",
+ "toml",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "allocator-api2"
 version = "0.2.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1809,50 +1853,6 @@ dependencies = [
  "cfg-if",
  "futures-util",
  "wasm-bindgen",
-]
-
-[[package]]
-name = "kinesisctl"
-version = "0.1.0"
-dependencies = [
- "band-core",
- "base64 0.22.1",
- "clap",
- "kinesisd",
- "p256",
- "rand_core 0.6.4",
- "ratatui",
- "reqwest",
- "serde",
- "serde_json",
- "sha2",
- "tao",
- "tempfile",
- "tokio",
- "url",
- "uuid",
- "wry",
-]
-
-[[package]]
-name = "kinesisd"
-version = "0.1.0"
-dependencies = [
- "band-core",
- "base64 0.22.1",
- "bluer",
- "futures",
- "p256",
- "rand_core 0.6.4",
- "reqwest",
- "serde",
- "serde_json",
- "sha2",
- "tempfile",
- "tokio",
- "toml",
- "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]

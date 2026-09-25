@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["band-core", "kinesisd", "kinesisctl"]
+members = ["band-core", "air-gesturesd", "air-gestures"]
 
 [workspace.package]
 edition = "2024"

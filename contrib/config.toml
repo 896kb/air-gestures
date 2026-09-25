@@ -1,13 +1,13 @@
-# kinesisd config: ~/.config/kinesis/config.toml (reloaded on save).
+# air-gesturesd config: ~/.config/air-gestures/config.toml (reloaded on save).
 # Every gesture runs a shell command through `sh -c`; "" leaves it unassigned.
 
 [band]
 hand = "band"        # "band" = whatever the band reports | "left" | "right"
-autostart = true     # connect and enable controls when kinesisd starts
+autostart = true     # connect and enable controls when air-gesturesd starts
 toggle = "none"       # gesture that turns controls off/on (works while off):
                       # "middle_hold" (long press) | "index_triple" | "middle_triple"
                       # (triple: taps <0.45 s apart; that finger's double tap waits 0.45 s)
-on_toggle = ""        # run after toggling, with KINESIS_ENABLED=1|0 set (e.g. an OSD)
+on_toggle = ""        # run after toggling, with AIR_GESTURES_ENABLED=1|0 set (e.g. an OSD)
 
 [gestures]
 swipe_left    = "hyprctl dispatch workspace e-1"

@@ -1,6 +1,6 @@
 //! An auto-answering simulated band driven purely by bytes: the band side of a
 //! whole connection (handshake, trust, ceremony, subscription, hand, battery,
-//! raw sEMG, stop) for daemon tests and `kinesisd --dry-run`. Nothing is secret.
+//! raw sEMG, stop) for daemon tests and `air-gesturesd --dry-run`. Nothing is secret.
 
 use p256::ecdsa::SigningKey;
 

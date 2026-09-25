@@ -1,4 +1,4 @@
-# kinesis-linux
+# air-gestures
 
 Use a **Meta Neural Band** (the sEMG wristband) to control a Linux desktop: thumb swipes, index
 and middle finger taps, a middle-finger hold and pinch + turn your wrist each run a shell command
@@ -27,45 +27,45 @@ Linux/BlueZ.
 | crate | what it is |
 |---|---|
 | `band-core` | sans-IO protocol core: AirShield encryption, DataX framing, session state machine (handshake, owner trust, ownership ceremony, input subscription), gestures, pinch dial, handedness, battery, raw sEMG, and `SimBand` — a scripted simulated band for tests and dry runs |
-| `kinesisd` | BlueZ daemon: gestures → configurable shell actions, pinch dial, ownership claim, control socket (`kinesisd --dry-run` runs it against a simulated band) |
-| `kinesisctl` | Meta sign-in window, claiming (`pair`), status (plain or waybar JSON), pause/resume, dial target, hand, sEMG viewer/recorder |
+| `air-gesturesd` | BlueZ daemon: gestures → configurable shell actions, pinch dial, ownership claim, control socket (`air-gesturesd --dry-run` runs it against a simulated band) |
+| `air-gestures` | Meta sign-in window, claiming (`pair`), status (plain or waybar JSON), pause/resume, dial target, hand, sEMG viewer/recorder |
 
-Design: [`docs/superpowers/specs/2026-09-24-kinesis-linux-design.md`](docs/superpowers/specs/2026-09-24-kinesis-linux-design.md).
+Design (written under the working name kinesis-linux): [`docs/superpowers/specs/2026-09-24-kinesis-linux-design.md`](docs/superpowers/specs/2026-09-24-kinesis-linux-design.md).
 
 ## Install
 
 Needs Rust ≥ 1.88, BlueZ, and WebKitGTK 4.1 (`webkit2gtk-4.1` on Arch) for the sign-in window.
 
 ```sh
-cargo install --locked --path kinesisd
-cargo install --locked --path kinesisctl
-mkdir -p ~/.config/systemd/user ~/.config/kinesis
-cp contrib/kinesisd.service ~/.config/systemd/user/
-cp contrib/config.toml ~/.config/kinesis/        # every key, commented
-systemctl --user daemon-reload && systemctl --user enable --now kinesisd
+cargo install --locked --path air-gesturesd
+cargo install --locked --path air-gestures
+mkdir -p ~/.config/systemd/user ~/.config/air-gestures
+cp contrib/air-gesturesd.service ~/.config/systemd/user/
+cp contrib/config.toml ~/.config/air-gestures/        # every key, commented
+systemctl --user daemon-reload && systemctl --user enable --now air-gesturesd
 ```
 
 ## Claim your band
 
-1. `kinesisctl signin` — Meta's sign-in page opens in a window; the password only goes to Meta.
+1. `air-gestures signin` — Meta's sign-in page opens in a window; the password only goes to Meta.
 2. Factory reset the band (hold its button ~16 s), then put it in pairing mode (hold 3 s until
    it flashes). Make sure `bluetoothctl show` says `Pairable: yes`.
-3. `kinesisctl pair` — claims it; from then on kinesisd connects on its own.
+3. `air-gestures pair` — claims it; from then on air-gesturesd connects on its own.
 
-`kinesisctl status` shows the link, battery, hand and dial target. For waybar:
+`air-gestures status` shows the link, battery, hand and dial target. For waybar:
 
 ```jsonc
-"custom/kinesis": {
-    "exec": "kinesisctl status --waybar --follow",
+"custom/air-gestures": {
+    "exec": "air-gestures status --waybar --follow",
     "return-type": "json",
-    "on-click": "kinesisctl toggle-connection",
-    "on-click-right": "kinesisctl toggle",
-    "on-click-middle": "kinesisctl dial cycle"
+    "on-click": "air-gestures toggle-connection",
+    "on-click-right": "air-gestures toggle",
+    "on-click-middle": "air-gestures dial cycle"
 }
 ```
 
-Gestures and the dial are configured in `~/.config/kinesis/config.toml` (reloaded on save).
-`KINESIS_LOG=kinesisd=debug` in the service logs every gesture and frame.
+Gestures and the dial are configured in `~/.config/air-gestures/config.toml` (reloaded on save).
+`AIR_GESTURES_LOG=air-gesturesd=debug` in the service logs every gesture and frame.
 
 ## Build and test
 
@@ -73,7 +73,7 @@ Rust ≥ 1.88.
 
 ```sh
 cargo test --workspace
-cargo run -p kinesisd -- --dry-run      # the whole daemon against a simulated band
+cargo run -p air-gesturesd -- --dry-run      # the whole daemon against a simulated band
 ```
 
 All tests run offline against the simulated band.
