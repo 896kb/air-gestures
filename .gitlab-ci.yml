@@ -17,6 +17,11 @@
 
 stages: [test, build, release]
 
+# Every job runs on the homelab's docker runner (brigadahq-docker), not GitLab's
+# metered shared runners.
+default:
+  tags: [docker]
+
 variables:
   CARGO_HOME: "$CI_PROJECT_DIR/.cargo-home"
   CARGO_TERM_COLOR: "always"
