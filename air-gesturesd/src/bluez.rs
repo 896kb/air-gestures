@@ -325,7 +325,11 @@ impl Transport for BluezTransport {
                 Ok(Err(error)) if error.kind == ErrorKind::AlreadyConnected => {}
                 // An earlier Connect is still pending in BlueZ: wait for it instead
                 // of stacking retries on top (each would fail "In Progress").
-                Ok(Err(error)) if error.kind == ErrorKind::InProgress => {
+                // BlueZ reports it as InProgress, or as Failed "Operation already in progress".
+                Ok(Err(error))
+                    if error.kind == ErrorKind::InProgress
+                        || error.message.contains("already in progress") =>
+                {
                     let connected = tokio::time::timeout(CONNECT, async {
                         while !device.is_connected().await.unwrap_or(false) {
                             tokio::time::sleep(Duration::from_millis(500)).await;
@@ -342,10 +346,19 @@ impl Transport for BluezTransport {
                 Ok(Ok(())) => {}
             }
         }
-        let services = tokio::time::timeout(SERVICES, device.services())
-            .await
-            .map_err(|_| "the band's services didn't appear".to_string())?
-            .map_err(describe)?;
+        // Asking for services before BlueZ has resolved them fails ("GATT services have
+        // not been resolved"); disconnecting then leaves BlueZ mid-discovery and the
+        // next connect fails "in progress". After the band re-pairs elsewhere (a phone)
+        // its services are re-discovered and this can take several seconds.
+        let services = tokio::time::timeout(SERVICES, async {
+            while !device.is_services_resolved().await.unwrap_or(false) {
+                tokio::time::sleep(Duration::from_millis(250)).await;
+            }
+            device.services().await
+        })
+        .await
+        .map_err(|_| "the band's services didn't appear".to_string())?
+        .map_err(describe)?;
         // The first read may wait on Bluetooth pairing.
         let psm = tokio::time::timeout(PSM_READ, read_psm(services))
             .await

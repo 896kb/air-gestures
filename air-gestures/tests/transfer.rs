@@ -135,3 +135,42 @@ fn bad_files_are_rejected() {
     let error = transfer::parse(&[1; 40]).err().unwrap();
     assert!(error.contains("not an air-gestures band file"), "{error}");
 }
+
+/// A phone records the band's resolvable private address; this computer keeps the
+/// identity address it already knows for the same band, and takes any other record.
+#[test]
+fn a_private_address_from_the_phone_keeps_the_known_address() {
+    let known = BandRecord {
+        address: "A4:0E:2B:90:A6:64".into(),
+        name: "Meta Band 00DF".into(),
+        scheme_guess: Some(0),
+    };
+    let from_phone = |address: &str, name: &str| transfer::Imported {
+        identity: identity(false),
+        band: Some(BandRecord {
+            address: address.into(),
+            name: name.into(),
+            scheme_guess: Some(0),
+        }),
+    };
+    let (_dir, store) = store();
+    store.save_band(&known).unwrap();
+    transfer::import(&store, &from_phone("74:96:B7:84:FA:40", "Meta Band 00DF")).unwrap();
+    assert_eq!(
+        store.load_band().unwrap().unwrap().address,
+        "A4:0E:2B:90:A6:64"
+    );
+    // Another band's record, or a public address, replaces what was there.
+    transfer::import(&store, &from_phone("74:96:B7:84:FA:40", "Meta Band 1234")).unwrap();
+    assert_eq!(
+        store.load_band().unwrap().unwrap().address,
+        "74:96:B7:84:FA:40"
+    );
+    transfer::import(&store, &from_phone("A4:0E:2B:00:00:01", "Meta Band 1234")).unwrap();
+    assert_eq!(
+        store.load_band().unwrap().unwrap().address,
+        "A4:0E:2B:00:00:01"
+    );
+    assert!(transfer::is_private_address("74:96:B7:84:FA:40"));
+    assert!(!transfer::is_private_address("A4:0E:2B:90:A6:64"));
+}

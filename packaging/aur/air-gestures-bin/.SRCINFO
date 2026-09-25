@@ -1,6 +1,6 @@
 pkgbase = air-gestures-bin
 	pkgdesc = Control a Linux desktop with a Meta Neural Band (daemon, CLI, waybar module)
-	pkgver = 0.3.6
+	pkgver = 0.3.7
 	pkgrel = 1
 	url = https://gitlab.com/896kb/air-gestures
 	arch = x86_64
@@ -18,7 +18,7 @@ pkgbase = air-gestures-bin
 	provides = air-gestures
 	conflicts = air-gestures
 	options = !debug
-	source = air-gestures-0.3.6-x86_64-linux.tar.gz::https://gitlab.com/896kb/air-gestures/-/releases/v0.3.6/downloads/air-gestures-x86_64-linux.tar.gz
+	source = air-gestures-0.3.7-x86_64-linux.tar.gz::https://gitlab.com/896kb/air-gestures/-/releases/v0.3.7/downloads/air-gestures-x86_64-linux.tar.gz
 	sha256sums = 0000000000000000000000000000000000000000000000000000000000000000
 
 pkgname = air-gestures-bin

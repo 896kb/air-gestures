@@ -138,9 +138,28 @@ pub fn import(store: &Store, imported: &Imported) -> Result<(), String> {
         .save_identity(&imported.identity)
         .map_err(|error| format!("could not save the owner key: {error}"))?;
     if let Some(band) = &imported.band {
+        // A phone may record the band's resolvable private address, which the band
+        // changes every few minutes and which is useless to this computer. When this
+        // computer already knows the band under the same name, keep its address (the
+        // identity address BlueZ resolved when it bonded).
+        let existing = store.load_band().ok().flatten();
+        let band = match existing {
+            Some(known) if is_private_address(&band.address) && known.name == band.name => {
+                BandRecord {
+                    address: known.address,
+                    ..band.clone()
+                }
+            }
+            _ => band.clone(),
+        };
         store
-            .save_band(band)
+            .save_band(&band)
             .map_err(|error| format!("could not save the band record: {error}"))?;
     }
     Ok(())
+}
+
+/// A resolvable private address: random, with the top two bits of the first octet `01`.
+pub fn is_private_address(address: &str) -> bool {
+    u8::from_str_radix(address.get(..2).unwrap_or(""), 16).is_ok_and(|first| first >> 6 == 0b01)
 }

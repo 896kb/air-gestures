@@ -109,6 +109,12 @@ The band trusts one owner key; to use it from another computer or the
 The band talks to one device at a time: `air-gestures disconnect` on the one you're leaving.
 Keep the file private and delete it once imported: anyone holding it can control the band.
 
+After a band is **claimed** on another device, it drops its Bluetooth pairing with this
+computer, so the imported key alone doesn't connect: remove the old pairing
+(`bluetoothctl remove <address>`), put the band in pairing mode (hold 3 s) and pair it
+again (`bluetoothctl`, then `pair`); the daemon then connects with the imported key.
+Moving a key between devices that already paired with the band needs none of this.
+
 ## Build and test
 
 Rust ≥ 1.88.

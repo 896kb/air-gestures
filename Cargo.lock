@@ -24,7 +24,7 @@ dependencies = [
 
 [[package]]
 name = "air-gestures"
-version = "0.3.6"
+version = "0.3.7"
 dependencies = [
  "air-gesturesd",
  "band-core",
@@ -47,7 +47,7 @@ dependencies = [
 
 [[package]]
 name = "air-gesturesd"
-version = "0.3.6"
+version = "0.3.7"
 dependencies = [
  "band-core",
  "base64 0.22.1",
@@ -159,7 +159,7 @@ checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
 
 [[package]]
 name = "band-core"
-version = "0.3.6"
+version = "0.3.7"
 dependencies = [
  "aes",
  "cbc",
