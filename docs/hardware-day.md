@@ -56,4 +56,12 @@ Sign-in is the step most likely to need retries, so do it before the band is res
 - Once everything works: push kinesis-linux master and the arch_rice branch (the user decides).
 
 ## Findings
-_(fill in on the day)_
+
+2026-09-25, Meta Band 00DF: claimed and connected; gestures drive Hyprland.
+
+- **Address:** advertises a resolvable private address (e.g. 7D:5C:…, 7B:AB:…); identity address A4:0E:2B:90:A6:64 once bonded. Removing a stale bond also drops the band's IRK, so `prepare_pairing` finds the band again by name (only a device heard in that scan: BlueZ's cached entry for an old private address matches by name but can't be connected).
+- **Encryption scheme 26:** the band offers 27 and names 26 in EnableEncryption whatever we offer (kinesis only knew 3; the glasses use 31). Scheme 26 = 31's key derivation (HKDF over the raw ECDH secret, salt SHA256(C‖R)) with the encryption key reused as MAC key and 31's `02 02 00 00` MAC prefix — `SCHEME_26_GUESSES[0]`, stored in band.json as `scheme_guess`.
+- **Padding:** records are padded by 1..=16 bytes; a block-aligned frame gets a whole block of 0xd0 (the 1888-byte identity reply arrived as 1904 bytes). We pad the same way under scheme 26.
+- **Channels:** flagged channels the band answers or opens carry extra bits that change per connection (0x9c01, 0x9801, 0x9501 for 0x8001; same for 0x8002). Frames are routed on `channel & 0x80ff`.
+- **Meta:** the final pair reply has no `device_ec_public_key` (kinesis notes the same), so owner.key is 32 bytes and the band's trust proof isn't verified against a key.
+- **Stream:** gyro (0200020f), orientation (02000212) and gestures (0200020d) on channel 5; battery on 8; gesture field layout unchanged.
