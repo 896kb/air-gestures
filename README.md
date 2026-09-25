@@ -38,8 +38,13 @@ Runtime needs BlueZ, D-Bus and WebKitGTK 4.1 (`webkit2gtk-4.1` on Arch) for the 
 
 ### Arch Linux (AUR)
 
+> **Not on the AUR yet.** The AUR has temporarily closed new account registration (after a
+> wave of automated sign-ups), so `air-gestures-bin` can't be published. It will be as soon
+> as registration reopens; until then use the release tarball below.
+
+~~`paru -S air-gestures-bin`~~, then, once it's available:
+
 ```sh
-paru -S air-gestures-bin
 mkdir -p ~/.config/air-gestures
 cp /usr/share/doc/air-gestures/config.toml ~/.config/air-gestures/   # every key, commented
 systemctl --user daemon-reload && systemctl --user enable --now air-gesturesd
