@@ -34,7 +34,36 @@ Design (written under the working name kinesis-linux): [`docs/superpowers/specs/
 
 ## Install
 
-Needs Rust ≥ 1.88, BlueZ, and WebKitGTK 4.1 (`webkit2gtk-4.1` on Arch) for the sign-in window.
+Runtime needs BlueZ, D-Bus and WebKitGTK 4.1 (`webkit2gtk-4.1` on Arch) for the sign-in window.
+
+### Arch Linux (AUR)
+
+```sh
+paru -S air-gestures-bin
+mkdir -p ~/.config/air-gestures
+cp /usr/share/doc/air-gestures/config.toml ~/.config/air-gestures/   # every key, commented
+systemctl --user daemon-reload && systemctl --user enable --now air-gesturesd
+```
+
+### Release tarball (x86_64, glibc ≥ 2.36)
+
+[air-gestures-x86_64-linux.tar.gz](https://gitlab.com/896kb/air-gestures/-/releases/permalink/latest/downloads/air-gestures-x86_64-linux.tar.gz)
+(latest release) has both binaries, the user unit, the example config and the licenses. The
+unit runs `/usr/bin/air-gesturesd`; to install into your home instead:
+
+```sh
+tar xzf air-gestures-x86_64-linux.tar.gz && cd air-gestures-v*/
+install -Dm755 -t ~/.local/bin air-gestures air-gesturesd
+mkdir -p ~/.config/systemd/user ~/.config/air-gestures
+sed 's|^ExecStart=.*|ExecStart=%h/.local/bin/air-gesturesd|' air-gesturesd.service \
+    > ~/.config/systemd/user/air-gesturesd.service
+cp config.toml ~/.config/air-gestures/
+systemctl --user daemon-reload && systemctl --user enable --now air-gesturesd
+```
+
+### From source
+
+Needs Rust ≥ 1.88 and the development files for D-Bus and WebKitGTK 4.1.
 
 ```sh
 cargo install --locked --path air-gesturesd

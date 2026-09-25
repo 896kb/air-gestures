@@ -1,0 +1,18 @@
+[Unit]
+Description=Meta Neural Band controls (air-gestures)
+Documentation=https://gitlab.com/896kb/air-gestures
+After=graphical-session.target
+PartOf=graphical-session.target
+# Keep restarting however often it fails (e.g. while bluetoothd is down).
+StartLimitIntervalSec=0
+
+[Service]
+ExecStart=/usr/bin/air-gesturesd
+Restart=on-failure
+RestartSec=3
+Environment=AIR_GESTURES_LOG=info
+# Leave apps launched by gestures running when the daemon restarts.
+KillMode=process
+
+[Install]
+WantedBy=graphical-session.target

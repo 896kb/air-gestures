@@ -1,0 +1,116 @@
+# CI for air-gestures.
+#
+# Every push: `test` runs the test suite; non-tag pushes also run `build`
+# (a --release build, so a broken release build shows up before tagging).
+#
+# To publish a release, tag the commit and push the tag:
+#
+#   git tag v0.3.6 && git push origin v0.3.6
+#
+# On a v* tag, `package` builds the x86_64 Linux binaries, packs
+# air-gestures-<tag>-x86_64-linux.tar.gz and uploads it to the project's
+# generic package registry; `release` then creates the GitLab release with a
+# link to it. The newest release's tarball is always at
+#   https://gitlab.com/896kb/air-gestures/-/releases/permalink/latest/downloads/air-gestures-x86_64-linux.tar.gz
+#
+# Built on Debian bookworm so the binaries only need glibc >= 2.36.
+
+stages: [test, build, release]
+
+variables:
+  CARGO_HOME: "$CI_PROJECT_DIR/.cargo-home"
+  CARGO_TERM_COLOR: "always"
+  TARGET: "x86_64-unknown-linux-gnu"
+
+.rust:
+  image: rust:1-bookworm
+  before_script:
+    - apt-get update -qq
+    - >
+      apt-get install -y -qq --no-install-recommends
+      pkg-config libdbus-1-dev libgtk-3-dev libwebkit2gtk-4.1-dev
+      libsoup-3.0-dev libjavascriptcoregtk-4.1-dev
+    - rustc --version && cargo --version
+  cache:
+    key:
+      files: [Cargo.lock]
+      prefix: "$CI_JOB_NAME"
+    paths:
+      - .cargo-home/registry/index/
+      - .cargo-home/registry/cache/
+      - .cargo-home/git/db/
+      - target/
+
+test:
+  extends: .rust
+  stage: test
+  rules:
+    - if: $CI_COMMIT_BRANCH || $CI_COMMIT_TAG
+  script:
+    - cargo test --workspace --locked
+
+build:
+  extends: .rust
+  stage: build
+  rules:
+    - if: $CI_COMMIT_TAG
+      when: never
+    - if: $CI_COMMIT_BRANCH
+  script:
+    - cargo build --workspace --release --locked --target "$TARGET"
+
+package:
+  extends: .rust
+  stage: build
+  rules:
+    - if: $CI_COMMIT_TAG =~ /^v/
+  script:
+    - cargo build --workspace --release --locked --target "$TARGET"
+    - DIR="air-gestures-$CI_COMMIT_TAG"
+    - TARBALL="air-gestures-$CI_COMMIT_TAG-x86_64-linux.tar.gz"
+    - mkdir -p "$DIR"
+    - install -m755 "target/$TARGET/release/air-gestures" "target/$TARGET/release/air-gesturesd" "$DIR/"
+    - install -m644 packaging/air-gesturesd.service contrib/config.toml README.md LICENSE LICENSE-kinesis "$DIR/"
+    - tar -czf "$TARBALL" --owner=0 --group=0 "$DIR"
+    - tar -tzvf "$TARBALL"
+    - |
+      curl --fail --header "JOB-TOKEN: $CI_JOB_TOKEN" \
+           --upload-file "$TARBALL" \
+           "$CI_API_V4_URL/projects/$CI_PROJECT_ID/packages/generic/air-gestures/$CI_COMMIT_TAG/$TARBALL"
+  artifacts:
+    paths: ["air-gestures-*-x86_64-linux.tar.gz"]
+
+release:
+  stage: release
+  image: registry.gitlab.com/gitlab-org/release-cli:latest
+  rules:
+    - if: $CI_COMMIT_TAG =~ /^v/
+  needs: [package]
+  script:
+    - echo "Releasing $CI_COMMIT_TAG"
+  release:
+    tag_name: "$CI_COMMIT_TAG"
+    name: "$CI_COMMIT_TAG"
+    description: |
+      Linux daemon and CLI for the Meta Neural Band.
+
+      air-gestures-$CI_COMMIT_TAG-x86_64-linux.tar.gz contains the `air-gestures` and
+      `air-gesturesd` binaries (x86_64, glibc >= 2.36), a systemd user unit
+      (`air-gesturesd.service`, ExecStart=/usr/bin/air-gesturesd), the example
+      `config.toml`, README.md, LICENSE and LICENSE-kinesis.
+
+      Runtime needs: BlueZ, D-Bus and WebKitGTK 4.1 (`webkit2gtk-4.1` on Arch).
+
+      Install on Arch: `paru -S air-gestures-bin`. Otherwise extract the tarball,
+      put both binaries on your PATH, install the unit to ~/.config/systemd/user/
+      (adjust ExecStart if the binaries are not in /usr/bin) and copy config.toml
+      to ~/.config/air-gestures/. See the README for claiming a band.
+
+      Claiming a band unlinks it from your Meta glasses / phone app until you
+      factory-reset it and set it up there again.
+    assets:
+      links:
+        - name: "air-gestures-$CI_COMMIT_TAG-x86_64-linux.tar.gz"
+          url: "$CI_API_V4_URL/projects/$CI_PROJECT_ID/packages/generic/air-gestures/$CI_COMMIT_TAG/air-gestures-$CI_COMMIT_TAG-x86_64-linux.tar.gz"
+          link_type: package
+          filepath: "/air-gestures-x86_64-linux.tar.gz"
