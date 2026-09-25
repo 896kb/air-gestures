@@ -520,7 +520,31 @@ impl BandSession {
             self.pending.clear();
             for plaintext in records {
                 self.authenticated_packets += 1;
-                for frame in self.datax.feed(&plaintext)? {
+                let frames = self.datax.feed(&plaintext)?;
+                if matches!(
+                    self.setup_stage,
+                    SetupStage::Ceremony | SetupStage::Identity | SetupStage::Link
+                ) {
+                    // Setup only: header bytes (length, channel, type words), no payload.
+                    let head = &plaintext[..plaintext.len().min(12)];
+                    self.diagnostics.push(format!(
+                        "packet {}: {} plaintext bytes, starts {:02x?}; frames {:?}; {} bytes held for a later packet",
+                        self.authenticated_packets,
+                        plaintext.len(),
+                        head,
+                        frames
+                            .iter()
+                            .map(|frame| format!(
+                                "ch {:#x} words {:08x?} {}B",
+                                frame.channel,
+                                frame.words,
+                                frame.payload.len()
+                            ))
+                            .collect::<Vec<_>>(),
+                        self.datax.pending_len()
+                    ));
+                }
+                for frame in frames {
                     let produced = self.input(&frame, time, &mut outgoing)?;
                     events.extend(produced);
                 }

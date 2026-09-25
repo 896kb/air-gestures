@@ -58,6 +58,11 @@ impl std::fmt::Debug for DataXReceiver {
 }
 
 impl DataXReceiver {
+    /// Bytes held back waiting for the rest of a frame.
+    pub fn pending_len(&self) -> usize {
+        self.pending.len()
+    }
+
     /// Feeds one decrypted AirShield record and returns every frame it completes.
     ///
     /// The sender pads a record with `n` bytes of `0xc0 + n` (1..=15) only when
