@@ -16,6 +16,16 @@ pub enum HandSetting {
     Right,
 }
 
+/// The finger whose triple tap turns the controls off and on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ToggleTap {
+    #[default]
+    None,
+    Index,
+    Middle,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum DialTarget {
@@ -40,6 +50,12 @@ pub struct BandConfig {
     pub hand: HandSetting,
     /// Connect and enable controls when the daemon starts.
     pub autostart: bool,
+    /// A triple tap of this finger turns the controls off and on (works
+    /// while they are off). Its double tap then waits ~0.45 s for a third tap.
+    pub toggle_tap: ToggleTap,
+    /// Run after a triple tap toggled the controls, with `KINESIS_ENABLED=1`
+    /// or `0` in its environment (e.g. an OSD).
+    pub on_toggle: String,
 }
 
 impl Default for BandConfig {
@@ -47,6 +63,8 @@ impl Default for BandConfig {
         Self {
             hand: HandSetting::Band,
             autostart: true,
+            toggle_tap: ToggleTap::None,
+            on_toggle: String::new(),
         }
     }
 }

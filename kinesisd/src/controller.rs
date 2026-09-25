@@ -4,7 +4,7 @@
 use band_core::events::{Event, Hand};
 use band_core::gestures::{ActionGate, DialRouter, GestureRouter, Recognized, Swipe, Tap};
 
-use crate::config::{Config, DialTarget, HandSetting};
+use crate::config::{Config, DialTarget, HandSetting, ToggleTap};
 use crate::status::Status;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -39,6 +39,18 @@ struct HeldTap {
     tap: Tap,
     fire_at: f64,
     received_at: f64,
+}
+
+/// The most time between the taps of a triple tap (the band's own double tap
+/// needs them under ~0.33 s apart; a triple tap is a little slower).
+pub const TRIPLE_TAP_GAP: f64 = 0.45;
+
+fn toggle_finger(tap: Tap) -> ToggleTap {
+    match tap {
+        Tap::IndexTap | Tap::IndexDoubleTap => ToggleTap::Index,
+        Tap::MiddleTap | Tap::MiddleDoubleTap => ToggleTap::Middle,
+        Tap::MiddleHold => ToggleTap::None,
+    }
 }
 
 fn double_of(tap: Tap) -> Option<Tap> {
@@ -82,6 +94,10 @@ pub struct Controller {
     dial_ended_at: f64,
     last_dial_action: f64,
     held_tap: Option<HeldTap>,
+    /// Recent single taps of the toggle finger, for the triple tap.
+    toggle_taps: Vec<f64>,
+    /// When a triple tap last toggled (its third tap may also report a double).
+    toggled_at: f64,
     status: Status,
 }
 
@@ -113,6 +129,8 @@ impl Controller {
             dial_ended_at: f64::NEG_INFINITY,
             last_dial_action: f64::NEG_INFINITY,
             held_tap: None,
+            toggle_taps: Vec::new(),
+            toggled_at: f64::NEG_INFINITY,
             status,
         }
     }
@@ -187,6 +205,7 @@ impl Controller {
         self.hand_retry_used = false;
         self.suspend();
         self.held_tap = None;
+        self.toggle_taps.clear();
         self.router.reset();
         self.status.charging = None;
     }
@@ -256,6 +275,38 @@ impl Controller {
         {
             return Vec::new();
         }
+        if let Recognized::Tap(tap) = gesture
+            && self.config.band.toggle_tap != ToggleTap::None
+            && toggle_finger(tap) == self.config.band.toggle_tap
+        {
+            if double_of(tap).is_some() {
+                if self
+                    .toggle_taps
+                    .last()
+                    .is_some_and(|&last| now - last > TRIPLE_TAP_GAP)
+                {
+                    self.toggle_taps.clear();
+                }
+                self.toggle_taps.push(now);
+                if self.toggle_taps.len() >= 3 {
+                    self.toggle_taps.clear();
+                    self.held_tap = None;
+                    self.toggled_at = now;
+                    return self.toggle_by_tap(now);
+                }
+            } else if now - self.toggled_at < 0.15 {
+                // The third tap's own double tap: part of the triple.
+                return Vec::new();
+            } else {
+                // This finger's double tap may be the start of a triple tap.
+                self.held_tap = Some(HeldTap {
+                    tap,
+                    fire_at: now + TRIPLE_TAP_GAP,
+                    received_at: message.received_at,
+                });
+                return Vec::new();
+            }
+        }
         if let Recognized::Tap(tap) = gesture {
             // A double tap supersedes the single tap(s) it was made of.
             if self
@@ -303,6 +354,22 @@ impl Controller {
         }
         self.status.last_action = Some(command.clone());
         vec![Command::Run(command)]
+    }
+
+    fn toggle_by_tap(&mut self, now: f64) -> Vec<Command> {
+        if !self.live {
+            return Vec::new();
+        }
+        self.toggle(now);
+        self.status.last_gesture = Some("triple tap".into());
+        let command = &self.config.band.on_toggle;
+        if command.is_empty() {
+            return Vec::new();
+        }
+        vec![Command::Run(format!(
+            "KINESIS_ENABLED={} {command}",
+            u8::from(self.enabled)
+        ))]
     }
 
     /// When a held single tap is due (see `fire_held_tap`).
