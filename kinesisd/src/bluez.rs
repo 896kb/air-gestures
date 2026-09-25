@@ -116,6 +116,30 @@ impl BluezTransport {
         Ok(None)
     }
 
+    /// The address a band advertising `name` is heard at now.
+    async fn rediscover_by_name(&self, name: &str) -> Result<Address, String> {
+        self.set_le_filter().await?;
+        let events = self.adapter.discover_devices().await.map_err(describe)?;
+        let mut events = std::pin::pin!(events);
+        let seen = tokio::time::timeout(REDISCOVER, async {
+            while let Some(event) = events.next().await {
+                if let AdapterEvent::DeviceAdded(path_address) = event
+                    && let Ok(device) = self.adapter.device(path_address)
+                    && device.name().await.ok().flatten().as_deref() == Some(name)
+                {
+                    return Some(path_address);
+                }
+            }
+            None
+        })
+        .await
+        .ok()
+        .flatten();
+        seen.ok_or_else(|| {
+            format!("{name} didn't show up again after its old pairing was removed (is it still in pairing mode?)")
+        })
+    }
+
     /// Make sure BlueZ has a device object for `target`, discovering it if needed.
     async fn known_device(&self, target: Address) -> Result<Device, String> {
         if let Some(device) = self.existing_device(target).await? {
@@ -221,8 +245,8 @@ impl Transport for BluezTransport {
         Ok(found)
     }
 
-    async fn prepare_pairing(&self, address: &str) -> Result<AgentHandle, String> {
-        let target = parse(address)?;
+    async fn prepare_pairing(&self, address: &str) -> Result<(AgentHandle, String), String> {
+        let mut target = parse(address)?;
         if let Err(error) = self.adapter.set_pairable(true).await {
             tracing::debug!("could not make the adapter pairable: {error}");
         }
@@ -231,10 +255,17 @@ impl Transport for BluezTransport {
         if let Ok(Some(device)) = self.existing_device(target).await
             && device.is_paired().await.unwrap_or(false)
         {
+            let name = device.name().await.ok().flatten();
             self.adapter
                 .remove_device(device.address())
                 .await
                 .map_err(describe)?;
+            // Without the bond's identity key a band advertising a private
+            // address can't be matched to `target` any more: find it again by name.
+            if let Some(name) = name {
+                target = self.rediscover_by_name(&name).await?;
+                tracing::info!("the band now advertises as {target}");
+            }
         }
         let agent = Agent {
             request_default: true,
@@ -249,7 +280,8 @@ impl Transport for BluezTransport {
             })),
             ..Default::default()
         };
-        self.session.register_agent(agent).await.map_err(describe)
+        let agent = self.session.register_agent(agent).await.map_err(describe)?;
+        Ok((agent, target.to_string()))
     }
 
     async fn open(&self, address: &str) -> Result<Stream, String> {

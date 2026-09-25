@@ -29,10 +29,13 @@ pub trait Transport: Send + Sync + 'static {
     /// Bands advertising a "Meta Band…" name, strongest first.
     fn scan(&self, timeout: Duration) -> impl Future<Output = Result<Vec<Found>, String>> + Send;
     /// Get ready to pair with `address`: drop a stale bond, accept only its pairing request.
+    /// Returns the address to open: a band with a resolvable private address
+    /// is unrecognizable once its bond (and so its identity key) is gone, and
+    /// is heard again under a new private address.
     fn prepare_pairing(
         &self,
         address: &str,
-    ) -> impl Future<Output = Result<Self::PairingGuard, String>> + Send;
+    ) -> impl Future<Output = Result<(Self::PairingGuard, String), String>> + Send;
     /// Connect and open the band's input channel.
     fn open(&self, address: &str) -> impl Future<Output = Result<Self::Io, String>> + Send;
     /// Remove the system's bond with `address`.
@@ -184,7 +187,7 @@ impl Transport for SimTransport {
         }])
     }
 
-    async fn prepare_pairing(&self, _address: &str) -> Result<(), String> {
+    async fn prepare_pairing(&self, address: &str) -> Result<((), String), String> {
         let mut state = self.lock();
         state.next_mode = Some(SimMode::Ceremony);
         // A factory reset puts the band back in pairing mode with no owner;
@@ -192,7 +195,7 @@ impl Transport for SimTransport {
         // must see a plain pairing-mode band, not whatever it was before.
         state.owner = None;
         state.mode = SimMode::Legacy;
-        Ok(())
+        Ok(((), address.to_owned()))
     }
 
     async fn open(&self, address: &str) -> Result<DuplexStream, String> {

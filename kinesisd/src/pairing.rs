@@ -90,10 +90,11 @@ pub async fn pair_band<T: Transport, C: PairClient>(
     };
 
     tell(&mut progress, "preparing Bluetooth pairing").await;
-    let _pairing = transport
+    let (_pairing, address) = transport
         .prepare_pairing(&record.address)
         .await
         .map_err(PairFailure::Failed)?;
+    record.address = address;
     tell(&mut progress, &format!("connecting to {}", record.name)).await;
     let io = transport
         .open(&record.address)

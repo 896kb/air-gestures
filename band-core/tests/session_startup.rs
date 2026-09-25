@@ -294,3 +294,44 @@ fn the_sim_band_reports_an_oversized_record_instead_of_panicking() {
     let mut peer = Peer::legacy(false, false);
     assert!(peer.band.encrypt(&[0; 5000]).is_err());
 }
+
+/// Newer band firmware offers a bitmask of schemes (27 seen on hardware) that
+/// still includes the parameter-3 scheme; the host must accept it and pick 3.
+#[test]
+fn a_band_offering_more_schemes_than_three_is_accepted() {
+    use p256::elliptic_curve::sec1::ToEncodedPoint;
+    let mut session = BandSession::new(None, None, false);
+    session.request().unwrap();
+    let mut scalar = [0u8; 32];
+    scalar[31] = 1;
+    let transport = p256::SecretKey::from_slice(&scalar).unwrap();
+    let point = transport.public_key().to_encoded_point(false).as_bytes()[1..].to_vec();
+    let challenge: Vec<u8> = (0..16).collect();
+    let offer = |parameters| {
+        encode_frame(
+            0x8001,
+            &[0x81000005, 0x02000001],
+            &[
+                fb(1, &point),
+                fb(2, &challenge),
+                fi(3, 0),
+                fi(4, parameters),
+                fi(7, 17),
+            ]
+            .concat(),
+        )
+        .unwrap()
+    };
+    let reply = session.feed(&offer(27), 100.0).unwrap();
+    let size = usize::from(u16::from_be_bytes([reply.outgoing[0], reply.outgoing[1]]) & 0x7fff) + 4;
+    let enable = ProtoFields::parse(&reply.outgoing[8..size]).unwrap();
+    assert_eq!(
+        enable.integer(5).unwrap(),
+        3,
+        "the host picks the parameter-3 scheme"
+    );
+    let mut other = BandSession::new(None, None, false);
+    other.request().unwrap();
+    let error = other.feed(&offer(24), 100.0).unwrap_err();
+    assert!(error.to_string().contains("parameters 24"), "{error}");
+}

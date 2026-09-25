@@ -359,9 +359,19 @@ impl BandSession {
                 .map_err(|_| perr("Invalid band public key"))?;
             match kind {
                 0x02000001 => {
-                    if self.peer_key.is_some() || fields.integer(3)? != 0 || fields.integer(4)? != 3
-                    {
-                        return Err(perr("Unsupported band encryption parameters"));
+                    let curve = fields.integer(3)?;
+                    let parameters = fields.integer(4)?;
+                    // `parameters` is a bitmask of the band's supported schemes; older
+                    // firmware offered exactly 3, newer offers more (27 seen) — all we
+                    // need is the parameter-3 scheme (bits 0 and 1), which we pick.
+                    if self.peer_key.is_some() || curve != 0 || parameters & 3 != 3 {
+                        return Err(perr(format!(
+                            "Unsupported band encryption parameters (repeated request: {}, curve {curve}, parameters {parameters}, field 7: {})",
+                            self.peer_key.is_some(),
+                            fields
+                                .integer(7)
+                                .map_or_else(|_| "?".to_string(), |v| v.to_string())
+                        )));
                     }
                     self.peer_challenge = Some(fields.bytes_len(2, 16)?.to_vec());
                     self.peer_key = Some(point);
@@ -384,7 +394,12 @@ impl BandSession {
                         (Some(key), Some(challenge)) if *key == point && parameters == 3 => {
                             challenge.clone()
                         }
-                        _ => return Err(perr("Unexpected band encryption response")),
+                        _ => {
+                            return Err(perr(format!(
+                                "Unexpected band encryption response (same key: {}, parameters {parameters})",
+                                self.peer_key.as_deref() == Some(point.as_slice())
+                            )));
+                        }
                     };
                     let shared =
                         ecdh::diffie_hellman(self.secret.to_nonzero_scalar(), peer.as_affine());
