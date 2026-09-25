@@ -297,7 +297,10 @@ impl BandSession {
                 field_bytes(1, &self.public),
                 field_bytes(2, &self.challenge),
                 field_int(3, 0),
-                field_int(4, 31),
+                // The schemes we support, as a bitmask. kinesis offers 31, but
+                // newer firmware (it offers 27 itself) then picks 26, a scheme
+                // whose key derivation we don't know; offer only 3.
+                field_int(4, 3),
                 field_int(7, 16),
             ]
             .concat(),

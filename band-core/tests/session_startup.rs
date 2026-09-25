@@ -6,7 +6,7 @@ use band_core::session::BandSession;
 use common::*;
 
 #[test]
-fn the_request_opens_encryption_with_parameters_31() {
+fn the_request_offers_only_the_parameter_3_scheme() {
     let session = BandSession::new(None, None, false);
     let request = session.request().unwrap();
     assert_eq!(hex::encode(&request[..12]), "806280018100000502000001");
@@ -19,7 +19,7 @@ fn the_request_opens_encryption_with_parameters_31() {
             fields.integer(4).unwrap(),
             fields.integer(7).unwrap()
         ),
-        (0, 31, 16)
+        (0, 3, 16)
     );
 }
 
