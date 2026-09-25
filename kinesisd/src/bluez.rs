@@ -116,15 +116,23 @@ impl BluezTransport {
         Ok(None)
     }
 
-    /// The address a band advertising `name` is heard at now.
-    async fn rediscover_by_name(&self, name: &str) -> Result<Address, String> {
+    /// The address a band advertising `name` is heard at now. BlueZ also lists
+    /// cached devices of that name (e.g. an old private address the band no
+    /// longer uses), so like `scan` only one with an RSSI in this scan counts.
+    async fn rediscover_by_name(&self, name: &str, removed: Address) -> Result<Address, String> {
         self.set_le_filter().await?;
-        let events = self.adapter.discover_devices().await.map_err(describe)?;
+        let events = self
+            .adapter
+            .discover_devices_with_changes()
+            .await
+            .map_err(describe)?;
         let mut events = std::pin::pin!(events);
         let seen = tokio::time::timeout(REDISCOVER, async {
             while let Some(event) = events.next().await {
                 if let AdapterEvent::DeviceAdded(path_address) = event
+                    && path_address != removed
                     && let Ok(device) = self.adapter.device(path_address)
+                    && matches!(device.rssi().await, Ok(Some(_)))
                     && device.name().await.ok().flatten().as_deref() == Some(name)
                 {
                     return Some(path_address);
@@ -256,6 +264,7 @@ impl Transport for BluezTransport {
             && device.is_paired().await.unwrap_or(false)
         {
             let name = device.name().await.ok().flatten();
+            let removed = device.address();
             self.adapter
                 .remove_device(device.address())
                 .await
@@ -263,7 +272,7 @@ impl Transport for BluezTransport {
             // Without the bond's identity key a band advertising a private
             // address can't be matched to `target` any more: find it again by name.
             if let Some(name) = name {
-                target = self.rediscover_by_name(&name).await?;
+                target = self.rediscover_by_name(&name, removed).await?;
                 tracing::info!("the band now advertises as {target}");
             }
         }
@@ -289,7 +298,14 @@ impl Transport for BluezTransport {
         self.ensure_powered().await?;
         let device = self.known_device(target).await?;
         if !device.is_connected().await.map_err(describe)? {
-            match tokio::time::timeout(CONNECT, device.connect()).await {
+            let mut attempt = tokio::time::timeout(CONNECT, device.connect()).await;
+            // BlueZ sometimes aborts the first LE connect right after discovery stops.
+            if matches!(&attempt, Ok(Err(error)) if error.to_string().contains("abort-by-local")) {
+                tracing::info!("the first connection attempt was aborted; retrying once");
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                attempt = tokio::time::timeout(CONNECT, device.connect()).await;
+            }
+            match attempt {
                 Err(_) => {
                     // Cancel BlueZ's pending Connect so it doesn't linger.
                     let _ = device.disconnect().await;
