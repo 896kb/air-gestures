@@ -1,19 +1,21 @@
 # Maintainer: 896kb <raducugarjoaba at gmail dot com>
 pkgname=air-gestures-bin
 _pkgname=air-gestures
-pkgver=0.3.7
+pkgver=0.3.8
 pkgrel=1
 pkgdesc='Control a Linux desktop with a Meta Neural Band (daemon, CLI, waybar module)'
-arch=('x86_64')
+arch=('x86_64' 'aarch64')
 url='https://gitlab.com/896kb/air-gestures'
 license=('MIT')
 depends=('bluez' 'dbus' 'webkit2gtk-4.1' 'gtk3' 'libsoup3' 'glib2' 'cairo' 'gdk-pixbuf2' 'gcc-libs' 'glibc')
 provides=("$_pkgname")
 conflicts=("$_pkgname")
 options=('!debug')
-source=("$_pkgname-$pkgver-x86_64-linux.tar.gz::$url/-/releases/v$pkgver/downloads/$_pkgname-x86_64-linux.tar.gz")
-# Placeholder: run `updpkgsums` once the v$pkgver release exists (see ../README.md).
-sha256sums=('0000000000000000000000000000000000000000000000000000000000000000')
+source_x86_64=("$_pkgname-$pkgver-x86_64-linux.tar.gz::$url/-/releases/v$pkgver/downloads/$_pkgname-x86_64-linux.tar.gz")
+source_aarch64=("$_pkgname-$pkgver-aarch64-linux.tar.gz::$url/-/releases/v$pkgver/downloads/$_pkgname-aarch64-linux.tar.gz")
+# Placeholders: run `updpkgsums` once the v$pkgver release exists (see ../README.md).
+sha256sums_x86_64=('0000000000000000000000000000000000000000000000000000000000000000')
+sha256sums_aarch64=('0000000000000000000000000000000000000000000000000000000000000000')
 
 package() {
   cd "$_pkgname-v$pkgver"

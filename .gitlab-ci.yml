@@ -7,11 +7,12 @@
 #
 #   git tag v0.3.6 && git push origin v0.3.6
 #
-# On a v* tag, `package` builds the x86_64 Linux binaries, packs
-# air-gestures-<tag>-x86_64-linux.tar.gz and uploads it to the project's
-# generic package registry; `release` then creates the GitLab release with a
-# link to it. The newest release's tarball is always at
-#   https://gitlab.com/896kb/air-gestures/-/releases/permalink/latest/downloads/air-gestures-x86_64-linux.tar.gz
+# On a v* tag, `package` and `package-aarch64` build the x86_64 and aarch64
+# Linux binaries, pack air-gestures-<tag>-<arch>-linux.tar.gz and upload them
+# to the project's generic package registry; `release` then creates the GitLab
+# release, with CHANGELOG.md's section as its notes, linking both. The newest
+# release's tarballs are always at
+#   https://gitlab.com/896kb/air-gestures/-/releases/permalink/latest/downloads/air-gestures-<arch>-linux.tar.gz
 #
 # Built on Debian bookworm so the binaries only need glibc >= 2.36.
 
@@ -70,27 +71,60 @@ package:
   rules:
     - if: $CI_COMMIT_TAG =~ /^v/
   script:
-    - cargo build --workspace --release --locked --target "$TARGET"
-    - DIR="air-gestures-$CI_COMMIT_TAG"
-    - TARBALL="air-gestures-$CI_COMMIT_TAG-x86_64-linux.tar.gz"
-    - mkdir -p "$DIR"
-    - install -m755 "target/$TARGET/release/air-gestures" "target/$TARGET/release/air-gesturesd" "$DIR/"
-    - install -m644 packaging/air-gesturesd.service contrib/config.toml README.md LICENSE LICENSE-kinesis "$DIR/"
-    - tar -czf "$TARBALL" --owner=0 --group=0 "$DIR"
-    - tar -tzvf "$TARBALL"
-    - |
-      curl --fail --header "JOB-TOKEN: $CI_JOB_TOKEN" \
-           --upload-file "$TARBALL" \
-           "$CI_API_V4_URL/projects/$CI_PROJECT_ID/packages/generic/air-gestures/$CI_COMMIT_TAG/$TARBALL"
+    - sh .gitlab/package.sh "$TARGET" x86_64
   artifacts:
     paths: ["air-gestures-*-x86_64-linux.tar.gz"]
+
+# aarch64: cross-built on the same x86_64 runner (Debian bookworm, so the same
+# glibc >= 2.36 floor), in its own job so a failure is easy to spot.
+.aarch64:
+  image: debian:bookworm
+  variables:
+    PKG_CONFIG_ALLOW_CROSS: "1"
+    PKG_CONFIG_LIBDIR: "/usr/lib/aarch64-linux-gnu/pkgconfig:/usr/share/pkgconfig"
+    CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: "aarch64-linux-gnu-gcc"
+  before_script:
+    - sh .gitlab/cross-aarch64.sh
+    - . "$CARGO_HOME/env"
+    - rustc --version && cargo --version
+  cache:
+    key:
+      files: [Cargo.lock]
+      prefix: "$CI_JOB_NAME"
+    paths:
+      - .cargo-home/registry/index/
+      - .cargo-home/registry/cache/
+      - .cargo-home/git/db/
+      - target/
+
+# Branch builds only when the dependencies or the build itself change.
+build-aarch64:
+  extends: .aarch64
+  stage: build
+  rules:
+    - if: $CI_COMMIT_TAG
+      when: never
+    - if: $CI_COMMIT_BRANCH
+      changes: [Cargo.lock, "**/Cargo.toml", .gitlab-ci.yml, .gitlab/*]
+  script:
+    - cargo build --workspace --release --locked --target aarch64-unknown-linux-gnu
+
+package-aarch64:
+  extends: .aarch64
+  stage: build
+  rules:
+    - if: $CI_COMMIT_TAG =~ /^v/
+  script:
+    - sh .gitlab/package.sh aarch64-unknown-linux-gnu aarch64
+  artifacts:
+    paths: ["air-gestures-*-aarch64-linux.tar.gz"]
 
 release:
   stage: release
   image: registry.gitlab.com/gitlab-org/release-cli:latest
   rules:
     - if: $CI_COMMIT_TAG =~ /^v/
-  needs: [package]
+  needs: [package, package-aarch64]
   script:
     # The notes: this version's CHANGELOG.md section, then the install text.
     - sh .gitlab/release-notes.sh
@@ -105,3 +139,7 @@ release:
           url: "$CI_API_V4_URL/projects/$CI_PROJECT_ID/packages/generic/air-gestures/$CI_COMMIT_TAG/air-gestures-$CI_COMMIT_TAG-x86_64-linux.tar.gz"
           link_type: package
           filepath: "/air-gestures-x86_64-linux.tar.gz"
+        - name: "air-gestures-$CI_COMMIT_TAG-aarch64-linux.tar.gz"
+          url: "$CI_API_V4_URL/projects/$CI_PROJECT_ID/packages/generic/air-gestures/$CI_COMMIT_TAG/air-gestures-$CI_COMMIT_TAG-aarch64-linux.tar.gz"
+          link_type: package
+          filepath: "/air-gestures-aarch64-linux.tar.gz"

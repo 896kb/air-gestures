@@ -2,7 +2,7 @@
 
 `air-gestures-bin/` holds the PKGBUILD and .SRCINFO for the
 [`air-gestures-bin`](https://aur.archlinux.org/packages/air-gestures-bin) AUR package. It
-repackages the x86_64 tarball that CI attaches to each GitLab release:
+repackages the x86_64 or aarch64 tarball that CI attaches to each GitLab release:
 
 - `/usr/bin/air-gestures`, `/usr/bin/air-gesturesd`
 - `/usr/lib/systemd/user/air-gesturesd.service` (from `packaging/air-gesturesd.service`,
@@ -10,9 +10,9 @@ repackages the x86_64 tarball that CI attaches to each GitLab release:
 - `/usr/share/doc/air-gestures/config.toml` (example config) and `README.md`
 - `/usr/share/licenses/air-gestures-bin/LICENSE`, `LICENSE-kinesis`
 
-The source is `https://gitlab.com/896kb/air-gestures/-/releases/v$pkgver/downloads/air-gestures-x86_64-linux.tar.gz`,
-the release's direct asset link, which only exists once the `v$pkgver` tag pipeline has
-finished. Until then `sha256sums` is a placeholder of zeros; fill it with `updpkgsums`.
+The sources are `https://gitlab.com/896kb/air-gestures/-/releases/v$pkgver/downloads/air-gestures-<arch>-linux.tar.gz`
+(`source_x86_64`, `source_aarch64`), the release's direct asset links, which only exists once the `v$pkgver` tag pipeline has
+finished. Until then the `sha256sums_*` are placeholders of zeros; fill it with `updpkgsums`.
 
 ## Publishing a new version
 
@@ -23,7 +23,7 @@ finished. Until then `sha256sums` is a placeholder of zeros; fill it with `updpk
 
    ```sh
    cd packaging/aur/air-gestures-bin
-   updpkgsums                          # downloads the release tarball, writes sha256sums
+   updpkgsums                          # downloads both release tarballs, writes the sha256sums
    makepkg --printsrcinfo > .SRCINFO
    makepkg -f && namcap air-gestures-bin-*.pkg.tar.zst   # optional check
    ```

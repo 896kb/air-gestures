@@ -50,14 +50,17 @@ cp /usr/share/doc/air-gestures/config.toml ~/.config/air-gestures/   # every key
 systemctl --user daemon-reload && systemctl --user enable --now air-gesturesd
 ```
 
-### Release tarball (x86_64, glibc ≥ 2.36)
+### Release tarball (x86_64 or aarch64, glibc ≥ 2.36)
 
 [air-gestures-x86_64-linux.tar.gz](https://gitlab.com/896kb/air-gestures/-/releases/permalink/latest/downloads/air-gestures-x86_64-linux.tar.gz)
-(latest release) has both binaries, the user unit, the example config and the licenses. The
+or, for 64-bit ARM (Raspberry Pi 4/5, Asahi, ARM laptops),
+[air-gestures-aarch64-linux.tar.gz](https://gitlab.com/896kb/air-gestures/-/releases/permalink/latest/downloads/air-gestures-aarch64-linux.tar.gz)
+(latest release). The aarch64 build is cross-compiled and tested under emulation only; if
+you run it with a real band, please report how it goes. Each has both binaries, the user unit, the example config and the licenses. The
 unit runs `/usr/bin/air-gesturesd`; to install into your home instead:
 
 ```sh
-tar xzf air-gestures-x86_64-linux.tar.gz && cd air-gestures-v*/
+tar xzf air-gestures-*-linux.tar.gz && cd air-gestures-v*/
 install -Dm755 -t ~/.local/bin air-gestures air-gesturesd
 mkdir -p ~/.config/systemd/user ~/.config/air-gestures
 sed 's|^ExecStart=.*|ExecStart=%h/.local/bin/air-gesturesd|' air-gesturesd.service \

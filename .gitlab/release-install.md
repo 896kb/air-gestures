@@ -2,8 +2,9 @@
 
 Linux daemon and CLI for the Meta Neural Band.
 
-`air-gestures-{tag}-x86_64-linux.tar.gz` contains the `air-gestures` and
-`air-gesturesd` binaries (x86_64, glibc >= 2.36), a systemd user unit
+`air-gestures-{tag}-x86_64-linux.tar.gz` (x86_64) and
+`air-gestures-{tag}-aarch64-linux.tar.gz` (64-bit ARM, tested under emulation only)
+each contain the `air-gestures` and `air-gesturesd` binaries (glibc >= 2.36), a systemd user unit
 (`air-gesturesd.service`, ExecStart=/usr/bin/air-gesturesd), the example
 `config.toml`, README.md, LICENSE and LICENSE-kinesis.
 
