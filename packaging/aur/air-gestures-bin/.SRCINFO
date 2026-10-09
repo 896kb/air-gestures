@@ -1,6 +1,6 @@
 pkgbase = air-gestures-bin
 	pkgdesc = Control a Linux desktop with a Meta Neural Band (daemon, CLI, waybar module)
-	pkgver = 0.3.9
+	pkgver = 0.3.10
 	pkgrel = 1
 	url = https://gitlab.com/896kb/air-gestures
 	arch = x86_64
@@ -19,9 +19,9 @@ pkgbase = air-gestures-bin
 	provides = air-gestures
 	conflicts = air-gestures
 	options = !debug
-	source_x86_64 = air-gestures-0.3.9-x86_64-linux.tar.gz::https://gitlab.com/896kb/air-gestures/-/releases/v0.3.9/downloads/air-gestures-x86_64-linux.tar.gz
-	sha256sums_x86_64 = c71aa7e0ce3454c911adab9a37d8a3691f9df506fb2acbd2bb5dbfed4bbe65ac
-	source_aarch64 = air-gestures-0.3.9-aarch64-linux.tar.gz::https://gitlab.com/896kb/air-gestures/-/releases/v0.3.9/downloads/air-gestures-aarch64-linux.tar.gz
-	sha256sums_aarch64 = 9ba1e225b6f64dff4302d294733585383cddd8943b72953c7f98224b13932b80
+	source_x86_64 = air-gestures-0.3.10-x86_64-linux.tar.gz::https://gitlab.com/896kb/air-gestures/-/releases/v0.3.10/downloads/air-gestures-x86_64-linux.tar.gz
+	sha256sums_x86_64 = 0000000000000000000000000000000000000000000000000000000000000000
+	source_aarch64 = air-gestures-0.3.10-aarch64-linux.tar.gz::https://gitlab.com/896kb/air-gestures/-/releases/v0.3.10/downloads/air-gestures-aarch64-linux.tar.gz
+	sha256sums_aarch64 = 0000000000000000000000000000000000000000000000000000000000000000
 
 pkgname = air-gestures-bin

@@ -3,6 +3,13 @@
 Each release's section becomes its GitLab release notes. Add a section for the version
 before tagging it; the release job fails without one.
 
+## 0.3.10
+
+- **Arch Linux packages** on every release, for x86_64 and aarch64: the AUR package
+  `air-gestures-bin`, built by makepkg from its PKGBUILD in CI, ahead of its publication on
+  the AUR (paused registration). `sudo pacman -U ./air-gestures-v0.3.10-x86_64-linux.pkg.tar.zst`
+  pulls in BlueZ, WebKitGTK and the rest; checked by installing and running it on Arch.
+
 ## 0.3.9
 
 - **.deb and .rpm packages** on every release, for x86_64 and aarch64, next to the

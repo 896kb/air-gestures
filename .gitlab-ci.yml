@@ -9,8 +9,9 @@
 #
 # On a v* tag, `package` and `package-aarch64` build the x86_64 and aarch64
 # Linux binaries, pack air-gestures-<tag>-<arch>-linux.tar.gz, .deb and .rpm and
-# upload them to the project's generic package registry; `release` then creates
-# the GitLab release, with CHANGELOG.md's section as its notes, linking all six.
+# upload them to the project's generic package registry; `package-arch` builds the
+# AUR PKGBUILD from those tarballs into .pkg.tar.zst; `release` then creates the
+# GitLab release, with CHANGELOG.md's section as its notes, linking all eight.
 # The newest release's files are always at
 #   https://gitlab.com/896kb/air-gestures/-/releases/permalink/latest/downloads/air-gestures-<arch>-linux.<ext>
 #
@@ -119,12 +120,24 @@ package-aarch64:
   artifacts:
     paths: ["air-gestures-*-aarch64-linux.*"]
 
+# The Arch packages: makepkg on packaging/aur's PKGBUILD, fed the tarballs above.
+package-arch:
+  stage: build
+  image: archlinux:base-devel
+  rules:
+    - if: $CI_COMMIT_TAG =~ /^v/
+  needs: [package, package-aarch64]
+  script:
+    - sh .gitlab/package-arch.sh
+  artifacts:
+    paths: ["air-gestures-*-linux.pkg.tar.zst"]
+
 release:
   stage: release
   image: registry.gitlab.com/gitlab-org/release-cli:latest
   rules:
     - if: $CI_COMMIT_TAG =~ /^v/
-  needs: [package, package-aarch64]
+  needs: [package, package-aarch64, package-arch]
   script:
     # The notes: this version's CHANGELOG.md section, then the install text.
     - sh .gitlab/release-notes.sh
@@ -147,6 +160,10 @@ release:
           url: "$CI_API_V4_URL/projects/$CI_PROJECT_ID/packages/generic/air-gestures/$CI_COMMIT_TAG/air-gestures-$CI_COMMIT_TAG-x86_64-linux.rpm"
           link_type: package
           filepath: "/air-gestures-x86_64-linux.rpm"
+        - name: "air-gestures-$CI_COMMIT_TAG-x86_64-linux.pkg.tar.zst"
+          url: "$CI_API_V4_URL/projects/$CI_PROJECT_ID/packages/generic/air-gestures/$CI_COMMIT_TAG/air-gestures-$CI_COMMIT_TAG-x86_64-linux.pkg.tar.zst"
+          link_type: package
+          filepath: "/air-gestures-x86_64-linux.pkg.tar.zst"
         - name: "air-gestures-$CI_COMMIT_TAG-aarch64-linux.tar.gz"
           url: "$CI_API_V4_URL/projects/$CI_PROJECT_ID/packages/generic/air-gestures/$CI_COMMIT_TAG/air-gestures-$CI_COMMIT_TAG-aarch64-linux.tar.gz"
           link_type: package
@@ -159,3 +176,7 @@ release:
           url: "$CI_API_V4_URL/projects/$CI_PROJECT_ID/packages/generic/air-gestures/$CI_COMMIT_TAG/air-gestures-$CI_COMMIT_TAG-aarch64-linux.rpm"
           link_type: package
           filepath: "/air-gestures-aarch64-linux.rpm"
+        - name: "air-gestures-$CI_COMMIT_TAG-aarch64-linux.pkg.tar.zst"
+          url: "$CI_API_V4_URL/projects/$CI_PROJECT_ID/packages/generic/air-gestures/$CI_COMMIT_TAG/air-gestures-$CI_COMMIT_TAG-aarch64-linux.pkg.tar.zst"
+          link_type: package
+          filepath: "/air-gestures-aarch64-linux.pkg.tar.zst"

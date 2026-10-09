@@ -36,13 +36,17 @@ Design (written under the working name kinesis-linux): [`docs/superpowers/specs/
 
 Runtime needs BlueZ, D-Bus and WebKitGTK 4.1 (`webkit2gtk-4.1` on Arch) for the sign-in window.
 
-### Arch Linux (AUR)
+### Arch Linux
 
 > **Not on the AUR yet.** The AUR has temporarily closed new account registration (after a
 > wave of automated sign-ups), so `air-gestures-bin` can't be published. It will be as soon
-> as registration reopens; until then use the release tarball below.
+> as registration reopens. Until then each release carries the package it builds:
+> [air-gestures-x86_64-linux.pkg.tar.zst](https://gitlab.com/896kb/air-gestures/-/releases/permalink/latest/downloads/air-gestures-x86_64-linux.pkg.tar.zst)
+> ([aarch64](https://gitlab.com/896kb/air-gestures/-/releases/permalink/latest/downloads/air-gestures-aarch64-linux.pkg.tar.zst)),
+> installed with `sudo pacman -U ./air-gestures-x86_64-linux.pkg.tar.zst` (it updates only
+> when you install a newer one).
 
-~~`paru -S air-gestures-bin`~~, then, once it's available:
+~~`paru -S air-gestures-bin`~~ once it's on the AUR, or the package above, then:
 
 ```sh
 mkdir -p ~/.config/air-gestures
