@@ -13,9 +13,8 @@ conflicts=("$_pkgname")
 options=('!debug')
 source_x86_64=("$_pkgname-$pkgver-x86_64-linux.tar.gz::$url/-/releases/v$pkgver/downloads/$_pkgname-x86_64-linux.tar.gz")
 source_aarch64=("$_pkgname-$pkgver-aarch64-linux.tar.gz::$url/-/releases/v$pkgver/downloads/$_pkgname-aarch64-linux.tar.gz")
-# Placeholders: run `updpkgsums` once the v$pkgver release exists (see ../README.md).
-sha256sums_x86_64=('0000000000000000000000000000000000000000000000000000000000000000')
-sha256sums_aarch64=('0000000000000000000000000000000000000000000000000000000000000000')
+sha256sums_x86_64=('ee31f96b5450ba42fe698ed7db99f6b2b967a255420ad8dac4d1601ba059ba1f')
+sha256sums_aarch64=('46e67d76d24dd93286fdf6cd11d1232dca21fa00a2a05055b6144ea54106d66c')
 
 package() {
   cd "$_pkgname-v$pkgver"

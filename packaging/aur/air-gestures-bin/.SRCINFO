@@ -20,8 +20,8 @@ pkgbase = air-gestures-bin
 	conflicts = air-gestures
 	options = !debug
 	source_x86_64 = air-gestures-0.3.10-x86_64-linux.tar.gz::https://gitlab.com/896kb/air-gestures/-/releases/v0.3.10/downloads/air-gestures-x86_64-linux.tar.gz
-	sha256sums_x86_64 = 0000000000000000000000000000000000000000000000000000000000000000
+	sha256sums_x86_64 = ee31f96b5450ba42fe698ed7db99f6b2b967a255420ad8dac4d1601ba059ba1f
 	source_aarch64 = air-gestures-0.3.10-aarch64-linux.tar.gz::https://gitlab.com/896kb/air-gestures/-/releases/v0.3.10/downloads/air-gestures-aarch64-linux.tar.gz
-	sha256sums_aarch64 = 0000000000000000000000000000000000000000000000000000000000000000
+	sha256sums_aarch64 = 46e67d76d24dd93286fdf6cd11d1232dca21fa00a2a05055b6144ea54106d66c
 
 pkgname = air-gestures-bin
