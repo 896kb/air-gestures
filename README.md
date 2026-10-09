@@ -46,7 +46,24 @@ Runtime needs BlueZ, D-Bus and WebKitGTK 4.1 (`webkit2gtk-4.1` on Arch) for the 
 
 ```sh
 mkdir -p ~/.config/air-gestures
-cp /usr/share/doc/air-gestures/config.toml ~/.config/air-gestures/   # every key, commented
+cp /usr/share/air-gestures/config.toml ~/.config/air-gestures/   # every key, commented
+systemctl --user daemon-reload && systemctl --user enable --now air-gesturesd
+```
+
+### Debian, Ubuntu, Fedora, openSUSE (.deb / .rpm)
+
+Debian 12+, Ubuntu 24.04+ and derivatives:
+[air-gestures-x86_64-linux.deb](https://gitlab.com/896kb/air-gestures/-/releases/permalink/latest/downloads/air-gestures-x86_64-linux.deb)
+([aarch64](https://gitlab.com/896kb/air-gestures/-/releases/permalink/latest/downloads/air-gestures-aarch64-linux.deb)).
+Fedora, openSUSE and other RPM distributions:
+[air-gestures-x86_64-linux.rpm](https://gitlab.com/896kb/air-gestures/-/releases/permalink/latest/downloads/air-gestures-x86_64-linux.rpm)
+([aarch64](https://gitlab.com/896kb/air-gestures/-/releases/permalink/latest/downloads/air-gestures-aarch64-linux.rpm)).
+Both pull in BlueZ and the runtime libraries.
+
+```sh
+sudo apt install ./air-gestures-x86_64-linux.deb     # or: sudo dnf install ./air-gestures-x86_64-linux.rpm
+mkdir -p ~/.config/air-gestures
+cp /usr/share/air-gestures/config.toml ~/.config/air-gestures/   # every key, commented
 systemctl --user daemon-reload && systemctl --user enable --now air-gesturesd
 ```
 

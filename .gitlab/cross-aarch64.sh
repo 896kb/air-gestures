@@ -5,7 +5,7 @@ set -eu
 dpkg --add-architecture arm64
 apt-get update -qq
 apt-get install -y -qq --no-install-recommends \
-	equivs ca-certificates curl gcc libc6-dev gcc-aarch64-linux-gnu libc6-dev-arm64-cross pkg-config
+	equivs dpkg-dev ca-certificates curl gcc libc6-dev gcc-aarch64-linux-gnu libc6-dev-arm64-cross pkg-config
 # The arm64 GTK headers depend on gobject-introspection:arm64, which drags in
 # arm64 Python and can't sit next to the host's. Linking never runs it, so an
 # empty stand-in of the same version satisfies the dependency.

@@ -10,7 +10,20 @@ each contain the `air-gestures` and `air-gesturesd` binaries (glibc >= 2.36), a 
 
 Runtime needs: BlueZ, D-Bus and WebKitGTK 4.1 (`webkit2gtk-4.1` on Arch).
 
-Extract the tarball, put both binaries on your PATH, install the unit to
+**Debian, Ubuntu and derivatives** (Debian 12+, Ubuntu 24.04+):
+`sudo apt install ./air-gestures-{tag}-x86_64-linux.deb` (or the `aarch64` one).
+**Fedora, openSUSE and other RPM distributions**:
+`sudo dnf install ./air-gestures-{tag}-x86_64-linux.rpm` (or the `aarch64` one).
+Both install the binaries to /usr/bin, the user unit to /usr/lib/systemd/user/ and the
+example config to /usr/share/air-gestures/, and pull in the runtime libraries. Then:
+
+    mkdir -p ~/.config/air-gestures
+    cp /usr/share/air-gestures/config.toml ~/.config/air-gestures/
+    systemctl --user daemon-reload && systemctl --user enable --now air-gesturesd
+
+**Any other distribution**:
+
+extract the tarball, put both binaries on your PATH, install the unit to
 ~/.config/systemd/user/ (adjust ExecStart if the binaries are not in /usr/bin) and
 copy config.toml to ~/.config/air-gestures/. See the README for claiming a band.
 The AUR package (`air-gestures-bin`) follows once AUR account registration reopens.

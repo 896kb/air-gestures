@@ -7,7 +7,7 @@ repackages the x86_64 or aarch64 tarball that CI attaches to each GitLab release
 - `/usr/bin/air-gestures`, `/usr/bin/air-gesturesd`
 - `/usr/lib/systemd/user/air-gesturesd.service` (from `packaging/air-gesturesd.service`,
   `ExecStart=/usr/bin/air-gesturesd`)
-- `/usr/share/doc/air-gestures/config.toml` (example config) and `README.md`
+- `/usr/share/air-gestures/config.toml` (example config) and `/usr/share/doc/air-gestures/README.md`
 - `/usr/share/licenses/air-gestures-bin/LICENSE`, `LICENSE-kinesis`
 
 The sources are `https://gitlab.com/896kb/air-gestures/-/releases/v$pkgver/downloads/air-gestures-<arch>-linux.tar.gz`
@@ -47,6 +47,6 @@ its branch must be `master`.
 
 ```sh
 mkdir -p ~/.config/air-gestures
-cp /usr/share/doc/air-gestures/config.toml ~/.config/air-gestures/
+cp /usr/share/air-gestures/config.toml ~/.config/air-gestures/
 systemctl --user daemon-reload && systemctl --user enable --now air-gesturesd
 ```

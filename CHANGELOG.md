@@ -3,6 +3,17 @@
 Each release's section becomes its GitLab release notes. Add a section for the version
 before tagging it; the release job fails without one.
 
+## 0.3.9
+
+- **.deb and .rpm packages** on every release, for x86_64 and aarch64, next to the
+  tarballs: `sudo apt install ./air-gestures-v0.3.9-x86_64-linux.deb` on Debian 12+ and
+  Ubuntu 24.04+, `sudo dnf install ./air-gestures-v0.3.9-x86_64-linux.rpm` on Fedora (or
+  `zypper install` on openSUSE). They pull in BlueZ and the libraries, and install the
+  binaries to /usr/bin and the user unit to /usr/lib/systemd/user/. Checked by installing
+  and running them on Debian 12 and 13, Ubuntu 24.04, Fedora and openSUSE Tumbleweed.
+- The example config is installed at /usr/share/air-gestures/config.toml (it was under
+  /usr/share/doc, which minimal installs strip).
+
 ## 0.3.8
 
 - Builds for 64-bit ARM Linux (aarch64: Raspberry Pi 4/5, Asahi, ARM laptops), next to

@@ -1,7 +1,7 @@
 # Maintainer: 896kb <raducugarjoaba at gmail dot com>
 pkgname=air-gestures-bin
 _pkgname=air-gestures
-pkgver=0.3.8
+pkgver=0.3.9
 pkgrel=1
 pkgdesc='Control a Linux desktop with a Meta Neural Band (daemon, CLI, waybar module)'
 arch=('x86_64' 'aarch64')
@@ -13,14 +13,15 @@ conflicts=("$_pkgname")
 options=('!debug')
 source_x86_64=("$_pkgname-$pkgver-x86_64-linux.tar.gz::$url/-/releases/v$pkgver/downloads/$_pkgname-x86_64-linux.tar.gz")
 source_aarch64=("$_pkgname-$pkgver-aarch64-linux.tar.gz::$url/-/releases/v$pkgver/downloads/$_pkgname-aarch64-linux.tar.gz")
-sha256sums_x86_64=('26a7cd228fc17875f729158d11be311c6b4e19e60c9ae234cf58a68f197cde10')
-sha256sums_aarch64=('c7c7c8889b223ce47a48a6d368ec41bc8ca97693d7cc860c99168d644f76978a')
+# Placeholders: run `updpkgsums` once the v$pkgver release exists (see ../README.md).
+sha256sums_x86_64=('0000000000000000000000000000000000000000000000000000000000000000')
+sha256sums_aarch64=('0000000000000000000000000000000000000000000000000000000000000000')
 
 package() {
   cd "$_pkgname-v$pkgver"
   install -Dm755 -t "$pkgdir/usr/bin" air-gestures air-gesturesd
   install -Dm644 air-gesturesd.service "$pkgdir/usr/lib/systemd/user/air-gesturesd.service"
-  install -Dm644 config.toml "$pkgdir/usr/share/doc/$_pkgname/config.toml"
+  install -Dm644 config.toml "$pkgdir/usr/share/$_pkgname/config.toml"
   install -Dm644 README.md "$pkgdir/usr/share/doc/$_pkgname/README.md"
   install -Dm644 -t "$pkgdir/usr/share/licenses/$pkgname" LICENSE LICENSE-kinesis
 }

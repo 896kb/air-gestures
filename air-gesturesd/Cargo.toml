@@ -25,3 +25,65 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tempfile = "3"
 tokio = { version = "1", features = ["test-util"] }
 rand_core = { version = "0.6", features = ["getrandom"] }
+
+# The .deb and .rpm (.gitlab/package.sh) carry both binaries, so they are described here,
+# under the name of the project rather than this crate. Paths are from this directory;
+# target/release becomes target/<triple>/release under --target.
+[package.metadata.deb]
+name = "air-gestures"
+maintainer = "896kb <raducugarjoaba@gmail.com>"
+copyright = "2026 896kb; 2026 callbacked (kinesis)"
+license-file = ["../LICENSE", "0"]
+extended-description = """\
+Use a Meta Neural Band (the sEMG wristband) to control a Linux desktop: thumb swipes, \
+finger taps, a middle-finger hold and pinch + turn your wrist each run a shell command \
+you choose. air-gesturesd is the BlueZ daemon (a systemd user unit); air-gestures signs \
+in, claims the band, shows its status (plain or as a waybar module) and records sEMG."""
+section = "utils"
+priority = "optional"
+depends = "$auto, bluez"
+assets = [
+    ["target/release/air-gesturesd", "usr/bin/", "755"],
+    ["target/release/air-gestures", "usr/bin/", "755"],
+    ["../packaging/air-gesturesd.service", "usr/lib/systemd/user/", "644"],
+    ["../contrib/config.toml", "usr/share/air-gestures/", "644"],
+    ["../README.md", "usr/share/doc/air-gestures/", "644"],
+    ["../LICENSE-kinesis", "usr/share/doc/air-gestures/", "644"],
+]
+
+[package.metadata.generate-rpm]
+name = "air-gestures"
+summary = "Control a Linux desktop with a Meta Neural Band (daemon, CLI, waybar module)"
+url = "https://gitlab.com/896kb/air-gestures"
+# The libraries the two binaries link directly (readelf -d), by soname, which both Fedora's
+# and openSUSE's packages provide. Not auto-req: that walks ldd, so it also lists the build
+# machine's indirect libraries at Debian's versions (ICU 72, dav1d…), which nothing else has.
+auto-req = "no"
+assets = [
+    { source = "target/release/air-gesturesd", dest = "/usr/bin/air-gesturesd", mode = "755" },
+    { source = "target/release/air-gestures", dest = "/usr/bin/air-gestures", mode = "755" },
+    { source = "../packaging/air-gesturesd.service", dest = "/usr/lib/systemd/user/air-gesturesd.service", mode = "644" },
+    { source = "../contrib/config.toml", dest = "/usr/share/air-gestures/config.toml", mode = "644" },
+    { source = "../README.md", dest = "/usr/share/doc/air-gestures/README.md", mode = "644", doc = true },
+    { source = "../LICENSE", dest = "/usr/share/licenses/air-gestures/LICENSE", mode = "644", doc = true },
+    { source = "../LICENSE-kinesis", dest = "/usr/share/licenses/air-gestures/LICENSE-kinesis", mode = "644", doc = true },
+]
+
+[package.metadata.generate-rpm.requires]
+bluez = "*"
+"libwebkit2gtk-4.1.so.0()(64bit)" = "*"
+"libjavascriptcoregtk-4.1.so.0()(64bit)" = "*"
+"libsoup-3.0.so.0()(64bit)" = "*"
+"libgtk-3.so.0()(64bit)" = "*"
+"libgdk-3.so.0()(64bit)" = "*"
+"libpango-1.0.so.0()(64bit)" = "*"
+"libcairo-gobject.so.2()(64bit)" = "*"
+"libcairo.so.2()(64bit)" = "*"
+"libgdk_pixbuf-2.0.so.0()(64bit)" = "*"
+"libgio-2.0.so.0()(64bit)" = "*"
+"libgobject-2.0.so.0()(64bit)" = "*"
+"libglib-2.0.so.0()(64bit)" = "*"
+"libdbus-1.so.3()(64bit)" = "*"
+"libgcc_s.so.1()(64bit)" = "*"
+"libm.so.6()(64bit)" = "*"
+"libc.so.6()(64bit)" = "*"
