@@ -163,3 +163,18 @@ treat 87 as a separator.
   daemon then retried the dead handle until restarted. Now re-resolves once.
   Verified surviving a suspend/resume with the band asleep (same PID reconnected
   8 s after resume). The adapter-object-gone branch itself is unit-tested only.
+
+### The band persists ConfigReq writes (battery trap)
+
+`deviceState`, `emgSensorState`, `mode` and `dataCollectionModeEnabled` are
+**persisted on the band**. Reverting the daemon does not undo them:
+`BandSession::stop()` disables the streams but does not restore the config, so
+after the handwriting probe the band stayed in `HANDWRITING_CC` with data
+collection on and kept sending the inference pipeline (~50 Hz, 400 B frames).
+
+`BandSession::write_config` (added for this) restores it:
+`emgSensorState=2, deviceState=2` (ACTIVE), `mode=0` (MODE_DEFAULT),
+`dataCollectionModeEnabled=0`. Verified: afterwards the journal shows no
+`0200020c` frames at all, only gyro `0200020f` and orientation `02000212`.
+Helper: `cargo run --release -p air-gestures --example band-reset-state`, run
+with the daemon stopped.
