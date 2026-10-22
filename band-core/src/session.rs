@@ -690,6 +690,32 @@ impl BandSession {
         self.request_hand(Some(hand), false, time)
     }
 
+    /// Write an arbitrary `ConfigReq` and return the bytes to send.
+    ///
+    /// The band persists several settings in `Config` — `deviceState`,
+    /// `emgSensorState`, `mode`, `dataCollectionModeEnabled` — so anything that
+    /// changes them must change them back. This is the escape hatch for that;
+    /// `stop()` only disables the streams, it does not restore the config.
+    pub fn write_config(&mut self, config: &[u8]) -> Result<Vec<u8>> {
+        if self.stopping {
+            return Err(BandError::Busy("The session is stopping.".into()));
+        }
+        let id = self.configuration_id + 1;
+        let words: &[u32] = if self.configuration_id == 0 {
+            &SERVICE_OPEN
+        } else {
+            &[]
+        };
+        let frame = encode_frame(
+            CONFIGURATION_CHANNEL,
+            words,
+            &[field_int(1, id), field_bytes(5, config)].concat(),
+        )?;
+        let bytes = self.encrypt(&frame)?;
+        self.configuration_id = id;
+        Ok(bytes)
+    }
+
     fn request_hand(&mut self, hand: Option<Hand>, reading: bool, time: f64) -> Result<Vec<u8>> {
         let id = self.configuration_id + 1;
         // ConfigReq.is_left_handed is field 10. An empty ConfigReq reads current settings.

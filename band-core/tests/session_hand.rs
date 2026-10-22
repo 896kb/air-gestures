@@ -1,6 +1,7 @@
 mod common;
 
 use band_core::events::Hand;
+use band_core::proto::{field_bytes as fb, field_int as fi};
 use common::*;
 
 #[test]
@@ -112,4 +113,15 @@ fn a_rejected_configuration_service_fails_the_hand_read() {
     let result = peer.exchange(6, REJECTED, &[], 1.0).unwrap();
     assert!(hand_failure(&result.0));
     assert_eq!(peer.session.hand(), None);
+}
+
+/// `write_config` opens the config service on first use, then reuses the channel.
+#[test]
+fn write_config_opens_the_service_then_carries_only_the_config() {
+    let mut peer = Peer::legacy(true, false);
+    let config = [fi(9, 0), fi(23, 0)].concat();
+    let bytes = peer.session.write_config(&config).unwrap();
+    let frame = peer.requests(&bytes).unwrap().remove(0);
+    assert_eq!(frame.channel, 0x8006);
+    assert_eq!(frame.payload, [fi(1, 2), fb(5, &config)].concat());
 }
