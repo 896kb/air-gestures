@@ -65,3 +65,101 @@ Sign-in is the step most likely to need retries, so do it before the band is res
 - **Channels:** flagged channels the band answers or opens carry extra bits that change per connection (0x9c01, 0x9801, 0x9501 for 0x8001; same for 0x8002). Frames are routed on `channel & 0x80ff`.
 - **Meta:** the final pair reply has no `device_ec_public_key` (kinesis notes the same), so owner.key is 32 bytes and the band's trust proof isn't verified against a key.
 - **Stream:** gyro (0200020f), orientation (02000212) and gestures (0200020d) on channel 5; battery on 8; gesture field layout unchanged.
+
+## 2026-10-22: firmware 1054928927 — handwriting / text pipeline
+
+Firmware **1054928927** (Meta AI app: "latest"). Pairing, encryption (scheme 26,
+`scheme_guess: 0`), padding, channel bits and the gesture/dial/battery/motion
+streams are all unchanged from September. Everything below is new.
+
+### What the probe was doing wrong (two bugs, both fixed on `firmware-explore`)
+
+1. **Inference frames never reached the decoder.** `RAW_INFERENCE`
+   (`0x0200020c`) was handled *after* the "ignore unrelated services" allowlist,
+   which returns early for any unlisted kind — so every inference frame was
+   dropped before decode and the handler was dead code. The probe logged the
+   frame headers (`frame ch 0x5 words [0200020c] 48B`) but not one sample.
+   Fix: add it to the allowlist.
+2. **The band was never put into data collection.** The probe wrote
+   `ConfigReq.deviceState = 4` (WakeState HANDWRITING_CC) and
+   `emgSensorState = 4` only. The config reply showed `mode = 4`
+   (`MODE_DATA_COLLECTION_NONE`) and `dataCollectionModeEnabled = 0`, and the
+   band declined stream 43 (`enableInferenceText`). Fix: also write
+   `mode = 5` (`MODE_DATA_COLLECTION_HANDWRITING_CC`) and
+   `dataCollectionModeEnabled = 1`. The band then enabled stream 43 and started
+   sending the text pipeline.
+
+### Observed protocol facts
+
+- **`RawInferenceSample` = `0x0200020c`**, fields `1` seq, `2` timestamp,
+  `3` channels, `10` `pipeline_type`. Arrives ~50 Hz on channel 5.
+- `PipelineType` (`config_common.proto`): `1` wake, `2` active, `3` text,
+  `10` cascadeCcClassifier, `13` cascadePcClassifier.
+- **`active` (2)** carries **4 logits** (16 B of f32 in a ~36–50 B frame), not
+  the 9 the startup `inferenceConfig.numLogits` reports.
+- **`text` (3)** carries **400 B = 100 little-endian f32**, and it is a
+  **log-softmax**: `sum(exp(x)) = 1.000` over all 100 values, verified on every
+  captured frame. One probability distribution per frame.
+- **Class 99 = "no ink"** (`p = 1.000` whenever nothing is happening).
+- **Class 87 = separator** between strokes/letters (`p` 0.6–0.95).
+- Landed on ~70–75 % of all frames being class 99 in an idle session.
+- `inferenceConfig` in the config reply changes with state:
+  before the write `pipeline=wake downsampleWindow=0 modelStride=72 numLogits=3`,
+  after `pipeline=active modelStride=32 numLogits=9`. So `HANDWRITING_CC` does
+  move the band onto a different pipeline.
+- The band sends **no** other stream types in this mode: with the probe naming
+  unhandled frames, zero appeared. In particular no `DetectorUpdate`
+  (on-body / band-tightness) is sent, so the model's input quality can't be
+  read that way.
+- `StreamControlResp` flags seen enabled: `[3, 4, 6, 8, 29]` — gestures, raw
+  inference, gyro, quat, band-orientation-result.
+
+### Turning classes into text — NOT solved
+
+Repeated labelled captures were taken (writing on a surface with the index
+finger). Results, honestly:
+
+- Writing **A, B, C** in one run gave a **reproducible signature three times**:
+  `73, 1, 8, 2` with 87 separators between, and class `53` before it. Peaks:
+  73≈0.55–0.91, 1≈0.75–0.90, 8≈0.94–0.98, 2≈0.98–0.99.
+- Writing **only "A"** three times produced **class 0** (p 0.83, 0.59), *not*
+  class 8.
+
+**So the classes are context-dependent and are not a per-letter alphabet.** The
+tempting mapping (8=A, 2=B, 1=C) is **wrong** and was retracted. The likeliest
+reading is that these are sequence-position / pooled stroke tokens, i.e. a
+**CTC-style sequence decode over the band's real vocabulary is required**, not a
+lookup table. That vocabulary is **not in the decoded protos** — it lives in
+Meta's model asset.
+
+Also unresolved: **acquisition is erratic**. Several capture windows returned
+`p = 1.000` blank for every frame (hundreds of frames) while gyro streamed
+normally at ~128 Hz and the config still read `mode=5, enabled=1`. Not
+root-caused. The hand-readback/writing position at the time correlates with
+success but wasn't isolated.
+
+### Reproducing
+
+Opt-in env vars on the user service (systemd drop-in in
+`~/.config/systemd/user/air-gesturesd.service.d/`):
+
+```
+AIR_GESTURES_LOG=air_gesturesd=debug,band_core=debug,info
+AIR_GESTURES_HANDWRITING=1
+AIR_GESTURES_EXTRA_STREAMS=29,4,43
+```
+
+Text-pipeline frames log all 400 channel bytes (16 B head for other pipelines).
+To decode offline, parse the hex, `<100f` unpack, `exp()` each value; drop 99,
+treat 87 as a separator.
+
+### Code state
+
+- `firmware-explore` (local, **not pushed**): the probe. 5 commits.
+- `daemon-reconnects-after-adapter-loss` (local, **not pushed**): a real bug fix
+  independent of all this — `BluezTransport` cached the `Adapter` from startup,
+  so when BlueZ dropped the adapter object (suspend/adapter reset) every call
+  failed `NotFound` and was misreported as "Bluetooth is unavailable"; the
+  daemon then retried the dead handle until restarted. Now re-resolves once.
+  Verified surviving a suspend/resume with the band asleep (same PID reconnected
+  8 s after resume). The adapter-object-gone branch itself is unit-tested only.
