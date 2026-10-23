@@ -3,14 +3,11 @@
 Use a **Meta Neural Band** (the sEMG wristband) to control a Linux desktop: thumb swipes, index
 and middle finger taps, a middle-finger hold and pinch + turn your wrist each run a shell command
 you choose (workspaces, media keys, volume, brightness, …). Includes a waybar module and a raw
-sEMG viewer/recorder.
-
-A Rust port of [callbacked/kinesis](https://github.com/callbacked/kinesis) (macOS, MIT) for
-Linux/BlueZ.
+sEMG viewer/recorder. Written in Rust, for Linux and BlueZ.
 
 > **Status: experimental, working.** Tested on one band (September 2026 firmware) with Arch
 > Linux, BlueZ and Hyprland: claim, reconnect, gestures, pinch dial, battery. That firmware
-> differs from what kinesis was built against (encryption scheme 26, 16-byte padding, tagged
+> differs from earlier ones (encryption scheme 26, 16-byte padding, tagged
 > channels); see [`docs/hardware-day.md`](docs/hardware-day.md#findings).
 
 ## Read this before you use a band with it
@@ -30,7 +27,7 @@ Linux/BlueZ.
 | `air-gesturesd` | BlueZ daemon: gestures → configurable shell actions, pinch dial, ownership claim, control socket (`air-gesturesd --dry-run` runs it against a simulated band) |
 | `air-gestures` | Meta sign-in window, claiming (`pair`), status (plain or waybar JSON), pause/resume, dial target, hand, sEMG viewer/recorder |
 
-Design (written under the working name kinesis-linux): [`docs/superpowers/specs/2026-09-24-kinesis-linux-design.md`](docs/superpowers/specs/2026-09-24-kinesis-linux-design.md).
+Design: [the original spec](docs/superpowers/specs/2026-09-24-kinesis-linux-design.md).
 
 ## Install
 
@@ -157,5 +154,6 @@ All tests run offline against the simulated band.
 
 ## License
 
-MIT — see [`LICENSE`](LICENSE). Derived from kinesis; its notice is kept in
+MIT — see [`LICENSE`](LICENSE). Parts of the protocol core started from
+[callbacked/kinesis](https://github.com/callbacked/kinesis) (MIT); its notice is kept in
 [`LICENSE-kinesis`](LICENSE-kinesis).

@@ -1,4 +1,4 @@
-//! Relative wrist rotation while an index pinch is held (kinesis `PinchDial.swift`).
+//! Relative wrist rotation while an index pinch is held.
 
 use crate::events::GestureMessage;
 

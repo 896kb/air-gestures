@@ -1,4 +1,4 @@
-//! DataX framing inside decrypted AirShield records (kinesis `BandWire.frame`, `DataXReceiver`).
+//! DataX framing inside decrypted AirShield records.
 //!
 //! Frame layout: `u16be size | u16be channel | [u32be words…] | payload`. The
 //! size's top bit says typed words follow; each word with its top bit set is

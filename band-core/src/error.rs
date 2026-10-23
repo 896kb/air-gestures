@@ -10,7 +10,7 @@ use thiserror::Error;
 pub enum BandError {
     #[error("{0}")]
     Protocol(String),
-    /// The band rejected our stored owner identity (kinesis `BandIdentityMismatchError`)
+    /// The band rejected our stored owner identity
     /// with an identity-service result word `0x03xxxxxx` on channel 2; `code` is
     /// its low 24 bits. Only `0x1043` ("enrolled to a different key") proves the
     /// band does not accept this key; other codes may be transient.

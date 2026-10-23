@@ -1,4 +1,4 @@
-//! Meta sign-in HTTP steps (kinesis `MetaAuth.swift`). The client ids below
+//! Meta sign-in HTTP steps. The client ids below
 //! are Meta's own public app identifiers (the same in every copy of Meta's
 //! apps), not secrets. The resulting access token never reaches logs.
 

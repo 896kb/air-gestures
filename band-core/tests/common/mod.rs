@@ -16,7 +16,7 @@ pub const GYRO: u32 = 0x0200020f;
 pub const ORIENTATION: u32 = 0x02000212;
 pub const SERVICE_OPEN: [u32; 2] = [0x8100ce56, 0x02000314];
 
-/// A legacy (no identity) session connected to a simulated band — kinesis test `Peer`.
+/// A legacy (no identity) session connected to a simulated band.
 pub struct Peer {
     pub session: BandSession,
     pub band: SimBand,
@@ -118,7 +118,7 @@ pub fn stream_reply(id: u64, raw: u64) -> Vec<u8> {
     .concat()
 }
 
-/// A subscription status reply without the raw flag (kinesis `status(id)`).
+/// A subscription status reply without the raw flag.
 pub fn status(id: u64) -> Vec<u8> {
     [fi(1, id), fi(2, 1), fb(5, &flags_on())].concat()
 }

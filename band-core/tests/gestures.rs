@@ -20,7 +20,7 @@ fn gesture(
     }
 }
 
-/// kinesis default arguments: time 100, action "left", derived "unknown", finger "thumb".
+/// Default arguments: time 100, action "left", derived "unknown", finger "thumb".
 fn g(sequence: u64) -> GestureMessage {
     gesture(sequence, 100.0, "left", "unknown", "thumb", false)
 }

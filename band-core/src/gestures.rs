@@ -1,5 +1,4 @@
-//! From band gesture messages to at-most-once user gestures (kinesis
-//! `GestureRouter`, `DialRouter`, `ActionGate` in `Gestures.swift`).
+//! From band gesture messages to at-most-once user gestures.
 
 use std::collections::{HashMap, VecDeque};
 

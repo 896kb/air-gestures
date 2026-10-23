@@ -1,4 +1,4 @@
-//! A scripted, encrypted band for tests and `pair --dry-run` (kinesis test `Peer`).
+//! A scripted, encrypted band for tests and `pair --dry-run`.
 //! Its transport key is the public P-256 scalar 1; nothing here is secret.
 
 use p256::ecdsa::signature::hazmat::PrehashSigner;
@@ -48,7 +48,7 @@ pub struct SimHandshake {
 impl SimHandshake {
     /// Answer the host's RequestEncryption frame (exactly one frame) with the
     /// band's RequestEncryption + EnableEncryption bytes.
-    /// `firmware`: `None` is the scheme-3 band kinesis knows; `Some(variant)`
+    /// `firmware`: `None` is the older scheme-3 band; `Some(variant)`
     /// is newer firmware that offers 27, names 26 and keys with `variant`.
     pub fn accept(
         host_request: &[u8],
@@ -232,7 +232,7 @@ impl SimBand {
         Ok((result.events, requests))
     }
 
-    /// RPC responses go to channel 5, sensor data to 0x8010 (kinesis `Peer.send`).
+    /// RPC responses go to channel 5, sensor data to 0x8010.
     pub fn send(
         &mut self,
         session: &mut BandSession,

@@ -34,7 +34,7 @@ fn skip_challenge_response() -> Vec<u8> {
     encode_frame(2, &[0x02002001], &[vec![0x0a, 0x10], nonce()].concat()).unwrap()
 }
 
-/// A pairing-mode band running the ceremony (kinesis `CeremonyPeer`).
+/// A pairing-mode band running the ceremony.
 struct CeremonyPeer {
     session: BandSession,
     band: SimBand,

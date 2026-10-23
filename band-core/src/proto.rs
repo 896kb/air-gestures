@@ -1,4 +1,4 @@
-//! Minimal protobuf reader/writer (kinesis `BandWire.swift`: `ProtoFields`, `BandWire.field`).
+//! Minimal protobuf reader/writer.
 
 use std::collections::HashMap;
 

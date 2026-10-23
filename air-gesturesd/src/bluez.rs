@@ -5,7 +5,7 @@
 //! PSM as little-endian u16 (observed `ff 00` = 255). Reading it requires an
 //! encrypted link, so the first read makes BlueZ pair — during `pair` our
 //! scoped agent accepts that one request. The input channel is an LE
-//! credit-based L2CAP stream on that PSM (kinesis `BandConnection.swift`).
+//! credit-based L2CAP stream on that PSM.
 
 use std::collections::HashMap;
 use std::time::Duration;

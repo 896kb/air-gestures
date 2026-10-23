@@ -1,4 +1,4 @@
-//! The band handshake, trust setup and input subscription (kinesis `BandSession.swift`).
+//! The band handshake, trust setup and input subscription.
 //! It never exports session keys.
 //!
 //! Any `Err` from `feed` is terminal: drop the session. If a ceremony was
@@ -159,7 +159,7 @@ pub struct BandSession {
     base: u32,
     peer_key: Option<Vec<u8>>,
     peer_challenge: Option<Vec<u8>>,
-    /// The scheme the band's EnableEncryption named (3 on the firmware kinesis knows).
+    /// The scheme the band's EnableEncryption named (3 on older firmware).
     peer_parameters: u64,
     /// Which of `SCHEME_26_GUESSES` to use if the band offers a newer scheme.
     scheme_guess: usize,

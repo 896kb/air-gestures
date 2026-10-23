@@ -1,7 +1,7 @@
 //! Claiming a band for this computer: find it in pairing mode, pair at the
 //! Bluetooth level, run the ownership ceremony with Meta's two HTTP steps and
 //! save the new owner key — as pending before the band can commit, confirmed
-//! once it does (kinesis `BandModel.pairBand` / `performCeremony`).
+//! once it does.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};

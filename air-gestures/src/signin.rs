@@ -1,4 +1,4 @@
-//! The Meta sign-in window (kinesis `MetaLoginView.swift`): an incognito
+//! The Meta sign-in window: an incognito
 //! WebKitGTK view on Meta's own page. It never sees the password's value;
 //! it only intercepts the final redirect.
 //!

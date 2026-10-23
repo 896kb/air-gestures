@@ -1,4 +1,4 @@
-//! The owner identity that proves this host owns the band (kinesis `BandIdentity.swift`).
+//! The owner identity that proves this host owns the band.
 //! Persistence is the caller's job; this module only converts to and from bytes.
 
 use p256::ecdsa::{SigningKey, VerifyingKey};

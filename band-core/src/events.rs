@@ -1,5 +1,4 @@
-//! Typed values the session reports (kinesis `Gestures.swift` BandEvent/BandGesture,
-//! `EMGReadings.swift`, `BandBatteryStatus.swift`).
+//! Typed values the session reports: gestures, sEMG readings and battery.
 
 use crate::ceremony::CeremonyHttpRequest;
 use crate::error::{Result, perr};

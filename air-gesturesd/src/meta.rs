@@ -1,7 +1,6 @@
-//! The ownership HTTP exchanges against Meta's hardware graph (kinesis
-//! `MetaPairClient.swift`). Everything is a form-encoded POST; receipts are
-//! signed strings and travel verbatim. The app credential below is Meta's own
-//! public hardware client id, as used by kinesis.
+//! The ownership HTTP exchanges against Meta's hardware graph. Everything is a
+//! form-encoded POST; receipts are signed strings and travel verbatim. The app
+//! credential below is Meta's own public hardware client id.
 
 use std::future::Future;
 use std::time::Duration;
@@ -143,7 +142,7 @@ fn percent_encode(text: &str) -> String {
 }
 
 /// `application/x-www-form-urlencoded` with every reserved character escaped
-/// (a space is `%20`, a plus `%2B`), matching kinesis `MetaAuth.urlForm`.
+/// (a space is `%20`, a plus `%2B`).
 pub fn url_form(fields: &[(&str, String)]) -> String {
     fields
         .iter()

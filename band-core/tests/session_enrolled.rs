@@ -12,7 +12,7 @@ use p256::ecdsa::{Signature, SigningKey};
 use rand_core::OsRng;
 use sha2::{Digest, Sha256};
 
-/// A synthetic enrolled band (kinesis `EnrolledPeer`).
+/// A synthetic enrolled band.
 struct Enrolled {
     session: BandSession,
     band: SimBand,

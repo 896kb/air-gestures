@@ -1,5 +1,5 @@
-//! One connection to a band: the I/O loop around a `BandSession`
-//! (kinesis `BandConnection.swift` scheduling + `BandModel.swift` stall check).
+//! One connection to a band: the I/O loop around a `BandSession`, its
+//! scheduling and the stall check.
 
 use std::time::Duration;
 

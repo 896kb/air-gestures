@@ -1,4 +1,4 @@
-//! AirShield transport encryption (kinesis `AirShield.swift`).
+//! AirShield transport encryption.
 //!
 //! Record: `0x40 | HMAC-SHA256(counter_le || body)[..8] | body`, where
 //! `body = (blocks - 1) as u8 || AES-256-CBC(frame padded with 0xc0+n)`.

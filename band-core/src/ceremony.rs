@@ -1,4 +1,4 @@
-//! The BLE side of the one-time ownership ceremony (kinesis `OwnershipCeremony.swift`).
+//! The BLE side of the one-time ownership ceremony.
 //!
 //! Sequence: identity read (0x3000→0x3001), skip challenge (0x2000→0x2001,
 //! yields the nonce), [HTTP pair_request], StartChangeOwner (0x2002→0x2003),
