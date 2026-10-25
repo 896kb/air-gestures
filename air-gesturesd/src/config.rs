@@ -67,8 +67,9 @@ pub struct BandConfig {
     pub hand: HandSetting,
     /// Connect and enable controls when the daemon starts.
     pub autostart: bool,
-    /// Old style: the gesture that turns the controls off and on, in every profile that
-    /// doesn't set that key itself. Today: put "@controls" on any gesture.
+    /// Old style: the gesture that turns the controls off and on. In `[gestures]` it wins
+    /// over that gesture's value (as before profiles); in a `[[profile]]` it applies where the
+    /// key isn't written. Today: put "@controls" on any gesture.
     pub toggle: ToggleGesture,
     /// Run after a gesture toggled the controls, with `AIR_GESTURES_ENABLED=1` or `0`
     /// exported (e.g. an OSD).
@@ -243,9 +244,11 @@ impl Config {
         }
         let mut first = Profile::new(&self.band.profile);
         for gesture in Gesture::ALL {
+            // The old `toggle` takes its gesture over whatever [gestures] says, as the old
+            // controller did (and the old documented config wrote `middle_hold = ""`).
             let value = match self.gestures.get(gesture.key()) {
+                _ if lock == Some(gesture) => "@controls",
                 Some(value) => value.as_str(),
-                None if lock == Some(gesture) => "@controls",
                 None => default_gesture(gesture),
             };
             if let Some(action) =

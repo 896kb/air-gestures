@@ -269,3 +269,22 @@ fn options_carry_hand_autostart_and_sensitivity() {
     assert!(!options.autostart);
     assert_eq!(options.dial_sensitivity, 0.5);
 }
+
+/// Configs from before profiles: the old `toggle` took the gesture over whatever
+/// `[gestures]` said for it (the old controller never ran that command), and the old
+/// documented config wrote `middle_hold = ""`. Both must keep their lock.
+#[test]
+fn the_old_toggle_key_still_wins_in_gestures_like_it_did() {
+    for written in ["\"\"", "\"echo never\""] {
+        let config = Config::parse(&format!(
+            "[band]\ntoggle = \"middle_hold\"\n[gestures]\nmiddle_hold = {written}\n"
+        ))
+        .unwrap();
+        let first = &config.profiles(DialTarget::Volume).list[0];
+        assert_eq!(
+            first.gestures.get(&Gesture::MiddleHold).cloned(),
+            builtin(Builtin::Controls),
+            "middle_hold = {written}"
+        );
+    }
+}
