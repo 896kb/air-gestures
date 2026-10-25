@@ -28,6 +28,8 @@ variables:
   CARGO_HOME: "$CI_PROJECT_DIR/.cargo-home"
   CARGO_TERM_COLOR: "always"
   TARGET: "x86_64-unknown-linux-gnu"
+  # band-core is a submodule (gitlab.com/896kb/band-core, public).
+  GIT_SUBMODULE_STRATEGY: recursive
 
 .rust:
   image: rust:1-bookworm

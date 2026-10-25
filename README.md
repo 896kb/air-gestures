@@ -89,6 +89,8 @@ systemctl --user daemon-reload && systemctl --user enable --now air-gesturesd
 
 ### From source
 
+`band-core` is a git submodule ([band-core](https://gitlab.com/896kb/band-core), shared with the Android app): clone with `git clone --recursive`, or run `git submodule update --init` after a plain clone.
+
 Needs Rust ≥ 1.88 and the development files for D-Bus and WebKitGTK 4.1.
 
 ```sh
