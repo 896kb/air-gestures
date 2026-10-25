@@ -804,7 +804,8 @@ async fn a_reload_keeps_the_dial_override_unless_the_active_profiles_dial_change
     daemon.connected().await;
     daemon.call(Request::Dial { target: DialTarget::Brightness }).await;
     daemon.wait("brightness", |s| s.dial == DialTarget::Brightness).await;
-    daemon.configure("[band]\non_toggle = \"osd\"\n").await;
+    daemon.configure("[band]\nprofile = \"desk\"\n[[profile]]\nname = \"b\"\n").await;
+    daemon.wait("the reload", |s| s.profile.as_deref() == Some("desk")).await;
     assert_eq!(daemon.status.borrow().dial, DialTarget::Brightness, "an unrelated change keeps the override");
     daemon.configure("[band]\non_toggle = \"osd\"\n[gestures]\nindex_dial = \"off\"\n").await;
     daemon.wait("the file's new index_dial", |s| s.dial == DialTarget::Off).await;
@@ -978,6 +979,7 @@ async fn a_drag_step_with_no_pinch_times_out() {
     let mut daemon = start(transport.clone(), true, fake(&transport));
     daemon.connected().await;
     let response = daemon.call(Request::TeachDrag { seconds: 2.0 }).await;
+    assert_eq!(response.code.as_deref(), Some(air_gesturesd::ipc::CODE_TRY_AGAIN), "a missed try, not a failure");
     assert!(response.error.unwrap().contains("no pinch"));
 }
 
@@ -1094,7 +1096,9 @@ async fn link_loss_and_timeouts_turn_teaching_off() {
     let answer = daemon.call_later(Request::TeachDrag { seconds: 30.0 }).await;
     tokio::time::sleep(Duration::from_millis(100)).await;
     daemon.transport.inject(SimInject::Close);
-    assert!(answer.await.unwrap().error.unwrap().contains("disconnected"));
+    let lost = answer.await.unwrap();
+    assert_eq!(lost.code, None, "a lost band ends the flow");
+    assert!(lost.error.unwrap().contains("disconnected"));
     daemon.right_hand().await;
     tokio::time::sleep(Duration::from_secs(1)).await;
     daemon.pinch_moving(600, 50).await;
@@ -1108,7 +1112,8 @@ async fn a_config_reload_during_a_step_keeps_it() {
     let mut daemon = start(transport.clone(), true, fake(&transport));
     daemon.right_hand().await;
     let answer = daemon.call_later(Request::TeachDrag { seconds: 30.0 }).await;
-    daemon.configure("[gestures]\nindex_drag_away = \"echo away\"\n").await;
+    daemon.configure("[band]\nprofile = \"desk\"\n[gestures]\nindex_drag_away = \"echo away\"\n[[profile]]\nname = \"b\"\n").await;
+    daemon.wait("the reload", |s| s.profile.as_deref() == Some("desk")).await;
     daemon.pinch_moving(600, 50).await;
     assert!(matches!(answer.await.unwrap().teach, Some(Taught::Drag { .. })));
     tokio::time::sleep(Duration::from_secs(1)).await;

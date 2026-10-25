@@ -160,6 +160,8 @@ pub struct Response {
 
 /// `error`'s code when a `Pair` request needs a Meta sign-in first.
 pub const CODE_NEEDS_SIGN_IN: &str = "needs_sign_in";
+/// `error`'s code when a teaching try didn't work (nothing drawn, no pinch in time): try again.
+pub const CODE_TRY_AGAIN: &str = "try_again";
 
 impl Response {
     pub fn ok(status: Status) -> Self {

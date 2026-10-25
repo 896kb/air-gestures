@@ -465,6 +465,10 @@ impl<T: Transport, R: Runner, F: ClientFactory> Daemon<T, R, F> {
             let _ = reply.send(Response::error(CONNECT_FIRST));
             return;
         }
+        if self.waiting.as_ref().is_some_and(|waiting| waiting.reply.is_closed()) {
+            // Its client is gone (the loop hasn't noticed yet): this one goes ahead.
+            self.end_wait(|_| Done::Failed("the client went away".into()));
+        }
         if self.waiting.is_some() {
             let _ = reply.send(Response::error("another teaching step is running; wait for it to finish"));
             return;
@@ -485,6 +489,7 @@ impl<T: Transport, R: Runner, F: ClientFactory> Daemon<T, R, F> {
         self.publish();
         let _ = reply.send(match done {
             Done::Taught(taught) => Response::taught(self.status.borrow().clone(), taught),
+            Done::Retry(why) => Response::error_code(why, crate::ipc::CODE_TRY_AGAIN),
             Done::Failed(why) => Response::error(why),
         });
     }

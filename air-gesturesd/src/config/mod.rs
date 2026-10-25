@@ -10,6 +10,7 @@ mod profile;
 use std::path::{Path, PathBuf};
 
 use band_core::controls::{Dial, Options, Profiles};
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
 pub use band::{BandConfig, DEFAULT_ON_DRAW, band_key};
@@ -93,8 +94,7 @@ impl DialConfig {
 }
 
 /// The file as written.
-#[derive(Default, Deserialize)]
-#[serde(default, deny_unknown_fields)]
+#[derive(Default)]
 struct Raw {
     band: BandConfig,
     /// The first profile as written (unwritten gesture keys take the defaults).
@@ -104,6 +104,76 @@ struct Raw {
     /// Drawing name → command in every profile without its own.
     drawings: toml::Table,
     dial: DialConfig,
+}
+
+/// `[band]`'s and `[dial]`'s keys (their structs' fields).
+const BAND_KEYS: [&str; 14] = [
+    "hand",
+    "autostart",
+    "toggle",
+    "next_profile",
+    "previous_profile",
+    "draw",
+    "toggle_palm",
+    "next_profile_palm",
+    "previous_profile_palm",
+    "draw_palm",
+    "on_toggle",
+    "on_profile",
+    "on_draw",
+    "profile",
+];
+const DIAL_KEYS: [&str; 6] = ["target", "sensitivity", "volume_up", "volume_down", "brightness_up", "brightness_down"];
+
+/// A `[name]` table into `T`, each key checked on its own so a mistake names its key.
+fn section<T: DeserializeOwned>(name: &str, table: toml::Table, keys: &[&str]) -> Result<T, String> {
+    for (key, value) in &table {
+        if !keys.contains(&key.as_str()) {
+            return Err(format!("[{name}] {key}: unknown key"));
+        }
+        let one = toml::Table::from_iter([(key.clone(), value.clone())]);
+        toml::Value::Table(one).try_into::<T>().map_err(|error| format!("[{name}] {key}: {}", error.message()))?;
+    }
+    toml::Value::Table(table).try_into::<T>().map_err(|error| format!("[{name}]: {}", error.message()))
+}
+
+impl Raw {
+    fn from_table(mut table: toml::Table) -> Result<Self, String> {
+        let mut sub_table = |name: &str| match table.remove(name) {
+            None => Ok(toml::Table::new()),
+            Some(toml::Value::Table(sub)) => Ok(sub),
+            Some(_) => Err(format!("{name}: expected a table ([{name}])")),
+        };
+        let band = sub_table("band")?;
+        let dial = sub_table("dial")?;
+        let gestures = sub_table("gestures")?;
+        let drawings = sub_table("drawings")?;
+        let profile = match table.remove("profile") {
+            None => Vec::new(),
+            Some(toml::Value::Array(items)) => items
+                .into_iter()
+                .enumerate()
+                .map(|(i, item)| match item {
+                    toml::Value::Table(profile) => Ok(profile),
+                    _ => Err(format!("[[profile]] #{}: expected a table", i + 1)),
+                })
+                .collect::<Result<_, _>>()?,
+            Some(_) => return Err("profile: expected [[profile]] tables".into()),
+        };
+        if let Some((key, value)) = table.iter().next() {
+            return Err(match value.is_table() {
+                true => format!("[{key}]: unknown table"),
+                false => format!("{key}: unknown key (at the top of the file, before any [table])"),
+            });
+        }
+        Ok(Self {
+            band: section("band", band, &BAND_KEYS)?,
+            gestures,
+            profile,
+            drawings,
+            dial: section("dial", dial, &DIAL_KEYS)?,
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -123,8 +193,8 @@ impl Default for Config {
 
 impl Config {
     pub fn parse(text: &str) -> Result<Self, String> {
-        let raw: Raw = toml::from_str(text).map_err(|error| error.to_string())?;
-        Self::from_raw(raw)
+        let table: toml::Table = toml::from_str(text).map_err(|error| error.to_string())?;
+        Self::from_raw(Raw::from_table(table)?)
     }
 
     fn from_raw(raw: Raw) -> Result<Self, String> {

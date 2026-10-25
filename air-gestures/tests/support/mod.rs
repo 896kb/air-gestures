@@ -168,3 +168,14 @@ pub async fn pinch_moving(transport: &SimTransport, raw: i16, samples: usize) {
     }
     transport.inject(SimInject::Gesture { action: 2, finger: 2, derived: 0 });
 }
+
+/// An index pinch turning the wrist about these band axes (raw gyro units per sample).
+pub async fn pinch_moving3(transport: &SimTransport, axes: [i16; 3], samples: usize) {
+    use air_gesturesd::transport::SimInject;
+    transport.inject(SimInject::Gesture { action: 1, finger: 2, derived: 0 });
+    for _ in 0..samples {
+        transport.inject(SimInject::Gyro3(axes));
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    transport.inject(SimInject::Gesture { action: 2, finger: 2, derived: 0 });
+}

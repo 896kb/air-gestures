@@ -527,23 +527,32 @@ fn main() -> ExitCode {
         Command::Import { file, yes } => {
             report(import(&socket, &store_dir(cli.dry_run), &file, yes))
         }
-        Command::Calibrate { reset: true } => simple(&socket, Request::SetPalm { palm: None }),
+        Command::Calibrate { reset: true } => {
+            report(runtime().block_on(air_gestures::teach::reset_palm(&socket)).map(|forgot| println!("{forgot}")))
+        }
         Command::Calibrate { reset: false } => report(
-            runtime().block_on(air_gestures::teach::calibrate(&socket, &mut air_gestures::teach::Terminal)).map(|_| ()),
+            runtime().block_on(air_gestures::teach::calibrate(&socket, &mut air_gestures::teach::Terminal::default())).map(|_| ()),
         ),
-        Command::TeachDrags { reset: true } => simple(&socket, Request::SetDrags { drags: None }),
+        Command::TeachDrags { reset: true } => {
+            report(runtime().block_on(air_gestures::teach::reset_drags(&socket)).map(|forgot| println!("{forgot}")))
+        }
         Command::TeachDrags { reset: false } => {
-            report(runtime().block_on(air_gestures::teach::teach_drags(&socket, &mut air_gestures::teach::Terminal)))
+            report(runtime().block_on(air_gestures::teach::teach_drags(&socket, &mut air_gestures::teach::Terminal::default())))
         }
         Command::Draw { what } => {
             let dir = air_gesturesd::drawings::default_dir(cli.dry_run);
             match what {
-                DrawCommand::Teach { name } => report(runtime().block_on(air_gestures::teach::teach_drawing(
-                    &socket,
-                    &dir,
-                    &name,
-                    &mut air_gestures::teach::Terminal,
-                ))),
+                DrawCommand::Teach { name } => report(
+                    runtime()
+                        .block_on(air_gestures::teach::teach_drawing(&socket, &dir, &name, &mut air_gestures::teach::Terminal::default()))
+                        .map(|()| {
+                            // The config the daemon reads by default; a broken one gets no hint.
+                            let config = air_gesturesd::config::Config::load(&air_gesturesd::config::Config::default_path());
+                            if let Some(hint) = config.ok().as_ref().and_then(air_gestures::teach::draw_hint) {
+                                println!("{hint}");
+                            }
+                        }),
+                ),
                 DrawCommand::List => report(air_gestures::teach::list_drawings(&dir).map(|list| println!("{list}"))),
                 DrawCommand::Delete { name } => report(air_gestures::teach::delete_drawing(&dir, &name).map(|()| println!("deleted \"{name}\""))),
             }

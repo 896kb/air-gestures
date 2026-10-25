@@ -35,7 +35,7 @@ fn a_drag_step_takes_the_first_sample() {
     assert_eq!(wait.on_output(&Output::Run("x".into())), None);
     let done = wait.on_output(&Output::DragSample { finger: Finger::Middle, direction: [0.0, 1.0, 0.0] });
     assert_eq!(done, Some(Done::Taught(Taught::Drag { finger: "middle".into(), direction: [0.0, 1.0, 0.0] })));
-    let Done::Failed(why) = Wait::new(Step::Drag, 0.0, 30.0).timed_out() else { panic!() };
+    let Done::Retry(why) = Wait::new(Step::Drag, 0.0, 30.0).timed_out() else { panic!("a missed try is tried again") };
     assert!(why.contains("30 s"), "{why}");
 }
 
@@ -49,8 +49,8 @@ fn a_draw_step_takes_the_strokes_or_fails_on_nothing() {
         Some(Done::Taught(Taught::Strokes { strokes }))
     );
     let mut cancelled = Wait::new(Step::Draw, 0.0, 30.0);
-    assert!(matches!(cancelled.on_output(&Output::DrawCancelled), Some(Done::Failed(_))));
-    assert!(matches!(cancelled.on_output(&Output::DrawFinished { strokes: Vec::new() }), Some(Done::Failed(_))));
+    assert!(matches!(cancelled.on_output(&Output::DrawCancelled), Some(Done::Retry(_))));
+    assert!(matches!(cancelled.on_output(&Output::DrawFinished { strokes: Vec::new() }), Some(Done::Retry(_))));
 }
 
 #[test]

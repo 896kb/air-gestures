@@ -181,7 +181,14 @@ fn texts_of(text: &str) -> Vec<(Level, String)> {
 #[test]
 fn mistakes_are_reported() {
     for (text, needle) in [
-        ("[band]\ncolour = \"red\"\n", "colour"),
+        ("[band]\ncolour = \"red\"\n", "[band] colour: unknown key"),
+        ("[band]\nautostart = \"yes\"\n", "[band] autostart: invalid type"),
+        ("[dial]\nloud = 1\n", "[dial] loud: unknown key"),
+        ("[dial]\nsensitivity = \"x\"\n", "[dial] sensitivity: invalid type"),
+        ("nope = 1\n", "nope: unknown key"),
+        ("[nope]\nx = 1\n", "[nope]: unknown table"),
+        ("band = 3\n", "band: expected a table"),
+        ("profile = 3\n", "profile: expected [[profile]] tables"),
         ("[band]\ntoggle = \"pinky_hold\"\n", "[band] toggle: unknown gesture \"pinky_hold\""),
         ("[band]\ntoggle_palm = [\"up\"]\n", "[band] toggle_palm: set [band] toggle to a gesture first"),
         ("[band]\ntoggle = \"middle_hold\"\ntoggle_palm = [\"left\"]\n", "[band] toggle_palm: unknown position \"left\""),
@@ -196,11 +203,11 @@ fn mistakes_are_reported() {
         ("[gestures]\nswipe_up = \"@draw\"\n", "draw = \"swipe_up\""),
         ("[gestures]\nswipe_up = \"@lock\"\n", "[gestures] swipe_up = \"@lock\""),
         ("[dial]\nsensitivity = 9.0\n", "[dial] sensitivity must be between 0.5 and 4"),
-        ("[[profile]]\nswipe_up = \"x\"\n", "every [[profile]] needs a name"),
-        ("[[profile]]\nname = 3\n", "a profile's name must be text"),
-        ("[[profile]]\nname = \"default\"\n", "two profiles are called \"default\""),
-        ("[[profile]]\nname = \"a\"\n[[profile]]\nname = \"a\"\n", "two profiles are called \"a\""),
-        ("[[profile]]\nname = \"it's\"\n", "profile name \"it's\""),
+        ("[[profile]]\nswipe_up = \"x\"\n", "[[profile]] #1: every [[profile]] needs a name"),
+        ("[[profile]]\nname = 3\n", "[[profile]] #1 name: a profile's name must be text"),
+        ("[[profile]]\nname = \"default\"\n", "[[profile]] #1 name: two profiles are called \"default\""),
+        ("[[profile]]\nname = \"a\"\n[[profile]]\nname = \"a\"\n", "[[profile]] #2 name: two profiles are called \"a\""),
+        ("[[profile]]\nname = \"a\"\n[[profile]]\nname = \"it's\"\n", "[[profile]] #2 name: profile name \"it's\""),
         ("[[profile]]\nname = \".hidden\"\n", "profile name \".hidden\""),
         ("[[profile]]\nname = \"x\"\nnope = \"y\"\n", "[profile \"x\"] nope: unknown key"),
         ("[[profile]]\nname = \"x\"\nindex_tap = \"@next-profile\"\n", "[profile \"x\"] index_tap = \"@next-profile\": band controls are set in [band] now: next_profile = \"index_tap\""),
@@ -232,7 +239,8 @@ fn mistakes_are_reported() {
 fn mistakes_carry_the_bad_value() {
     let error = Config::parse("[dial]\nsensitivity = 9.0").unwrap_err();
     assert!(error.contains("(got 9"), "should report the bad value: {error}");
-    assert!(Config::parse("[band]\nhand = \"both\"").is_err());
+    let error = Config::parse("[band]\nhand = \"both\"").unwrap_err();
+    assert!(error.contains("[band] hand: ") && error.contains("both"), "{error}");
 }
 
 #[test]

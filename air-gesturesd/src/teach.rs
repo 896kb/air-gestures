@@ -97,6 +97,9 @@ impl Step {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Done {
     Taught(Taught),
+    /// This try didn't work (nothing drawn, no pinch in time): the flow tries it again.
+    Retry(String),
+    /// The step can't go on (the band went, the client went).
     Failed(String),
 }
 
@@ -148,7 +151,7 @@ impl Wait {
                 Some(Done::Taught(Taught::Strokes { strokes: strokes.clone() }))
             }
             (Step::Draw, Output::DrawFinished { .. } | Output::DrawCancelled) => {
-                Some(Done::Failed("nothing was drawn (pinch to put the pen down; a quick tap isn't a stroke)".into()))
+                Some(Done::Retry("nothing was drawn (pinch to put the pen down; a quick tap isn't a stroke)".into()))
             }
             _ => None,
         }
@@ -158,8 +161,8 @@ impl Wait {
     pub fn timed_out(self) -> Done {
         match self.step {
             Step::Rolls => Done::Taught(Taught::Rolls { rolls: self.rolls, samples: self.samples }),
-            Step::Drag => Done::Failed(format!("no pinch that moved in {} s", self.seconds)),
-            Step::Draw => Done::Failed(format!("the drawing didn't end within {} s", self.seconds)),
+            Step::Drag => Done::Retry(format!("no pinch that moved in {} s", self.seconds)),
+            Step::Draw => Done::Retry(format!("the drawing didn't end within {} s", self.seconds)),
         }
     }
 }

@@ -281,14 +281,15 @@ pub(super) fn build(
     let (first, target) = profile_from(dial, &band.profile, gestures, "gestures", true)?;
     let mut dials = vec![target];
     let mut list = vec![first];
-    for table in tables {
+    for (i, table) in tables.iter().enumerate() {
+        let at = format!("[[profile]] #{}", i + 1);
         let name = match table.get("name") {
-            None => return Err("every [[profile]] needs a name".into()),
-            Some(name) => name.as_str().ok_or("a profile's name must be text")?,
+            None => return Err(format!("{at}: every [[profile]] needs a name")),
+            Some(name) => name.as_str().ok_or_else(|| format!("{at} name: a profile's name must be text"))?,
         };
-        check_name("profile", name)?;
+        check_name("profile", name).map_err(|e| format!("{at} name: {e}"))?;
         if list.iter().any(|p: &Profile<String>| p.name == name) {
-            return Err(format!("two profiles are called \"{name}\""));
+            return Err(format!("{at} name: two profiles are called \"{name}\""));
         }
         let (profile, target) = profile_from(dial, name, table, &format!("profile \"{name}\""), false)?;
         dials.push(target);

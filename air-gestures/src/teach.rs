@@ -1,12 +1,18 @@
 //! The guided teaching flows: palm calibration, teach your drags, teach a drawing. They talk
 //! to air-gesturesd's teaching steps and check the results with band-core before storing them.
+//!
+//! A try that didn't work (the daemon's `try_again`: nothing drawn, no pinch in time; or a
+//! check here: not still, too small) is said and done again, within `ROUNDS`; anything else
+//! (the band or the daemon gone, another teaching step running) ends the flow, changing
+//! nothing.
 
 use std::path::Path;
 use std::process::Stdio;
 use std::time::Duration;
 
+use air_gesturesd::config::Config;
 use air_gesturesd::drawings;
-use air_gesturesd::ipc::{Request, Taught, TaughtDrags};
+use air_gesturesd::ipc::{CODE_TRY_AGAIN, Request, Response, Taught, TaughtDrags};
 use air_gesturesd::status::{LinkState, Status};
 use air_gesturesd::store::StoredPalm;
 use air_gesturesd::teach::{calibration_error_text, taught_error_text};
@@ -14,7 +20,7 @@ use band_core::controls::draw::{self, Drawing, Library, Stroke, TeachError};
 use band_core::controls::palm::{CalibrationError, Palm, PalmCalibration};
 use band_core::controls::pinch::{Prototypes, TaughtError};
 
-use crate::client;
+use crate::client::{self, RequestError};
 
 /// What a flow says and asks (the terminal, or a test).
 pub trait Guide {
@@ -25,20 +31,35 @@ pub trait Guide {
     fn ready(&mut self, prompt: &str) -> bool;
 }
 
-pub struct Terminal;
+/// The terminal, with notifications from `notify_command` (`notify-send`).
+pub struct Terminal {
+    pub notify_command: String,
+}
+
+impl Default for Terminal {
+    fn default() -> Self {
+        Self { notify_command: "notify-send".into() }
+    }
+}
 
 impl Guide for Terminal {
     fn say(&mut self, text: &str) {
         println!("{text}");
     }
     fn notify(&mut self, title: &str, body: &str) {
-        // Best effort: without a notification daemon the terminal still says it.
-        let _ = std::process::Command::new("notify-send")
+        // Best effort, and never waited for (a slow notification daemon mustn't delay the
+        // step it announces): without one the terminal still says it.
+        let child = std::process::Command::new(&self.notify_command)
             .args(["-a", "air-gestures", title, body])
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
-            .status();
+            .spawn();
+        if let Ok(mut child) = child {
+            std::thread::spawn(move || {
+                let _ = child.wait();
+            });
+        }
     }
     fn ready(&mut self, prompt: &str) -> bool {
         use std::io::Write;
@@ -50,9 +71,19 @@ impl Guide for Terminal {
 
 const ROUNDS: usize = 3;
 const HOLD: f64 = 2.0;
+/// How long a drag or drawing try waits for the band.
+const TRY_WAIT: f64 = 30.0;
 
 fn unexpected() -> String {
     "unexpected answer from air-gesturesd".into()
+}
+
+fn unchanged(error: impl Into<String>) -> String {
+    format!("{}; nothing was changed", error.into())
+}
+
+fn unsaved(error: impl Into<String>) -> String {
+    format!("{}; nothing was saved", error.into())
 }
 
 /// The band's hand, once it's connected and has said.
@@ -63,22 +94,41 @@ pub fn connected_hand(status: &Status) -> Result<&str, String> {
     status.hand.as_deref().ok_or_else(|| "the band hasn't said which wrist it's on yet; try again in a moment".into())
 }
 
+/// One try: what the band gave, or why to do it again.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Try<T> {
+    Got(T),
+    Again(String),
+}
+
+/// A teaching step's answer: `Again` for a try that didn't work, `Err` for the rest.
+fn step_answer(answer: Result<Response, RequestError>) -> Result<Try<Taught>, String> {
+    match answer {
+        Ok(response) => response.teach.map(Try::Got).ok_or_else(unexpected),
+        Err(error) if error.code.as_deref() == Some(CODE_TRY_AGAIN) => Ok(Try::Again(error.message)),
+        Err(error) => Err(error.message),
+    }
+}
+
 async fn hold(socket: &Path, guide: &mut impl Guide, palm: Palm) -> Result<Vec<f64>, String> {
     let (title, way) = match palm {
         Palm::Up => ("Palm up", "palm up"),
         _ => ("Palm down", "palm down"),
     };
     if !guide.ready(&format!("Forearm level in front of you, {way}. Press Enter, then hold still for 2 s.")) {
-        return Err("cancelled; nothing was changed".into());
+        return Err(unchanged("cancelled"));
     }
     guide.notify(title, "Hold still for 2 seconds");
-    let response = client::request_within(socket, &Request::PalmRolls { seconds: HOLD }, Duration::from_secs(10)).await?;
+    let response = client::request_within(socket, &Request::PalmRolls { seconds: HOLD }, Duration::from_secs(10))
+        .await
+        .map_err(unchanged)?;
+    guide.notify("Done", &format!("{way}: you can move"));
     match response.teach {
         Some(Taught::Rolls { samples: 0, .. }) => {
-            Err("the band sent no orientation: is it on your wrist and connected? (`air-gestures status`)".into())
+            Err(unchanged("the band sent no orientation: is it on your wrist and connected? (`air-gestures status`)"))
         }
         Some(Taught::Rolls { rolls, .. }) => Ok(rolls),
-        _ => Err(unexpected()),
+        _ => Err(unchanged(unexpected())),
     }
 }
 
@@ -122,14 +172,18 @@ pub async fn calibrate(socket: &Path, guide: &mut impl Guide) -> Result<PalmCali
         }
         match PalmCalibration::from_rolls(down.as_deref().unwrap_or_default(), up.as_deref().unwrap_or_default()) {
             Ok(calibration) => {
-                client::request(socket, &Request::SetPalm { palm: Some(StoredPalm::from(calibration)) }).await?;
+                client::request(socket, &Request::SetPalm { palm: Some(StoredPalm::from(calibration)) })
+                    .await
+                    .map_err(unchanged)?;
                 let text = format!(
                     "Saved: palm down at {:.0}°, palm up at {:.0}° (sideways is halfway).",
                     calibration.down_roll, calibration.up_roll
                 );
                 guide.say(&text);
                 guide.notify("Calibrated", &text);
-                confirm(socket, guide).await?;
+                if let Err(error) = confirm(socket, guide).await {
+                    guide.say(&format!("Saved, but the check couldn't run: {error}."));
+                }
                 return Ok(calibration);
             }
             Err(error) => {
@@ -143,7 +197,23 @@ pub async fn calibrate(socket: &Path, guide: &mut impl Guide) -> Result<PalmCali
             }
         }
     }
-    Err(format!("calibration didn't work in {ROUNDS} rounds ({last}); nothing was changed"))
+    Err(unchanged(format!("calibration didn't work in {ROUNDS} rounds ({last})")))
+}
+
+/// `--reset`: forget the palm calibration for the band and the hand in use.
+pub async fn reset_palm(socket: &Path) -> Result<String, String> {
+    let response = client::request(socket, &Request::SetPalm { palm: None }).await?;
+    Ok(format!("palm calibration forgotten for your {} hand", hand_of(&response)))
+}
+
+/// `--reset`: forget the taught drags for the band and the hand in use.
+pub async fn reset_drags(socket: &Path) -> Result<String, String> {
+    let response = client::request(socket, &Request::SetDrags { drags: None }).await?;
+    Ok(format!("taught drags forgotten for your {} hand", hand_of(&response)))
+}
+
+fn hand_of(response: &Response) -> &str {
+    response.status.as_ref().and_then(|status| status.hand.as_deref()).unwrap_or("current")
 }
 
 /// The moves taught, in order: the turn, then `Drag::ALL`'s.
@@ -168,51 +238,81 @@ pub fn redo(error: TaughtError) -> Vec<usize> {
     }
 }
 
-/// One move's direction, from the next pinch that moves.
-pub async fn drag_sample(socket: &Path, guide: &mut impl Guide, index: usize) -> Result<[f64; 3], String> {
+/// `redo`, after `before` (the last round's refusal): a drag like the turn twice running
+/// means the turn may be what's off, so it's taught again too.
+pub fn redo_round(error: TaughtError, before: Option<TaughtError>) -> Vec<usize> {
+    let mut moves = redo(error);
+    if matches!((error, before), (TaughtError::LikeTheTurn(_), Some(TaughtError::LikeTheTurn(_)))) && !moves.contains(&0) {
+        moves.push(0);
+    }
+    moves
+}
+
+/// One move's direction, from the next pinch that moves within `seconds`.
+pub async fn drag_sample(socket: &Path, guide: &mut impl Guide, index: usize, seconds: f64) -> Result<Try<[f64; 3]>, String> {
     let (name, how) = MOVES[index];
     guide.say(&format!("{}/{} {name}: pinch (thumb + index), {how}, let go.", index + 1, MOVES.len()));
     guide.notify("Teach your drags", &format!("Pinch, {how}, let go"));
-    let response = client::request_within(socket, &Request::TeachDrag { seconds: 30.0 }, Duration::from_secs(40)).await?;
-    match response.teach {
-        Some(Taught::Drag { direction, .. }) => Ok(direction),
-        _ => Err(unexpected()),
+    let wait = Duration::from_secs_f64(seconds + 10.0);
+    match step_answer(client::request_within(socket, &Request::TeachDrag { seconds }, wait).await)? {
+        Try::Got(Taught::Drag { direction, .. }) => Ok(Try::Got(direction)),
+        Try::Got(_) => Err(unexpected()),
+        Try::Again(why) => Ok(Try::Again(why)),
     }
 }
 
 /// The turn and six drags, one pinch each: the hand's prototypes, stored and applied.
 pub async fn teach_drags(socket: &Path, guide: &mut impl Guide) -> Result<(), String> {
+    teach_drags_within(socket, guide, TRY_WAIT).await
+}
+
+/// `teach_drags`, each pinch waited for `seconds`.
+pub async fn teach_drags_within(socket: &Path, guide: &mut impl Guide, seconds: f64) -> Result<(), String> {
     let status = client::status(socket).await?;
     let hand = connected_hand(&status)?.to_owned();
     guide.say(&format!("Teach your drags ({hand} hand): one pinch for each move, the way you'll make it."));
     let mut samples: [Option<[f64; 3]>; 7] = [None; 7];
     let mut last = String::new();
+    let mut refused = None;
     for _ in 0..ROUNDS {
         for (index, sample) in samples.iter_mut().enumerate() {
-            if sample.is_none() {
-                *sample = Some(drag_sample(socket, guide, index).await?);
+            if sample.is_some() {
+                continue;
             }
+            match drag_sample(socket, guide, index, seconds).await.map_err(unchanged)? {
+                Try::Got(direction) => *sample = Some(direction),
+                Try::Again(why) => {
+                    guide.say(&format!("{why}. Once more later."));
+                    last = why;
+                }
+            }
+        }
+        if samples.iter().any(Option::is_none) {
+            continue;
         }
         let all = samples.map(|s| s.unwrap_or_default());
         let drags: [[f64; 3]; 6] = std::array::from_fn(|i| all[i + 1]);
         // The palm-down roll doesn't change the check; the daemon sets the real one.
         match Prototypes::taught(all[0], drags, 0.0) {
             Ok(_) => {
-                client::request(socket, &Request::SetDrags { drags: Some(TaughtDrags { turn: all[0], drags }) }).await?;
+                client::request(socket, &Request::SetDrags { drags: Some(TaughtDrags { turn: all[0], drags }) })
+                    .await
+                    .map_err(unchanged)?;
                 guide.say("Saved: drags now read the way you make them.");
                 guide.notify("Drags taught", "Saved");
                 return Ok(());
             }
             Err(error) => {
                 last = taught_error_text(error);
-                guide.say(&format!("{last}: once more."));
-                for index in redo(error) {
+                guide.say(&format!("{last}. Once more."));
+                for index in redo_round(error, refused) {
                     samples[index] = None;
                 }
+                refused = Some(error);
             }
         }
     }
-    Err(format!("teaching didn't work in {ROUNDS} rounds ({last}); nothing was changed"))
+    Err(unchanged(format!("teaching didn't work in {ROUNDS} rounds ({last})")))
 }
 
 /// Tries a drawing is taught with.
@@ -223,58 +323,84 @@ fn toml_key(name: &str) -> String {
     if name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') { name.to_owned() } else { format!("\"{name}\"") }
 }
 
-async fn draw_try(socket: &Path, guide: &mut impl Guide, name: &str, index: usize) -> Result<Vec<Stroke>, String> {
+/// What to add after a drawing is saved, when Draw isn't on a gesture yet.
+pub fn draw_hint(config: &Config) -> Option<String> {
+    matches!(config.band.draw.trim(), "none" | "")
+        .then(|| "Draw isn't on a gesture yet: set [band] draw to one, e.g. draw = \"swipe_up\".".to_owned())
+}
+
+async fn draw_try(socket: &Path, guide: &mut impl Guide, name: &str, index: usize, seconds: f64) -> Result<Try<Vec<Stroke>>, String> {
     guide.say(&format!("Try {} of {TRIES}: draw it now.", index + 1));
     guide.notify("Draw", &format!("{name}: try {} of {TRIES}", index + 1));
-    let response = client::request_within(socket, &Request::DrawTry { seconds: 30.0 }, Duration::from_secs(40)).await?;
-    match response.teach {
-        Some(Taught::Strokes { strokes }) => Ok(strokes),
-        _ => Err(unexpected()),
+    let wait = Duration::from_secs_f64(seconds + 10.0);
+    match step_answer(client::request_within(socket, &Request::DrawTry { seconds }, wait).await)? {
+        Try::Got(Taught::Strokes { strokes }) => Ok(Try::Got(strokes)),
+        Try::Got(_) => Err(unexpected()),
+        Try::Again(why) => Ok(Try::Again(why)),
     }
 }
 
 /// Three alike tries of a new drawing, saved in `dir` (where the daemon reads drawings).
 pub async fn teach_drawing(socket: &Path, dir: &Path, name: &str, guide: &mut impl Guide) -> Result<(), String> {
+    teach_drawing_within(socket, dir, name, guide, TRY_WAIT).await
+}
+
+/// `teach_drawing`, each try waited for `seconds`.
+pub async fn teach_drawing_within(socket: &Path, dir: &Path, name: &str, guide: &mut impl Guide, seconds: f64) -> Result<(), String> {
     drawings::check_name(name)?;
-    let (existing, _) = drawings::load(dir);
-    if existing.iter().any(|d| d.name == name) {
+    // A file there that doesn't load (corrupt, another version) still takes the name.
+    if dir.join(format!("{name}.json")).exists() {
         return Err(format!("\"{name}\" is already taught: `air-gestures draw delete {name}` first"));
     }
+    let (existing, _) = drawings::load(dir);
     connected_hand(&client::status(socket).await?)?;
     guide.say(&format!(
         "Draw \"{name}\" {TRIES} times, the way you'll draw it later (in the air, or pen grip on a table). \
          Pinch to put the pen down, let go to lift it; each try ends 1 s after your last stroke."
     ));
     let mut tries: Vec<Option<Vec<Stroke>>> = vec![None; TRIES];
+    let mut last = String::from("they didn't come out alike");
     for _ in 0..ROUNDS {
         for (index, slot) in tries.iter_mut().enumerate() {
-            if slot.is_none() {
-                *slot = Some(draw_try(socket, guide, name, index).await?);
+            if slot.is_some() {
+                continue;
             }
+            match draw_try(socket, guide, name, index, seconds).await.map_err(unsaved)? {
+                Try::Got(strokes) => *slot = Some(strokes),
+                Try::Again(why) => {
+                    guide.say(&format!("Try {}: {why}. Once more later.", index + 1));
+                    last = why;
+                }
+            }
+        }
+        if tries.iter().any(Option::is_none) {
+            continue;
         }
         let all: Vec<Vec<Stroke>> = tries.iter().map(|t| t.clone().unwrap_or_default()).collect();
         match draw::check_tries(&all) {
             Ok(()) => {
                 if let Some(other) = Library::new(&existing).looks_like(&all) {
-                    return Err(format!("that looks like \"{other}\": teach something more different (nothing was saved)"));
+                    return Err(unsaved(format!("that looks like \"{other}\": teach something more different")));
                 }
                 drawings::save(dir, &Drawing { name: name.to_owned(), tries: all })
-                    .map_err(|error| format!("could not save \"{name}\": {error}"))?;
+                    .map_err(|error| unsaved(format!("could not save \"{name}\": {error}")))?;
                 guide.say(&format!("Saved \"{name}\". Give it an action in config.toml:\n  [drawings]\n  {} = \"…\"", toml_key(name)));
                 guide.notify("Drawing taught", name);
                 return Ok(());
             }
             Err(TeachError::TooSmall(index)) => {
+                last = format!("try {} was too small to read", index + 1);
                 guide.say(&format!("Try {} was too small to read: draw bigger.", index + 1));
                 tries[index] = None;
             }
             Err(TeachError::NotAlike { .. } | TeachError::NoTries) => {
+                last = "they didn't come out alike".into();
                 guide.say("These don't look alike: try again, or draw bigger.");
                 tries.iter_mut().for_each(|t| *t = None);
             }
         }
     }
-    Err(format!("\"{name}\" didn't come out alike in {ROUNDS} rounds; nothing was saved"))
+    Err(unsaved(format!("\"{name}\" didn't work in {ROUNDS} rounds ({last})")))
 }
 
 /// One line per drawing, or how to make one.
