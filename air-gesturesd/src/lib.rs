@@ -6,6 +6,7 @@ pub mod bluez;
 pub mod clock;
 pub mod config;
 pub mod daemon;
+pub mod drawings;
 pub mod ipc;
 pub mod link;
 pub mod meta;
