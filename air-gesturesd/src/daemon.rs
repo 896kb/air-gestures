@@ -54,8 +54,10 @@ pub struct Daemon<T: Transport, R: Runner, F: ClientFactory> {
     controls: Controls<String>,
     /// The loaded config (hooks, dial commands, profiles).
     config: Config,
-    /// What the dial turns: the file's `[dial] target`, or a runtime choice over IPC.
-    dial_target: DialTarget,
+    /// The IPC dial choice, while `controls.dial_overridden()`.
+    dial_override: DialTarget,
+    /// Each profile's own index dial (from the config), for status.
+    index_dials: Vec<DialTarget>,
     clock: Clock,
     status: watch::Sender<Status>,
     semg: broadcast::Sender<Vec<u8>>,
@@ -116,8 +118,8 @@ impl<T: Transport, R: Runner, F: ClientFactory> Daemon<T, R, F> {
         };
         let config_stamp = modified(&config_path);
         let wants_connection = config.band.autostart;
-        let dial_target = config.dial.target;
-        let controls = Controls::new(config.options(), config.profiles(dial_target));
+        let index_dials = config.index_dials();
+        let controls = Controls::new(config.options(), config.profiles());
         log_notes(controls.profiles());
         let band_name = store.load_band().ok().flatten().map(|band| band.name);
         let (status, _) = watch::channel(Status::default());
@@ -133,7 +135,8 @@ impl<T: Transport, R: Runner, F: ClientFactory> Daemon<T, R, F> {
             config_error,
             controls,
             config,
-            dial_target,
+            dial_override: DialTarget::Off,
+            index_dials,
             clock: Clock::new(),
             status,
             semg,
@@ -223,7 +226,7 @@ impl<T: Transport, R: Runner, F: ClientFactory> Daemon<T, R, F> {
                 Hand::Left => "left".to_owned(),
                 Hand::Right => "right".to_owned(),
             }),
-            dial: self.dial_target,
+            dial: self.dial_target(),
             last_gesture: controls.last_gesture.map(str::to_owned),
             last_action: controls.last_action.clone(),
             gestures: controls.gestures,
@@ -331,12 +334,18 @@ impl<T: Transport, R: Runner, F: ClientFactory> Daemon<T, R, F> {
         }
     }
 
-    /// The profiles again (the dial target or the config changed).
-    fn rebuild_profiles(&mut self) {
-        let outputs = self
-            .controls
-            .set_profiles(self.config.profiles(self.dial_target));
-        self.apply(outputs, false);
+    /// What the index dial turns now: the IPC choice, else the active profile's own.
+    fn dial_target(&self) -> DialTarget {
+        if self.controls.dial_overridden() {
+            self.dial_override
+        } else {
+            self.index_dials.get(self.controls.active()).copied().unwrap_or(DialTarget::Off)
+        }
+    }
+
+    fn override_dial(&mut self, target: DialTarget) {
+        self.dial_override = target;
+        self.controls.set_dial(self.config.dial.dial(target));
     }
 
     fn on_link_event(&mut self, event: LinkEvent) {
@@ -550,16 +559,20 @@ impl<T: Transport, R: Runner, F: ClientFactory> Daemon<T, R, F> {
             Ok(config) => {
                 self.config_error = None;
                 tracing::info!("config reloaded");
-                if config.dial.target != self.config.dial.target {
-                    // A changed target in the file wins over a runtime choice.
-                    self.dial_target = config.dial.target;
-                }
+                let active = self.controls.active();
+                let before = self.index_dials.get(active).copied();
                 self.config = config;
+                self.index_dials = self.config.index_dials();
                 let mut outputs = self.controls.set_options(self.config.options());
-                outputs.extend(
-                    self.controls
-                        .set_profiles(self.config.profiles(self.dial_target)),
-                );
+                outputs.extend(self.controls.set_profiles(self.config.profiles()));
+                if self.controls.dial_overridden() {
+                    // A changed dial in the file wins over a runtime choice, as before.
+                    if self.index_dials.get(self.controls.active()).copied() != before {
+                        self.controls.clear_dial();
+                    } else {
+                        self.override_dial(self.dial_override);
+                    }
+                }
                 log_notes(self.controls.profiles());
                 self.apply(outputs, false);
             }
@@ -726,14 +739,8 @@ impl<T: Transport, R: Runner, F: ClientFactory> Daemon<T, R, F> {
                 let outputs = self.controls.toggle(now);
                 self.apply(outputs, false);
             }
-            Request::Dial { target } => {
-                self.dial_target = target;
-                self.rebuild_profiles();
-            }
-            Request::CycleDial => {
-                self.dial_target = self.dial_target.next();
-                self.rebuild_profiles();
-            }
+            Request::Dial { target } => self.override_dial(target),
+            Request::CycleDial => self.override_dial(self.dial_target().next()),
             Request::Profile { to } => {
                 let count = self.controls.profiles().list.len();
                 let active = self.controls.active();

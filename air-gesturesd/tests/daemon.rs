@@ -3,6 +3,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use air_gesturesd::actions::RecordingRunner;
+use air_gesturesd::config::DialTarget;
 use air_gesturesd::daemon::Daemon;
 use air_gesturesd::ipc::{Call, HandChoice, Request, Response};
 use air_gesturesd::meta::{
@@ -769,4 +770,21 @@ async fn a_band_control_wins_over_the_profiles_command() {
     daemon.transport.inject(SWIPE_LEFT);
     tokio::time::sleep(Duration::from_secs(2)).await;
     assert!(daemon.runner.commands().is_empty(), "{:?}", daemon.runner.commands());
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_dial_override_lasts_until_the_profile_changes() {
+    let transport = SimTransport::new(SimMode::Enrolled);
+    let mut daemon = start(transport.clone(), true, fake(&transport));
+    daemon.connected().await;
+    daemon.configure("[[profile]]\nname = \"quiet\"\nindex_dial = \"off\"\n").await;
+    assert_eq!(daemon.status.borrow().dial, DialTarget::Volume);
+    daemon.call(Request::Dial { target: DialTarget::Brightness }).await;
+    daemon.wait("brightness", |s| s.dial == DialTarget::Brightness).await;
+    daemon.call(Request::Profile { to: "quiet".into() }).await;
+    daemon.wait("quiet's own dial", |s| s.dial == DialTarget::Off).await;
+    daemon.call(Request::CycleDial).await;
+    daemon.wait("cycled from off", |s| s.dial == DialTarget::Volume).await;
+    daemon.call(Request::Profile { to: "default".into() }).await;
+    daemon.wait("default's own dial", |s| s.dial == DialTarget::Volume && s.profile.as_deref() == Some("default")).await;
 }

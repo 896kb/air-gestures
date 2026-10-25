@@ -5,8 +5,8 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use band_core::controls::{
-    BandControl, BandControls, Binding, Builtin, Dial, Gesture, Invalid, Options, Palm, PalmSet, Palms, Place, Profile,
-    Profiles, Warning,
+    BandControl, BandControls, Binding, Builtin, Dial, DragMode, FingerSetup, Gesture, Invalid, Options, Palm, PalmSet,
+    Palms, Place, Profile, Profiles, Warning,
 };
 use serde::{Deserialize, Serialize};
 
@@ -214,6 +214,56 @@ pub fn check_name(what: &str, name: &str) -> Result<(), String> {
     }
 }
 
+/// A profile's per-finger keys: `index_dial`, `middle_drags`, `index_slider_up_down`, ….
+struct Fingers {
+    dial: [Option<DialTarget>; 2],
+    sliders_mode: [bool; 2],
+    sliders: [[DialTarget; 3]; 2],
+}
+
+const SLIDER_PAIRS: [&str; 3] = ["left_right", "toward_away", "up_down"];
+
+impl Default for Fingers {
+    fn default() -> Self {
+        Self { dial: [None; 2], sliders_mode: [false; 2], sliders: [[DialTarget::Off; 3]; 2] }
+    }
+}
+
+fn parse_target(place: &str, key: &str, value: &str) -> Result<DialTarget, String> {
+    match value.trim() {
+        "volume" => Ok(DialTarget::Volume),
+        "brightness" => Ok(DialTarget::Brightness),
+        "off" => Ok(DialTarget::Off),
+        other => Err(format!("{place}.{key}: \"{other}\" isn't a dial (\"volume\", \"brightness\" or \"off\")")),
+    }
+}
+
+impl Fingers {
+    /// Takes a per-finger key; `false` when `key` isn't one.
+    fn set(&mut self, place: &str, key: &str, value: &str) -> Result<bool, String> {
+        let (slot, rest) = match (key.strip_prefix("index_"), key.strip_prefix("middle_")) {
+            (Some(rest), _) => (0, rest),
+            (_, Some(rest)) => (1, rest),
+            _ => return Ok(false),
+        };
+        match rest {
+            "dial" => self.dial[slot] = Some(parse_target(place, key, value)?),
+            "drags" => {
+                self.sliders_mode[slot] = match value.trim() {
+                    "gestures" => false,
+                    "sliders" => true,
+                    other => return Err(format!("{place}.{key}: \"{other}\" (\"gestures\" or \"sliders\")")),
+                }
+            }
+            _ => match rest.strip_prefix("slider_").and_then(|pair| SLIDER_PAIRS.iter().position(|p| *p == pair)) {
+                Some(pair) => self.sliders[slot][pair] = parse_target(place, key, value)?,
+                None => return Ok(false),
+            },
+        }
+        Ok(true)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct DialConfig {
@@ -282,7 +332,7 @@ impl Config {
                 config.dial.sensitivity
             ));
         }
-        config.build(DialTarget::Off)?;
+        config.build()?;
         Ok(config)
     }
 
@@ -299,30 +349,56 @@ impl Config {
         }
     }
 
-    /// Every profile, each turning the dial at `target`.
-    pub fn profiles(&self, target: DialTarget) -> Profiles<String> {
-        self.build(target)
-            .expect("checked when the config was parsed")
+    /// Every profile.
+    pub fn profiles(&self) -> Profiles<String> {
+        self.build().expect("checked when the config was parsed").0
     }
 
-    fn build(&self, target: DialTarget) -> Result<Profiles<String>, String> {
+    /// What each profile's index dial turns (for status), in profile order.
+    pub fn index_dials(&self) -> Vec<DialTarget> {
+        self.build().expect("checked when the config was parsed").1
+    }
+
+    /// Both fingers' setups, and what the index dial turns.
+    fn fingers(&self, fingers: &Fingers) -> (FingerSetup<String>, FingerSetup<String>, DialTarget) {
+        let index = fingers.dial[0].unwrap_or(self.dial.target);
+        let middle = fingers.dial[1].unwrap_or(DialTarget::Off);
+        let setup = |slot: usize, target: DialTarget| FingerSetup {
+            dial: self.dial.dial(target),
+            drags: if fingers.sliders_mode[slot] {
+                DragMode::Sliders(fingers.sliders[slot].map(|t| self.dial.dial(t)))
+            } else {
+                DragMode::Gestures
+            },
+        };
+        (setup(0, index), setup(1, middle), index)
+    }
+
+    fn build(&self) -> Result<(Profiles<String>, Vec<DialTarget>), String> {
         let band = self.band.band_controls()?;
-        let dial = self.dial.dial(target);
         check_name("profile", &self.band.profile).map_err(|e| format!("band.profile: {e}"))?;
+        let mut dials = Vec::new();
         let mut first = Profile::new(&self.band.profile);
         for gesture in Gesture::ALL {
             if let Some(command) = default_gesture(gesture) {
                 first.gestures.insert(gesture, Binding::from(command.to_owned()));
             }
         }
+        let mut fingers = Fingers::default();
         for (key, value) in &self.gestures {
+            if fingers.set("gestures", key, value)? {
+                continue;
+            }
             let gesture = Gesture::from_key(key).ok_or_else(|| format!("gestures: unknown gesture \"{key}\""))?;
             match command("gestures", key, value)? {
                 Some(command) => first.gestures.insert(gesture, Binding::from(command)),
                 None => first.gestures.remove(&gesture),
             };
         }
-        first.index.dial = dial.clone();
+        let (index, middle, target) = self.fingers(&fingers);
+        first.index = index;
+        first.middle = middle;
+        dials.push(target);
         let mut list = vec![first];
         for table in &self.profile {
             let name = table.get("name").ok_or("every [[profile]] needs a name")?;
@@ -332,8 +408,12 @@ impl Config {
             }
             let place = format!("profile \"{name}\"");
             let mut profile = Profile::new(name);
+            let mut fingers = Fingers::default();
             for (key, value) in table {
                 if key == "name" {
+                    continue;
+                }
+                if fingers.set(&place, key, value)? {
                     continue;
                 }
                 let gesture = Gesture::from_key(key).ok_or_else(|| format!("{place}: unknown key \"{key}\""))?;
@@ -341,10 +421,14 @@ impl Config {
                     profile.gestures.insert(gesture, Binding::from(command));
                 }
             }
-            profile.index.dial = dial.clone();
+            let (index, middle, target) = self.fingers(&fingers);
+            profile.index = index;
+            profile.middle = middle;
+            dials.push(target);
             list.push(profile);
         }
-        Ok(Profiles { band, list, picked: 0, apps: BTreeMap::new(), calls: BTreeMap::new(), drawings: BTreeMap::new() })
+        let profiles = Profiles { band, list, picked: 0, apps: BTreeMap::new(), calls: BTreeMap::new(), drawings: BTreeMap::new() };
+        Ok((profiles, dials))
     }
 
     /// Load `path`; a missing file means the defaults.

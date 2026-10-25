@@ -1,12 +1,12 @@
 use air_gesturesd::config::{Config, DialTarget, HandSetting, Level, notes};
-use band_core::controls::{BandControl, BandControls, Binding, Gesture, Palm, PalmSet, Palms};
+use band_core::controls::{BandControl, BandControls, Binding, DragMode, Gesture, Palm, PalmSet, Palms};
 
 fn run(command: &str) -> Option<Binding<String>> {
     Some(Binding::from(command.to_owned()))
 }
 
 fn texts(config: &Config) -> Vec<(Level, String)> {
-    notes(&config.profiles(DialTarget::Volume)).into_iter().map(|n| (n.level, n.text)).collect()
+    notes(&config.profiles()).into_iter().map(|n| (n.level, n.text)).collect()
 }
 
 #[test]
@@ -14,7 +14,7 @@ fn defaults_match_the_design() {
     let config = Config::default();
     assert_eq!(config.band.hand, HandSetting::Band);
     assert!(config.band.autostart);
-    let profiles = config.profiles(DialTarget::Volume);
+    let profiles = config.profiles();
     assert_eq!(profiles.band, BandControls::default(), "Linux: no band controls unless asked");
     assert_eq!(profiles.list.len(), 1);
     let first = &profiles.list[0];
@@ -29,12 +29,15 @@ fn defaults_match_the_design() {
     for nothing in [Gesture::IndexTap, Gesture::MiddleTap, Gesture::MiddleHold, Gesture::IndexHold, Gesture::IndexTriple, Gesture::MiddleTriple, Gesture::IndexDragLeft] {
         assert_eq!(get(nothing), None, "{nothing:?}: 0.3.10's defaults");
     }
-    let dial = first.index.dial.clone().unwrap();
-    assert_eq!(dial.up, "wpctl set-volume -l 1.0 @DEFAULT_AUDIO_SINK@ 2%+");
     assert_eq!(config.dial.target, DialTarget::Volume);
     assert_eq!(config.dial.sensitivity, 1.0);
-    assert!(config.profiles(DialTarget::Off).list[0].index.dial.is_none());
-    assert_eq!(config.profiles(DialTarget::Brightness).list[0].index.dial.clone().unwrap().down, "brightnessctl -q set 2%-");
+    let first = &config.profiles().list[0];
+    assert_eq!(first.index.dial.clone().unwrap().up, "wpctl set-volume -l 1.0 @DEFAULT_AUDIO_SINK@ 2%+");
+    assert!(first.middle.dial.is_none());
+    assert_eq!(first.index.drags, DragMode::Gestures);
+    assert_eq!(config.index_dials(), [DialTarget::Volume]);
+    let off = Config::parse("[dial]\ntarget = \"off\"\n").unwrap();
+    assert!(off.profiles().list[0].index.dial.is_none());
 }
 
 #[test]
@@ -54,7 +57,7 @@ fn partial_files_override_only_what_they_name() {
     .unwrap();
     assert_eq!(config.band.hand, HandSetting::Left);
     assert!(config.band.autostart, "unnamed keys keep their defaults");
-    let first = &config.profiles(DialTarget::Brightness).list[0];
+    let first = &config.profiles().list[0];
     assert_eq!(first.gestures.get(&Gesture::SwipeLeft).cloned(), run("echo left"));
     assert_eq!(first.gestures.get(&Gesture::SwipeRight).cloned(), run("hyprctl dispatch workspace e+1"));
     assert_eq!(config.dial.target, DialTarget::Brightness);
@@ -65,7 +68,7 @@ fn partial_files_override_only_what_they_name() {
 #[test]
 fn whitespace_or_empty_values_are_unassigned() {
     let config = Config::parse("[gestures]\nindex_double = \"   \"\nmiddle_hold = \"\"\n").unwrap();
-    let first = &config.profiles(DialTarget::Volume).list[0];
+    let first = &config.profiles().list[0];
     assert_eq!(first.gestures.get(&Gesture::IndexDouble), None);
     assert_eq!(first.gestures.get(&Gesture::MiddleHold), None);
 }
@@ -74,7 +77,7 @@ fn whitespace_or_empty_values_are_unassigned() {
 fn a_whitespace_only_dial_command_is_unassigned() {
     let config = Config::parse("[dial]\nvolume_up = \"\\t\\n\"\n").unwrap();
     assert_eq!(config.dial.command(DialTarget::Volume, true), None);
-    assert!(config.profiles(DialTarget::Volume).list[0].index.dial.is_none());
+    assert!(config.profiles().list[0].index.dial.is_none());
 }
 
 #[test]
@@ -92,7 +95,7 @@ fn profiles_come_in_order_and_start_empty() {
         "#,
     )
     .unwrap();
-    let profiles = config.profiles(DialTarget::Volume);
+    let profiles = config.profiles();
     let names: Vec<&str> = profiles.list.iter().map(|p| p.name.as_str()).collect();
     assert_eq!(names, ["desk", "games", "media"]);
     let games = &profiles.list[1];
@@ -116,7 +119,7 @@ fn band_controls_take_any_gesture_and_palm_positions() {
         "#,
     )
     .unwrap();
-    let band = config.profiles(DialTarget::Volume).band;
+    let band = config.profiles().band;
     assert_eq!(band.controls, Some(BandControl::on(Gesture::MiddleHold)));
     assert_eq!(band.next, Some(BandControl { gesture: Gesture::IndexTriple, palm: PalmSet::Only(Palms::from([Palm::Up])) }));
     assert_eq!(band.previous, Some(BandControl::on(Gesture::SwipeDown)));
@@ -139,7 +142,7 @@ fn two_band_controls_may_share_a_gesture_only_in_different_positions() {
 fn the_old_toggle_key_is_a_band_control_and_its_gestures_value_is_paused() {
     for (written, paused) in [("\"\"", 0), ("\"echo never\"", 1)] {
         let config = Config::parse(&format!("[band]\ntoggle = \"middle_hold\"\n[gestures]\nmiddle_hold = {written}\n")).unwrap();
-        assert_eq!(config.profiles(DialTarget::Volume).band.controls, Some(BandControl::on(Gesture::MiddleHold)));
+        assert_eq!(config.profiles().band.controls, Some(BandControl::on(Gesture::MiddleHold)));
         let count = texts(&config).iter().filter(|(_, t)| t.contains("overridden")).count();
         assert_eq!(count, paused, "middle_hold = {written}");
     }
@@ -194,6 +197,10 @@ fn mistakes_are_reported() {
         ("[[profile]]\nname = \".hidden\"\n", ".hidden"),
         ("[[profile]]\nname = \"x\"\nnope = \"y\"\n", "nope"),
         ("[[profile]]\nname = \"x\"\nindex_tap = \"@next-profile\"\n", "next_profile"),
+        ("[gestures]\nindex_dial = \"loud\"\n", "loud"),
+        ("[gestures]\nmiddle_drags = \"both\"\n", "both"),
+        ("[gestures]\nindex_slider_sideways = \"volume\"\n", "index_slider_sideways"),
+        ("[gestures]\nring_dial = \"volume\"\n", "ring_dial"),
     ] {
         let error = Config::parse(text).unwrap_err();
         assert!(error.contains(needle), "{text:?} → {error}");
@@ -228,9 +235,7 @@ fn the_documented_config_is_the_default() {
     assert_eq!(documented.band, default.band);
     assert_eq!(documented.dial, default.dial);
     assert_eq!(documented.options(), default.options());
-    for target in [DialTarget::Volume, DialTarget::Brightness, DialTarget::Off] {
-        assert_eq!(documented.profiles(target), default.profiles(target));
-    }
+    assert_eq!(documented.profiles(), default.profiles());
 }
 
 #[test]
@@ -248,4 +253,48 @@ fn options_carry_hand_autostart_and_sensitivity() {
     assert!(!options.autostart);
     assert_eq!(options.dial_sensitivity, 0.5);
     assert!(options.palm.is_none() && options.drags.is_none(), "the daemon adds what's taught");
+}
+
+#[test]
+fn fingers_have_dials_drag_modes_and_sliders() {
+    let config = Config::parse(
+        r#"
+        [gestures]
+        index_dial = "brightness"
+        middle_dial = "volume"
+        index_drag_left = "echo left"
+        middle_drags = "sliders"
+        middle_slider_up_down = "brightness"
+        index_slider_left_right = "volume"
+        [[profile]]
+        name = "b"
+        "#,
+    )
+    .unwrap();
+    let profiles = config.profiles();
+    let dial = |target| config.dial.dial(target);
+    let first = &profiles.list[0];
+    assert_eq!(first.index.dial, dial(DialTarget::Brightness));
+    assert_eq!(first.middle.dial, dial(DialTarget::Volume));
+    assert_eq!(first.index.drags, DragMode::Gestures, "sliders written, mode gestures: unused");
+    assert_eq!(first.middle.drags, DragMode::Sliders([None, None, dial(DialTarget::Brightness)]));
+    assert_eq!(first.gestures.get(&Gesture::IndexDragLeft).cloned(), run("echo left"));
+    let b = &profiles.list[1];
+    assert_eq!(b.index.dial, dial(DialTarget::Volume), "[dial] target is every profile's index default");
+    assert!(b.middle.dial.is_none());
+    assert_eq!(config.index_dials(), [DialTarget::Brightness, DialTarget::Volume]);
+}
+
+#[test]
+fn a_band_control_on_a_drag_pauses_that_pairs_slider() {
+    let config = Config::parse(
+        "[band]\ndraw = \"middle_drag_up\"\n[gestures]\nmiddle_drags = \"sliders\"\nmiddle_slider_up_down = \"volume\"\n",
+    )
+    .unwrap();
+    let notes = notes(&config.profiles());
+    assert!(
+        notes.iter().any(|n| n.level == Level::Warn
+            && n.text == "middle_slider_up_down in profile \"default\" is overridden by [band] draw on middle_drag_up"),
+        "{notes:?}"
+    );
 }
