@@ -41,6 +41,10 @@ pub enum Request {
         target: DialTarget,
     },
     CycleDial,
+    /// Switch profiles: "next", "previous" or a profile's name.
+    Profile {
+        to: String,
+    },
     Hand {
         hand: HandChoice,
     },

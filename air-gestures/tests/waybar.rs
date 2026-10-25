@@ -189,3 +189,14 @@ fn paused_controls_strike_the_hand_through() {
     assert_eq!(json["text"], format!("{HAND_OFF} 64%"));
     assert_eq!(json["class"], "paused");
 }
+
+#[test]
+fn the_profile_shows_in_the_tooltip() {
+    let status = Status {
+        state: LinkState::Connected,
+        profile: Some("games".into()),
+        ..Status::default()
+    };
+    let json = line(Some(&status));
+    assert!(json["tooltip"].as_str().unwrap().contains("profile: games"));
+}

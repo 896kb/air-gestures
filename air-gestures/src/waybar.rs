@@ -88,6 +88,9 @@ fn tooltip(status: &Status) -> String {
         DialTarget::Off => "off",
     };
     lines.push(format!("dial: {dial}"));
+    if let Some(profile) = &status.profile {
+        lines.push(format!("profile: {}", escape(profile)));
+    }
     if let Some(gesture) = &status.last_gesture {
         lines.push(format!("last: {} ({})", escape(gesture), status.gestures));
     }

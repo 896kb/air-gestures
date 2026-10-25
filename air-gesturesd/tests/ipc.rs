@@ -61,6 +61,10 @@ fn requests_use_kebab_case_commands() {
             hand: HandChoice::Left
         }
     );
+    assert_eq!(
+        parse(r#"{"cmd":"profile","to":"next"}"#),
+        Request::Profile { to: "next".into() }
+    );
     assert_eq!(parse(r#"{"cmd":"pair"}"#), Request::Pair { address: None });
     assert_eq!(
         parse(r#"{"cmd":"semg","on":true}"#),

@@ -60,6 +60,8 @@ enum Command {
     Toggle,
     /// Choose what the pinch-and-turn dial controls.
     Dial { target: DialArg },
+    /// Switch profiles: next, previous, or a profile's name.
+    Profile { to: String },
     /// Tell the band which wrist it's on.
     Hand { hand: HandArg },
     /// Claim a band in pairing mode for this computer (signs in to Meta if needed).
@@ -465,6 +467,7 @@ fn main() -> ExitCode {
         Command::Pause => simple(&socket, Request::Pause),
         Command::Resume => simple(&socket, Request::Resume),
         Command::Toggle => simple(&socket, Request::TogglePause),
+        Command::Profile { to } => simple(&socket, Request::Profile { to }),
         Command::Dial { target } => simple(
             &socket,
             match target {

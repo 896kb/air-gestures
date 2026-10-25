@@ -726,3 +726,35 @@ async fn a_single_profile_shows_no_profile_in_status() {
     daemon.connected().await;
     assert_eq!(daemon.status.borrow().profile, None);
 }
+
+#[tokio::test(start_paused = true)]
+async fn profiles_switch_over_ipc() {
+    let transport = SimTransport::new(SimMode::Enrolled);
+    let mut daemon = start(transport.clone(), true, fake(&transport));
+    daemon.connected().await;
+    daemon
+        .configure("[[profile]]\nname = \"games\"\n[[profile]]\nname = \"media\"\n")
+        .await;
+    let to = |name: &str| Request::Profile { to: name.into() };
+    // Responses may be built before the switch lands, so wait on the watch channel.
+    assert!(daemon.call(to("media")).await.error.is_none());
+    daemon
+        .wait("media", |s| s.profile.as_deref() == Some("media"))
+        .await;
+    assert!(daemon.call(to("next")).await.error.is_none());
+    daemon
+        .wait("wrapped to default", |s| {
+            s.profile.as_deref() == Some("default")
+        })
+        .await;
+    assert!(daemon.call(to("previous")).await.error.is_none());
+    daemon
+        .wait("back to media", |s| s.profile.as_deref() == Some("media"))
+        .await;
+    let refused = daemon.call(to("nope")).await;
+    let error = refused.error.expect("an unknown profile is an error");
+    assert!(
+        error.contains("nope") && error.contains("games") && error.contains("media"),
+        "{error}"
+    );
+}

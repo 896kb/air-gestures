@@ -40,6 +40,9 @@ pub fn describe(status: &Status) -> String {
             ""
         }
     ));
+    if let Some(profile) = &status.profile {
+        lines.push(format!("profile: {profile}"));
+    }
     if let Some(gesture) = &status.last_gesture {
         lines.push(format!(
             "last gesture: {gesture} ({} this run)",

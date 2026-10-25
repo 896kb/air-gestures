@@ -169,3 +169,14 @@ fn the_text_status_shows_battery_hand_dial_and_pause() {
         assert!(text.contains(part), "missing {part} in {text}");
     }
 }
+
+#[test]
+fn the_profile_shows_in_the_text_status() {
+    let status = Status {
+        state: LinkState::Connected,
+        profile: Some("games".into()),
+        ..Status::default()
+    };
+    assert!(describe(&status).contains("profile: games"));
+    assert!(!describe(&Status::default()).contains("profile:"));
+}

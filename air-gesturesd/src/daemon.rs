@@ -726,6 +726,30 @@ impl<T: Transport, R: Runner, F: ClientFactory> Daemon<T, R, F> {
                 self.dial_target = self.dial_target.next();
                 self.rebuild_profiles();
             }
+            Request::Profile { to } => {
+                let count = self.controls.profiles().list.len();
+                let active = self.controls.active();
+                let index = match to.as_str() {
+                    "next" => (active + 1) % count,
+                    "previous" => (active + count - 1) % count,
+                    name => {
+                        let list = &self.controls.profiles().list;
+                        match list.iter().position(|p| p.name == name) {
+                            Some(index) => index,
+                            None => {
+                                let names: Vec<&str> =
+                                    list.iter().map(|p| p.name.as_str()).collect();
+                                return Response::error(format!(
+                                    "no profile \"{name}\" (profiles: {})",
+                                    names.join(", ")
+                                ));
+                            }
+                        }
+                    }
+                };
+                let outputs = self.controls.pick(index);
+                self.apply(outputs, false);
+            }
             Request::Hand { hand } => {
                 if self.state != LinkState::Connected {
                     return Response::error("connect the band first");
