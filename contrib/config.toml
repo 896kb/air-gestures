@@ -1,21 +1,25 @@
 # air-gesturesd config: ~/.config/air-gestures/config.toml (reloaded on save).
-# Every gesture runs a shell command through `sh -c`; "" leaves it unassigned.
-# Band controls ([band] toggle, next_profile, previous_profile, draw) sit on one gesture each,
-# above every profile; a profile's command on that gesture is kept but paused.
-# Triple taps: taps <0.45 s apart; with one waiting, that finger's taps wait 0.45 s.
+# Every gesture runs a shell command through `sh -c`; "" does nothing.
+# Gestures: swipe_left/right/up/down; per finger (index_, middle_): tap, double, triple, hold,
+# drag_left/right/toward/away/up/down. Triple taps: taps < 0.45 s apart.
+# A pinch is a hold (let go without moving), a turn (the finger's dial) or a drag.
 
 [band]
-hand = "band"        # "band" = whatever the band reports | "left" | "right"
-autostart = true     # connect and enable controls when air-gesturesd starts
-toggle = "none"            # controls off/on: any gesture key, or "none"
+hand = "band"              # "band" = whatever the band reports | "left" | "right"
+autostart = true           # connect and enable controls when air-gesturesd starts
+profile = "default"        # the name of the [gestures] profile
+# Band controls: one gesture each (any gesture key, or "none"), above every profile.
+# A profile's command on that gesture is kept but paused (the daemon logs it).
+toggle = "none"            # controls off/on (works while they're off)
 next_profile = "none"      # next profile (needs 2+ profiles)
 previous_profile = "none"  # previous profile
-draw = "none"              # open a drawing (see [drawings])
-on_toggle = ""       # run after a gesture toggled controls, with AIR_GESTURES_ENABLED=1|0
-on_profile = ""      # run after the profile changed, with AIR_GESTURES_PROFILE=<name>
-profile = "default"  # the name of the [gestures] profile
+draw = "none"              # open a drawing; again: cancel it
+# toggle_palm = ["down"]   # <key>_palm: only in these palm positions ("down", "sideways", "up"; 1–2)
+on_toggle = ""             # after a gesture toggled controls, with AIR_GESTURES_ENABLED=1|0
+on_profile = ""            # after the profile changed, with AIR_GESTURES_PROFILE=<name>
+on_draw = 'notify-send -a air-gestures "Drawing" "${AIR_GESTURES_DRAWING:-not recognised}"'  # AIR_GESTURES_DRAWING="" = not recognised
 
-[gestures]           # the first profile
+[gestures]                 # the first profile
 swipe_left    = "hyprctl dispatch workspace e-1"
 swipe_right   = "hyprctl dispatch workspace e+1"
 swipe_up      = "wofi --show drun"
@@ -23,19 +27,35 @@ swipe_down    = "hyprctl dispatch sendshortcut , Escape, activewindow"
 index_tap     = ""
 index_double  = "playerctl play-pause"
 index_triple  = ""
+index_hold    = ""
 middle_tap    = ""
 middle_double = "wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle"
 middle_triple = ""
 middle_hold   = ""
+# index_drag_left = ""     # …_drag_right, _toward, _away, _up, _down; middle_ likewise
+# index_dial  = "volume"   # the turn: "volume" | "brightness" | "off" (default: [dial] target)
+# middle_dial = "off"      # with a middle dial, the middle hold acts when you let go
+# index_drags = "gestures" # or "sliders": each pair moves a slider while you hold the pinch
+# index_slider_left_right = "off"  # also _toward_away, _up_down: "volume" | "brightness" | "off"
 
-# More profiles: same keys; a key you leave out does nothing there.
+# Palm overrides: the same gesture keys, for one position; at most 2 positions per gesture.
+# [gestures.palm_up]       # also [gestures.sideways], [gestures.palm_down]
+# index_tap = "playerctl next"
+
+# More profiles: same keys; a gesture key you leave out does nothing there.
 # [[profile]]
 # name = "games"
 # swipe_left = "…"
+# [profile.palm_up]        # this profile's palm overrides
+# [profile.drawings]       # this profile's own drawing actions (win over [drawings])
 
-[dial]               # pinch thumb + index, hold a moment, then turn your wrist
-target = "volume"    # "volume" | "brightness" | "off"
-sensitivity = 1.0    # 0.5–4; 1.0 = one step per 2° of wrist turn
+# Drawings: teach one with `air-gestures draw teach <name>`, then give it an action.
+# [drawings]
+# lightbulb = "hass-cli light toggle"
+
+[dial]                     # pinch thumb + index, then turn your wrist
+target = "volume"          # what the index dial turns by default: "volume" | "brightness" | "off"
+sensitivity = 1.0          # 0.5–4; 1.0 = one step per 2° of wrist turn
 volume_up       = "wpctl set-volume -l 1.0 @DEFAULT_AUDIO_SINK@ 2%+"
 volume_down     = "wpctl set-volume @DEFAULT_AUDIO_SINK@ 2%-"
 brightness_up   = "brightnessctl -q set 2%+"

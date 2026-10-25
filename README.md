@@ -121,38 +121,102 @@ systemctl --user daemon-reload && systemctl --user enable --now air-gesturesd
 }
 ```
 
-Gestures and the dial are configured in `~/.config/air-gestures/config.toml` (reloaded on save).
-Every key is in [`contrib/config.toml`](contrib/config.toml).
+## Configure
 
-`[gestures]` maps each gesture (`index_tap`, `middle_double`, `index_triple`, `middle_hold`, ...)
-to a shell command, or to a built-in written with an `@`:
+Everything is in `~/.config/air-gestures/config.toml` (reloaded on save); every key is in
+[`contrib/config.toml`](contrib/config.toml). A gesture runs a shell command; `""` does nothing.
+The daemon logs config problems as errors, and every command a band control pauses as a warning.
 
-- `@controls` turns the controls off and on (by default the middle hold);
-- `@next-profile` and `@previous-profile` switch profiles (by default the index and middle
-  triple taps; with one profile they do nothing).
+### Gestures and the pinch
 
-**Profiles** are `[[profile]]` tables after `[gestures]`, which is the first profile
-(named `default`, or whatever `profile` under `[band]` says). Each has its own gestures; a gesture a profile leaves out does nothing there:
+24 gestures: `swipe_left|right|up|down`, and per finger (`index_`, `middle_`) `tap`, `double`,
+`triple`, `hold` and six drags, `drag_left|right|toward|away|up|down`.
+
+A pinch (thumb + finger) is one of three things, decided once you've moved 15°:
+- let go without moving: the finger's **hold**;
+- turn your wrist: the finger's **dial**, `index_dial` / `middle_dial` = `"volume"`,
+  `"brightness"` or `"off"` (index: `[dial] target`; middle: off);
+- move your hand: a **drag**. With `index_drags = "gestures"` (the default) each drag runs its
+  `index_drag_*` command once; with `"sliders"`, the pair you start along (left/right,
+  toward/away, up/down) moves `index_slider_left_right|toward_away|up_down` (`"volume"`,
+  `"brightness"` or `"off"`) for as long as you hold the pinch.
+
+When a finger's dial and drags do nothing, its hold acts as soon as the band reports it
+(the middle hold, by default); otherwise when you let go. `air-gestures dial
+volume|brightness|off|cycle` changes the index dial until the profile changes.
+
+**Teach your drags:** `air-gestures teach-drags` takes one pinch per move (the turn, then the
+six drags) and keeps them for this band and hand; `--reset` forgets them.
+
+### Band controls
+
+Four controls sit above every profile, each on one gesture you pick in `[band]`:
+`toggle` (controls off/on; works while they're off), `next_profile`, `previous_profile` and
+`draw`. Each is any gesture key or `"none"` (the default). `<key>_palm = ["up"]` limits one to
+one or two palm positions; in the others the gesture does what the profile says.
+
+A profile's command on a band-control gesture is kept but doesn't run ("paused"); the daemon
+logs each one, e.g. `middle_double in profile "media" is overridden by [band] next_profile`,
+and it runs again once the band control moves. Two band controls on one gesture and position
+is a config error. `toggle = "middle_hold"` from older configs keeps working.
+
+### Profiles
+
+`[gestures]` is the first profile (named `default`, or `[band] profile`); more go in
+`[[profile]]` tables with a `name` and the same keys. A gesture a profile leaves out does
+nothing there:
 
 ```toml
-[[profile]]
-name = "games"
-index_triple = "@next-profile"
-middle_hold  = "@controls"
+[band]
+next_profile = "index_triple"
 
 [[profile]]
 name = "media"
-index_triple = "@next-profile"
-index_tap    = "playerctl play-pause"
+index_tap = "playerctl play-pause"
+index_dial = "volume"
 ```
 
-Switch from the band with the built-ins above, or from a shell with
-`air-gestures profile next|previous|<name>`; the current one shows in `air-gestures status` and
-the waybar tooltip. `on_profile` under `[band]` runs on every switch with
-`AIR_GESTURES_PROFILE` set to the new profile's name.
+Switch with the band controls or `air-gestures profile next|previous|<name>`; the current one
+shows in `air-gestures status` and the waybar tooltip. `on_profile` runs on every switch with
+`AIR_GESTURES_PROFILE` set.
 
-`toggle` under `[band]` is the old way to pick the gesture that turns the controls off and on;
-it keeps working, and `@controls` on a gesture is the new one.
+### Palm position
+
+Any gesture can do something else with the palm up, sideways or down: write it in
+`[gestures.palm_up]`, `[gestures.sideways]` or `[gestures.palm_down]` (in a profile:
+`[profile.palm_up]` …), at most two positions per gesture; the normal command covers the rest.
+`""` there means nothing in that position.
+
+```toml
+[gestures.palm_up]
+index_tap = "playerctl next"
+```
+
+The right hand works out of the box; `air-gestures calibrate` (palm down, then palm up, 2 s
+each) fits it to your wrist, and is needed for the left hand (until then every gesture counts
+as palm down). It's kept per band and hand; `--reset` forgets it.
+
+### Drawings
+
+Put Draw on a gesture (`[band] draw = "swipe_up"`), make it, and draw with a pinch as the pen,
+in the air or pen grip on a table; the drawing ends 1 s after your last stroke. Teach drawings
+first, three tries each: `air-gestures draw teach lightbulb` (`draw list`, `draw delete
+<name>`). Then give them actions:
+
+```toml
+[drawings]                 # every profile
+lightbulb = "hass-cli light toggle"
+
+[[profile]]
+name = "media"
+[profile.drawings]         # this profile's own, wins over [drawings]
+lightbulb = "playerctl play-pause"
+```
+
+`on_draw` runs after each drawing with `AIR_GESTURES_DRAWING` set to its name (empty when
+nothing matched); by default it shows a notification. Templates live in
+`~/.local/share/air-gestures/drawings/`.
+
 `AIR_GESTURES_LOG=air-gesturesd=debug` in the service logs every gesture and frame.
 
 ## Moving the band between devices
