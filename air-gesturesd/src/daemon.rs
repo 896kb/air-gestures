@@ -16,7 +16,7 @@ use tokio::task::JoinHandle;
 
 use crate::actions::Runner;
 use crate::clock::Clock;
-use crate::config::{Config, DialTarget};
+use crate::config::{Config, DialTarget, Level};
 use crate::ipc::{Call, HandChoice, Request, Response};
 use crate::link::{LinkCommand, LinkEnd, LinkEvent, LinkOutcome, run_link};
 use crate::meta::ClientFactory;
@@ -118,7 +118,7 @@ impl<T: Transport, R: Runner, F: ClientFactory> Daemon<T, R, F> {
         let wants_connection = config.band.autostart;
         let dial_target = config.dial.target;
         let controls = Controls::new(config.options(), config.profiles(dial_target));
-        warn_profiles(&controls);
+        log_notes(controls.profiles());
         let band_name = store.load_band().ok().flatten().map(|band| band.name);
         let (status, _) = watch::channel(Status::default());
         let (semg, _) = broadcast::channel(256);
@@ -319,6 +319,14 @@ impl<T: Transport, R: Runner, F: ClientFactory> Daemon<T, R, F> {
                     tracing::debug!(%app, "profile held by the app in front")
                 }
                 Output::Practiced(_) => {}
+                Output::DrawPoint { stroke, x, y } => tracing::trace!(stroke, x, y, "draw point"),
+                Output::Pen { down } => tracing::trace!(down, "pen"),
+                other @ (Output::DrawStarted
+                | Output::DrawFinished { .. }
+                | Output::Drawn { .. }
+                | Output::NotDrawn
+                | Output::DrawCancelled
+                | Output::DragSample { .. }) => tracing::debug!(?other, "controls"),
             }
         }
     }
@@ -552,7 +560,7 @@ impl<T: Transport, R: Runner, F: ClientFactory> Daemon<T, R, F> {
                     self.controls
                         .set_profiles(self.config.profiles(self.dial_target)),
                 );
-                warn_profiles(&self.controls);
+                log_notes(self.controls.profiles());
                 self.apply(outputs, false);
             }
             Err(error) => {
@@ -808,23 +816,13 @@ impl<T: Transport, R: Runner, F: ClientFactory> Daemon<T, R, F> {
     }
 }
 
-fn warn_profiles(controls: &Controls<String>) {
-    use band_core::controls::Warning;
-    for warning in controls.profiles().warnings() {
-        let (profile, what) = match warning {
-            Warning::NoControls { profile } => (
-                profile,
-                "no gesture turns the controls off/on (\"@controls\")",
-            ),
-            Warning::NoWayOut { profile } => (
-                profile,
-                "no gesture switches away from it (\"@next-profile\" / \"@previous-profile\")",
-            ),
-        };
-        tracing::warn!(
-            "profile \"{}\": {what}",
-            controls.profiles().list[profile].name
-        );
+fn log_notes(profiles: &band_core::controls::Profiles<String>) {
+    for note in crate::config::notes(profiles) {
+        match note.level {
+            Level::Info => tracing::info!("config: {}", note.text),
+            Level::Warn => tracing::warn!("config: {}", note.text),
+            Level::Error => tracing::error!("config: {}", note.text),
+        }
     }
 }
 

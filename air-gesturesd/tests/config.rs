@@ -1,12 +1,12 @@
-use air_gesturesd::config::{Config, DialTarget, HandSetting};
-use band_core::controls::{Action, Builtin, Gesture};
+use air_gesturesd::config::{Config, DialTarget, HandSetting, Level, notes};
+use band_core::controls::{BandControl, BandControls, Binding, Gesture, Palm, PalmSet, Palms};
 
-fn run(command: &str) -> Option<Action<String>> {
-    Some(Action::Run(command.into()))
+fn run(command: &str) -> Option<Binding<String>> {
+    Some(Binding::from(command.to_owned()))
 }
 
-fn builtin(builtin: Builtin) -> Option<Action<String>> {
-    Some(Action::Builtin(builtin))
+fn texts(config: &Config) -> Vec<(Level, String)> {
+    notes(&config.profiles(DialTarget::Volume)).into_iter().map(|n| (n.level, n.text)).collect()
 }
 
 #[test]
@@ -15,48 +15,26 @@ fn defaults_match_the_design() {
     assert_eq!(config.band.hand, HandSetting::Band);
     assert!(config.band.autostart);
     let profiles = config.profiles(DialTarget::Volume);
+    assert_eq!(profiles.band, BandControls::default(), "Linux: no band controls unless asked");
     assert_eq!(profiles.list.len(), 1);
     let first = &profiles.list[0];
     assert_eq!(first.name, "default");
     let get = |g| first.gestures.get(&g).cloned();
-    assert_eq!(
-        get(Gesture::SwipeLeft),
-        run("hyprctl dispatch workspace e-1")
-    );
-    assert_eq!(
-        get(Gesture::SwipeRight),
-        run("hyprctl dispatch workspace e+1")
-    );
+    assert_eq!(get(Gesture::SwipeLeft), run("hyprctl dispatch workspace e-1"));
+    assert_eq!(get(Gesture::SwipeRight), run("hyprctl dispatch workspace e+1"));
     assert_eq!(get(Gesture::SwipeUp), run("wofi --show drun"));
-    assert_eq!(
-        get(Gesture::SwipeDown),
-        run("hyprctl dispatch sendshortcut , Escape, activewindow")
-    );
-    assert_eq!(get(Gesture::IndexTap), None);
+    assert_eq!(get(Gesture::SwipeDown), run("hyprctl dispatch sendshortcut , Escape, activewindow"));
     assert_eq!(get(Gesture::IndexDouble), run("playerctl play-pause"));
-    assert_eq!(
-        get(Gesture::MiddleDouble),
-        run("wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle")
-    );
-    assert_eq!(get(Gesture::MiddleHold), builtin(Builtin::Controls));
-    assert_eq!(get(Gesture::IndexTriple), builtin(Builtin::NextProfile));
-    assert_eq!(
-        get(Gesture::MiddleTriple),
-        builtin(Builtin::PreviousProfile)
-    );
-    let dial = first.dial.clone().unwrap();
+    assert_eq!(get(Gesture::MiddleDouble), run("wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle"));
+    for nothing in [Gesture::IndexTap, Gesture::MiddleTap, Gesture::MiddleHold, Gesture::IndexHold, Gesture::IndexTriple, Gesture::MiddleTriple, Gesture::IndexDragLeft] {
+        assert_eq!(get(nothing), None, "{nothing:?}: 0.3.10's defaults");
+    }
+    let dial = first.index.dial.clone().unwrap();
     assert_eq!(dial.up, "wpctl set-volume -l 1.0 @DEFAULT_AUDIO_SINK@ 2%+");
     assert_eq!(config.dial.target, DialTarget::Volume);
     assert_eq!(config.dial.sensitivity, 1.0);
-    assert!(config.profiles(DialTarget::Off).list[0].dial.is_none());
-    assert_eq!(
-        config.profiles(DialTarget::Brightness).list[0]
-            .dial
-            .clone()
-            .unwrap()
-            .down,
-        "brightnessctl -q set 2%-"
-    );
+    assert!(config.profiles(DialTarget::Off).list[0].index.dial.is_none());
+    assert_eq!(config.profiles(DialTarget::Brightness).list[0].index.dial.clone().unwrap().down, "brightnessctl -q set 2%-");
 }
 
 #[test]
@@ -77,22 +55,11 @@ fn partial_files_override_only_what_they_name() {
     assert_eq!(config.band.hand, HandSetting::Left);
     assert!(config.band.autostart, "unnamed keys keep their defaults");
     let first = &config.profiles(DialTarget::Brightness).list[0];
-    assert_eq!(
-        first.gestures.get(&Gesture::SwipeLeft).cloned(),
-        run("echo left")
-    );
-    assert_eq!(
-        first.gestures.get(&Gesture::SwipeRight).cloned(),
-        run("hyprctl dispatch workspace e+1")
-    );
+    assert_eq!(first.gestures.get(&Gesture::SwipeLeft).cloned(), run("echo left"));
+    assert_eq!(first.gestures.get(&Gesture::SwipeRight).cloned(), run("hyprctl dispatch workspace e+1"));
     assert_eq!(config.dial.target, DialTarget::Brightness);
     assert_eq!(config.options().dial_sensitivity, 2.0);
-    // brightness_up unassigned: no dial for that target.
-    assert!(
-        config.profiles(DialTarget::Brightness).list[0]
-            .dial
-            .is_none()
-    );
+    assert!(first.index.dial.is_none(), "brightness_up unassigned: no dial for that target");
 }
 
 #[test]
@@ -105,10 +72,9 @@ fn whitespace_or_empty_values_are_unassigned() {
 
 #[test]
 fn a_whitespace_only_dial_command_is_unassigned() {
-    // Kept from the old suite: the dial's commands follow the same rule.
     let config = Config::parse("[dial]\nvolume_up = \"\\t\\n\"\n").unwrap();
     assert_eq!(config.dial.command(DialTarget::Volume, true), None);
-    assert!(config.profiles(DialTarget::Volume).list[0].dial.is_none());
+    assert!(config.profiles(DialTarget::Volume).list[0].index.dial.is_none());
 }
 
 #[test]
@@ -120,10 +86,9 @@ fn profiles_come_in_order_and_start_empty() {
         [[profile]]
         name = "games"
         swipe_left = "echo games"
-        index_triple = "@next-profile"
+        index_hold = "echo held"
         [[profile]]
         name = "media"
-        middle_hold = "@controls"
         "#,
     )
     .unwrap();
@@ -131,80 +96,104 @@ fn profiles_come_in_order_and_start_empty() {
     let names: Vec<&str> = profiles.list.iter().map(|p| p.name.as_str()).collect();
     assert_eq!(names, ["desk", "games", "media"]);
     let games = &profiles.list[1];
-    assert_eq!(
-        games.gestures.get(&Gesture::SwipeLeft).cloned(),
-        run("echo games")
-    );
-    assert_eq!(
-        games.gestures.get(&Gesture::IndexTriple).cloned(),
-        builtin(Builtin::NextProfile)
-    );
-    assert_eq!(
-        games.gestures.get(&Gesture::SwipeRight),
-        None,
-        "extra profiles don't inherit"
-    );
-    assert!(
-        games.dial.is_some(),
-        "every profile turns the daemon's dial target"
-    );
+    assert_eq!(games.gestures.get(&Gesture::SwipeLeft).cloned(), run("echo games"));
+    assert_eq!(games.gestures.get(&Gesture::IndexHold).cloned(), run("echo held"));
+    assert_eq!(games.gestures.get(&Gesture::SwipeRight), None, "extra profiles don't inherit");
+    assert!(games.index.dial.is_some(), "every profile turns the dial target");
 }
 
 #[test]
-fn the_old_toggle_key_binds_the_lock_where_nothing_else_was_written() {
+fn band_controls_take_any_gesture_and_palm_positions() {
     let config = Config::parse(
         r#"
         [band]
-        toggle = "index_triple"
-        [gestures]
-        middle_hold = "echo hold"
-        [[profile]]
-        name = "two"
-        [[profile]]
-        name = "three"
-        index_triple = "echo mine"
+        toggle = "middle_hold"
+        next_profile = "index_triple"
+        next_profile_palm = ["up"]
+        previous_profile = "swipe_down"
+        draw = "index_drag_up"
+        draw_palm = ["down", "sideways"]
         "#,
     )
     .unwrap();
-    let profiles = config.profiles(DialTarget::Volume);
-    let triple = |i: usize| {
-        profiles.list[i]
-            .gestures
-            .get(&Gesture::IndexTriple)
-            .cloned()
-    };
-    assert_eq!(
-        triple(0),
-        builtin(Builtin::Controls),
-        "overrides the [gestures] default"
-    );
-    assert_eq!(triple(1), builtin(Builtin::Controls));
-    assert_eq!(
-        triple(2),
-        run("echo mine"),
-        "a profile that set the key keeps it"
-    );
-    assert_eq!(
-        profiles.list[0].gestures.get(&Gesture::MiddleHold).cloned(),
-        run("echo hold")
-    );
+    let band = config.profiles(DialTarget::Volume).band;
+    assert_eq!(band.controls, Some(BandControl::on(Gesture::MiddleHold)));
+    assert_eq!(band.next, Some(BandControl { gesture: Gesture::IndexTriple, palm: PalmSet::Only(Palms::from([Palm::Up])) }));
+    assert_eq!(band.previous, Some(BandControl::on(Gesture::SwipeDown)));
+    assert_eq!(band.draw, Some(BandControl { gesture: Gesture::IndexDragUp, palm: PalmSet::Only(Palms::from([Palm::Down, Palm::Side])) }));
+}
+
+#[test]
+fn two_band_controls_may_share_a_gesture_only_in_different_positions() {
+    let error = Config::parse("[band]\ntoggle = \"middle_hold\"\ndraw = \"middle_hold\"\n").unwrap_err();
+    assert!(error.contains("band.toggle and band.draw") && error.contains("middle_hold"), "{error}");
+    let error = Config::parse("[band]\ntoggle = \"middle_hold\"\ndraw = \"middle_hold\"\ndraw_palm = [\"up\"]\n").unwrap_err();
+    assert!(error.contains("with the palm up"), "{error}");
+    let fine = "[band]\ntoggle = \"middle_hold\"\ntoggle_palm = [\"down\"]\ndraw = \"middle_hold\"\ndraw_palm = [\"up\", \"sideways\"]\n";
+    assert!(Config::parse(fine).is_ok());
+}
+
+/// Configs from before band controls: `toggle = "middle_hold"` keeps the lock there, and a
+/// command the old documented config wrote on that gesture is kept but paused (logged).
+#[test]
+fn the_old_toggle_key_is_a_band_control_and_its_gestures_value_is_paused() {
+    for (written, paused) in [("\"\"", 0), ("\"echo never\"", 1)] {
+        let config = Config::parse(&format!("[band]\ntoggle = \"middle_hold\"\n[gestures]\nmiddle_hold = {written}\n")).unwrap();
+        assert_eq!(config.profiles(DialTarget::Volume).band.controls, Some(BandControl::on(Gesture::MiddleHold)));
+        let count = texts(&config).iter().filter(|(_, t)| t.contains("overridden")).count();
+        assert_eq!(count, paused, "middle_hold = {written}");
+    }
+}
+
+#[test]
+fn every_config_load_notes_warnings_and_paused_entries() {
+    let config = Config::parse(
+        r#"
+        [band]
+        next_profile = "middle_double"
+        [[profile]]
+        name = "media"
+        middle_double = "echo paused"
+        "#,
+    )
+    .unwrap();
+    let texts = texts(&config);
+    let warn = |text: &str| (Level::Warn, text.to_owned());
+    assert!(texts.contains(&warn("middle_double in profile \"default\" is overridden by [band] next_profile")), "{texts:?}");
+    assert!(texts.contains(&warn("middle_double in profile \"media\" is overridden by [band] next_profile")), "{texts:?}");
+    assert!(texts.iter().any(|(l, t)| *l == Level::Info && t.contains("[band] toggle")), "no lock: {texts:?}");
+    let two = texts_of("[[profile]]\nname = \"b\"\n");
+    assert!(two.iter().any(|(l, t)| *l == Level::Warn && t.contains("air-gestures profile next") && t.contains("[band] next_profile")), "{two:?}");
+    let tap = texts_of("[band]\ndraw = \"index_tap\"\n");
+    assert!(tap.iter().any(|(l, t)| *l == Level::Warn && t.contains("single tap")), "{tap:?}");
+    let hold = texts_of("[band]\ndraw = \"index_hold\"\n");
+    assert!(hold.iter().any(|(l, t)| *l == Level::Error && t.contains("index_hold") && t.contains("can't cancel")), "{hold:?}");
+}
+
+fn texts_of(text: &str) -> Vec<(Level, String)> {
+    texts(&Config::parse(text).unwrap())
 }
 
 #[test]
 fn mistakes_are_reported() {
     for (text, needle) in [
         ("[band]\ncolour = \"red\"\n", "colour"),
-        ("[gestures]\nindex_hold = \"x\"\n", "index_hold"),
+        ("[band]\ntoggle = \"pinky_hold\"\n", "pinky_hold"),
+        ("[band]\ntoggle_palm = [\"up\"]\n", "set band.toggle"),
+        ("[band]\ntoggle = \"middle_hold\"\ntoggle_palm = [\"left\"]\n", "\"left\""),
+        ("[band]\ntoggle = \"middle_hold\"\ntoggle_palm = [\"down\", \"sideways\", \"up\"]\n", "one or two"),
+        ("[band]\ntoggle = \"middle_hold\"\ntoggle_palm = []\n", "one or two"),
+        ("[gestures]\npinky_tap = \"x\"\n", "pinky_tap"),
+        ("[gestures]\nmiddle_hold = \"@controls\"\n", "[band]"),
         ("[gestures]\nswipe_up = \"@lock\"\n", "@lock"),
         ("[dial]\nsensitivity = 9.0\n", "sensitivity"),
         ("[[profile]]\nswipe_up = \"x\"\n", "name"),
         ("[[profile]]\nname = \"default\"\n", "default"),
-        (
-            "[[profile]]\nname = \"a\"\n[[profile]]\nname = \"a\"\n",
-            "\"a\"",
-        ),
+        ("[[profile]]\nname = \"a\"\n[[profile]]\nname = \"a\"\n", "\"a\""),
         ("[[profile]]\nname = \"it's\"\n", "it's"),
+        ("[[profile]]\nname = \".hidden\"\n", ".hidden"),
         ("[[profile]]\nname = \"x\"\nnope = \"y\"\n", "nope"),
+        ("[[profile]]\nname = \"x\"\nindex_tap = \"@next-profile\"\n", "next_profile"),
     ] {
         let error = Config::parse(text).unwrap_err();
         assert!(error.contains(needle), "{text:?} → {error}");
@@ -213,27 +202,19 @@ fn mistakes_are_reported() {
 
 #[test]
 fn mistakes_carry_the_bad_value() {
-    // Kept from the old suite.
     let error = Config::parse("[dial]\nsensitivity = 9.0").unwrap_err();
-    assert!(
-        error.contains("(got 9"),
-        "should report the bad value: {error}"
-    );
+    assert!(error.contains("(got 9"), "should report the bad value: {error}");
     assert!(Config::parse("[band]\nhand = \"both\"").is_err());
 }
 
 #[test]
 fn a_missing_file_means_the_defaults() {
-    let config = Config::load(std::path::Path::new(
-        "/nonexistent/air-gestures/config.toml",
-    ))
-    .unwrap();
+    let config = Config::load(std::path::Path::new("/nonexistent/air-gestures/config.toml")).unwrap();
     assert_eq!(config, Config::default());
 }
 
 #[test]
 fn an_existing_file_is_loaded() {
-    // Kept from the old suite.
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("config.toml");
     std::fs::write(&path, "[dial]\ntarget = \"off\"\n").unwrap();
@@ -261,30 +242,10 @@ fn the_dial_target_cycles() {
 
 #[test]
 fn options_carry_hand_autostart_and_sensitivity() {
-    let config =
-        Config::parse("[band]\nhand = \"right\"\nautostart = false\n[dial]\nsensitivity = 0.5\n")
-            .unwrap();
+    let config = Config::parse("[band]\nhand = \"right\"\nautostart = false\n[dial]\nsensitivity = 0.5\n").unwrap();
     let options = config.options();
     assert_eq!(options.hand, band_core::controls::HandSetting::Right);
     assert!(!options.autostart);
     assert_eq!(options.dial_sensitivity, 0.5);
-}
-
-/// Configs from before profiles: the old `toggle` took the gesture over whatever
-/// `[gestures]` said for it (the old controller never ran that command), and the old
-/// documented config wrote `middle_hold = ""`. Both must keep their lock.
-#[test]
-fn the_old_toggle_key_still_wins_in_gestures_like_it_did() {
-    for written in ["\"\"", "\"echo never\""] {
-        let config = Config::parse(&format!(
-            "[band]\ntoggle = \"middle_hold\"\n[gestures]\nmiddle_hold = {written}\n"
-        ))
-        .unwrap();
-        let first = &config.profiles(DialTarget::Volume).list[0];
-        assert_eq!(
-            first.gestures.get(&Gesture::MiddleHold).cloned(),
-            builtin(Builtin::Controls),
-            "middle_hold = {written}"
-        );
-    }
+    assert!(options.palm.is_none() && options.drags.is_none(), "the daemon adds what's taught");
 }

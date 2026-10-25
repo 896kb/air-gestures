@@ -680,8 +680,8 @@ async fn a_band_toggle_runs_on_toggle_but_ipc_pause_does_not() {
     let transport = SimTransport::new(SimMode::Enrolled);
     let mut daemon = start(transport.clone(), true, fake(&transport));
     daemon.connected().await;
-    // The default middle_hold is "@controls".
-    daemon.configure("[band]\non_toggle = \"osd\"\n").await;
+    // The lock is a band control now; none by default.
+    daemon.configure("[band]\ntoggle = \"middle_hold\"\non_toggle = \"osd\"\n").await;
     daemon.transport.inject(MIDDLE_HOLD);
     daemon.wait("the band's toggle", |s| s.paused).await;
     let toggled = vec!["export AIR_GESTURES_ENABLED=0; osd".to_string()];
@@ -703,7 +703,7 @@ async fn profiles_switch_from_the_band_and_run_on_profile() {
     let mut daemon = start(transport.clone(), true, fake(&transport));
     daemon.connected().await;
     daemon
-        .configure("[band]\non_profile = \"osd\"\n[[profile]]\nname = \"games\"\n")
+        .configure("[band]\non_profile = \"osd\"\nnext_profile = \"index_triple\"\n[[profile]]\nname = \"games\"\n")
         .await;
     assert_eq!(daemon.status.borrow().profile.as_deref(), Some("default"));
     daemon.index_triple().await;
@@ -757,4 +757,16 @@ async fn profiles_switch_over_ipc() {
         error.contains("nope") && error.contains("games") && error.contains("media"),
         "{error}"
     );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_band_control_wins_over_the_profiles_command() {
+    let transport = SimTransport::new(SimMode::Enrolled);
+    let mut daemon = start(transport.clone(), true, fake(&transport));
+    daemon.connected().await;
+    // swipe_left's default command is paused; with one profile, next does nothing.
+    daemon.configure("[band]\nnext_profile = \"swipe_left\"\n").await;
+    daemon.transport.inject(SWIPE_LEFT);
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    assert!(daemon.runner.commands().is_empty(), "{:?}", daemon.runner.commands());
 }

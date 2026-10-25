@@ -1,10 +1,13 @@
-//! `~/.config/air-gestures/config.toml`: profiles of gesture → shell command (or a built-in:
-//! `@controls`, `@next-profile`, `@previous-profile`; `""` = unassigned), and the dial.
+//! `~/.config/air-gestures/config.toml`: the band controls (`[band]`), profiles of
+//! gesture → shell command (`""` = nothing), and the dial.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use band_core::controls::{Action, Builtin, Dial, Gesture, Options, Profile, Profiles};
+use band_core::controls::{
+    BandControl, BandControls, Binding, Builtin, Dial, Gesture, Invalid, Options, Palm, PalmSet, Palms, Place, Profile,
+    Profiles, Warning,
+};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
@@ -15,32 +18,6 @@ pub enum HandSetting {
     Band,
     Left,
     Right,
-}
-
-/// The gesture that turns the controls off and on (it works while they are off).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ToggleGesture {
-    #[default]
-    None,
-    /// The band's own middle-finger hold (long press).
-    MiddleHold,
-    /// Three taps, each within 0.45 s of the last; that finger's double tap
-    /// then waits 0.45 s for a third. Fast tapping only.
-    IndexTriple,
-    MiddleTriple,
-}
-
-impl ToggleGesture {
-    /// The gesture the old `toggle` key put the lock on.
-    pub fn gesture(self) -> Option<Gesture> {
-        match self {
-            ToggleGesture::None => None,
-            ToggleGesture::MiddleHold => Some(Gesture::MiddleHold),
-            ToggleGesture::IndexTriple => Some(Gesture::IndexTriple),
-            ToggleGesture::MiddleTriple => Some(Gesture::MiddleTriple),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -67,10 +44,18 @@ pub struct BandConfig {
     pub hand: HandSetting,
     /// Connect and enable controls when the daemon starts.
     pub autostart: bool,
-    /// Old style: the gesture that turns the controls off and on. In `[gestures]` it wins
-    /// over that gesture's value (as before profiles); in a `[[profile]]` it applies where the
-    /// key isn't written. Today: put "@controls" on any gesture.
-    pub toggle: ToggleGesture,
+    /// Band controls, above every profile: each a gesture key (any of the 24) or "none".
+    /// `toggle` turns the controls off and on (it works while they're off).
+    pub toggle: String,
+    pub next_profile: String,
+    pub previous_profile: String,
+    /// Opens a drawing; made again, cancels it.
+    pub draw: String,
+    /// Where each band control acts: one or two of "down", "sideways", "up"; unset = all.
+    pub toggle_palm: Option<Vec<String>>,
+    pub next_profile_palm: Option<Vec<String>>,
+    pub previous_profile_palm: Option<Vec<String>>,
+    pub draw_palm: Option<Vec<String>>,
     /// Run after a gesture toggled the controls, with `AIR_GESTURES_ENABLED=1` or `0`
     /// exported (e.g. an OSD).
     pub on_toggle: String,
@@ -85,7 +70,14 @@ impl Default for BandConfig {
         Self {
             hand: HandSetting::Band,
             autostart: true,
-            toggle: ToggleGesture::None,
+            toggle: "none".into(),
+            next_profile: "none".into(),
+            previous_profile: "none".into(),
+            draw: "none".into(),
+            toggle_palm: None,
+            next_profile_palm: None,
+            previous_profile_palm: None,
+            draw_palm: None,
             on_toggle: String::new(),
             on_profile: String::new(),
             profile: "default".into(),
@@ -93,51 +85,132 @@ impl Default for BandConfig {
     }
 }
 
-/// `[gestures]` keys nobody wrote: the first profile's defaults.
-fn default_gesture(gesture: Gesture) -> &'static str {
+/// `[band]`'s key for a band control.
+pub fn band_key(builtin: Builtin) -> &'static str {
+    match builtin {
+        Builtin::Controls => "toggle",
+        Builtin::NextProfile => "next_profile",
+        Builtin::PreviousProfile => "previous_profile",
+        Builtin::Draw => "draw",
+    }
+}
+
+/// " with the palm down or up", or "" for every position.
+fn palm_suffix(palms: Palms) -> String {
+    if palms.len() == Palm::ALL.len() {
+        return String::new();
+    }
+    let names: Vec<&str> = palms.iter().map(Palm::key).collect();
+    format!(" with the palm {}", names.join(" or "))
+}
+
+fn palm_set(key: &str, palm: Option<&Vec<String>>) -> Result<PalmSet, String> {
+    let Some(names) = palm else { return Ok(PalmSet::All) };
+    let mut set = Vec::new();
+    for name in names {
+        set.push(Palm::from_key(name).ok_or_else(|| {
+            format!("band.{key}_palm: unknown position \"{name}\" (\"down\", \"sideways\" or \"up\")")
+        })?);
+    }
+    let set: Palms = set.into_iter().collect();
+    if !(1..=PalmSet::MAX_ONLY).contains(&set.len()) {
+        return Err(format!("band.{key}_palm: list one or two positions (leave it out for all three)"));
+    }
+    Ok(PalmSet::Only(set))
+}
+
+impl BandConfig {
+    fn control(&self, builtin: Builtin) -> (&str, Option<&Vec<String>>) {
+        match builtin {
+            Builtin::Controls => (&self.toggle, self.toggle_palm.as_ref()),
+            Builtin::NextProfile => (&self.next_profile, self.next_profile_palm.as_ref()),
+            Builtin::PreviousProfile => (&self.previous_profile, self.previous_profile_palm.as_ref()),
+            Builtin::Draw => (&self.draw, self.draw_palm.as_ref()),
+        }
+    }
+
+    /// The band controls; two on one gesture in one position is an error.
+    pub fn band_controls(&self) -> Result<BandControls, String> {
+        let mut band = BandControls::default();
+        for builtin in Builtin::ALL {
+            let key = band_key(builtin);
+            let (value, palm) = self.control(builtin);
+            let control = match value.trim() {
+                "none" | "" => {
+                    if palm.is_some() {
+                        return Err(format!("band.{key}_palm: set band.{key} to a gesture first"));
+                    }
+                    None
+                }
+                name => Some(BandControl {
+                    gesture: Gesture::from_key(name).ok_or_else(|| {
+                        format!("band.{key}: unknown gesture \"{name}\" (a gesture key like \"middle_hold\", or \"none\")")
+                    })?,
+                    palm: palm_set(key, palm)?,
+                }),
+            };
+            match builtin {
+                Builtin::Controls => band.controls = control,
+                Builtin::NextProfile => band.next = control,
+                Builtin::PreviousProfile => band.previous = control,
+                Builtin::Draw => band.draw = control,
+            }
+        }
+        for (i, &a) in Builtin::ALL.iter().enumerate() {
+            for &b in &Builtin::ALL[i + 1..] {
+                let (Some(x), Some(y)) = (band.control(a), band.control(b)) else { continue };
+                let shared: Palms = Palm::ALL.into_iter().filter(|&p| x.palm.contains(p) && y.palm.contains(p)).collect();
+                if x.gesture == y.gesture && !shared.is_empty() {
+                    return Err(format!(
+                        "band.{} and band.{} are both on {}{}: move one to another gesture or palm position",
+                        band_key(a),
+                        band_key(b),
+                        x.gesture.key(),
+                        palm_suffix(shared)
+                    ));
+                }
+            }
+        }
+        Ok(band)
+    }
+}
+
+/// `[gestures]` keys nobody wrote: the first profile's defaults (0.3.10's).
+fn default_gesture(gesture: Gesture) -> Option<&'static str> {
     match gesture {
-        Gesture::SwipeLeft => "hyprctl dispatch workspace e-1",
-        Gesture::SwipeRight => "hyprctl dispatch workspace e+1",
-        Gesture::SwipeUp => "wofi --show drun",
-        Gesture::SwipeDown => "hyprctl dispatch sendshortcut , Escape, activewindow",
-        Gesture::IndexDouble => "playerctl play-pause",
-        Gesture::MiddleDouble => "wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle",
-        Gesture::MiddleHold => "@controls",
-        Gesture::IndexTriple => "@next-profile",
-        Gesture::MiddleTriple => "@previous-profile",
-        Gesture::IndexTap | Gesture::MiddleTap => "",
+        Gesture::SwipeLeft => Some("hyprctl dispatch workspace e-1"),
+        Gesture::SwipeRight => Some("hyprctl dispatch workspace e+1"),
+        Gesture::SwipeUp => Some("wofi --show drun"),
+        Gesture::SwipeDown => Some("hyprctl dispatch sendshortcut , Escape, activewindow"),
+        Gesture::IndexDouble => Some("playerctl play-pause"),
+        Gesture::MiddleDouble => Some("wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle"),
+        _ => None,
     }
 }
 
-/// A gesture's value: `""` (or blanks) = nothing, `@<builtin>`, else a shell command.
-pub fn action(value: &str) -> Result<Option<Action<String>>, String> {
+/// A command value at `place.key`: blank = nothing. `@…` was the first build's built-in syntax.
+fn command(place: &str, key: &str, value: &str) -> Result<Option<String>, String> {
     let trimmed = value.trim();
-    if trimmed.is_empty() {
-        return Ok(None);
+    if trimmed.starts_with('@') {
+        return Err(format!(
+            "{place}.{key} = \"{trimmed}\": band controls are set in [band] now (toggle, next_profile, previous_profile, draw = \"{key}\")"
+        ));
     }
-    if let Some(key) = trimmed.strip_prefix('@') {
-        return match Builtin::from_key(key) {
-            Some(builtin) => Ok(Some(Action::Builtin(builtin))),
-            None => Err(format!(
-                "unknown built-in \"{trimmed}\" (use @controls, @next-profile or @previous-profile)"
-            )),
-        };
-    }
-    Ok(Some(Action::Run(value.to_owned())))
+    Ok((!trimmed.is_empty()).then(|| value.to_owned()))
 }
 
-/// Profile names go into `AIR_GESTURES_PROFILE='…'`: letters, digits, space, `.`, `_`, `-`.
-fn check_name(name: &str) -> Result<(), String> {
+/// Profile and drawing names go into `AIR_GESTURES_PROFILE='…'` / `AIR_GESTURES_DRAWING='…'`
+/// (and drawings into file names): letters, digits, space, `.`, `_`, `-`, not starting
+/// with `.`, at most 64 characters.
+pub fn check_name(what: &str, name: &str) -> Result<(), String> {
     let fine = !name.trim().is_empty()
-        && name
-            .chars()
-            .all(|c| c.is_alphanumeric() || matches!(c, ' ' | '.' | '_' | '-'));
+        && !name.starts_with('.')
+        && name.chars().count() <= 64
+        && name.chars().all(|c| c.is_alphanumeric() || matches!(c, ' ' | '.' | '_' | '-'));
     if fine {
         Ok(())
     } else {
-        Err(format!(
-            "profile name \"{name}\": use letters, digits, spaces, '.', '_' or '-'"
-        ))
+        Err(format!("{what} name \"{name}\": use up to 64 letters, digits, spaces, '.', '_' or '-' (not starting with '.')"))
     }
 }
 
@@ -222,6 +295,7 @@ impl Config {
             },
             autostart: self.band.autostart,
             dial_sensitivity: self.dial.sensitivity,
+            ..Options::default()
         }
     }
 
@@ -232,68 +306,45 @@ impl Config {
     }
 
     fn build(&self, target: DialTarget) -> Result<Profiles<String>, String> {
+        let band = self.band.band_controls()?;
         let dial = self.dial.dial(target);
-        let lock = self.band.toggle.gesture();
-        let mut list = Vec::new();
-        // The first profile: [gestures] over the defaults.
-        check_name(&self.band.profile).map_err(|e| format!("band.profile: {e}"))?;
-        for key in self.gestures.keys() {
-            if Gesture::from_key(key).is_none() {
-                return Err(format!("gestures: unknown gesture \"{key}\""));
-            }
-        }
+        check_name("profile", &self.band.profile).map_err(|e| format!("band.profile: {e}"))?;
         let mut first = Profile::new(&self.band.profile);
         for gesture in Gesture::ALL {
-            // The old `toggle` takes its gesture over whatever [gestures] says, as the old
-            // controller did (and the old documented config wrote `middle_hold = ""`).
-            let value = match self.gestures.get(gesture.key()) {
-                _ if lock == Some(gesture) => "@controls",
-                Some(value) => value.as_str(),
-                None => default_gesture(gesture),
-            };
-            if let Some(action) =
-                action(value).map_err(|e| format!("gestures.{}: {e}", gesture.key()))?
-            {
-                first.gestures.insert(gesture, action);
+            if let Some(command) = default_gesture(gesture) {
+                first.gestures.insert(gesture, Binding::from(command.to_owned()));
             }
         }
-        first.dial = dial.clone();
-        list.push(first);
-        // The other profiles.
+        for (key, value) in &self.gestures {
+            let gesture = Gesture::from_key(key).ok_or_else(|| format!("gestures: unknown gesture \"{key}\""))?;
+            match command("gestures", key, value)? {
+                Some(command) => first.gestures.insert(gesture, Binding::from(command)),
+                None => first.gestures.remove(&gesture),
+            };
+        }
+        first.index.dial = dial.clone();
+        let mut list = vec![first];
         for table in &self.profile {
             let name = table.get("name").ok_or("every [[profile]] needs a name")?;
-            check_name(name)?;
+            check_name("profile", name)?;
             if list.iter().any(|p: &Profile<String>| p.name == *name) {
                 return Err(format!("two profiles are called \"{name}\""));
             }
+            let place = format!("profile \"{name}\"");
             let mut profile = Profile::new(name);
             for (key, value) in table {
                 if key == "name" {
                     continue;
                 }
-                let gesture = Gesture::from_key(key)
-                    .ok_or_else(|| format!("profile \"{name}\": unknown key \"{key}\""))?;
-                if let Some(action) =
-                    action(value).map_err(|e| format!("profile \"{name}\".{key}: {e}"))?
-                {
-                    profile.gestures.insert(gesture, action);
+                let gesture = Gesture::from_key(key).ok_or_else(|| format!("{place}: unknown key \"{key}\""))?;
+                if let Some(command) = command(&place, key, value)? {
+                    profile.gestures.insert(gesture, Binding::from(command));
                 }
             }
-            if let Some(gesture) = lock {
-                profile
-                    .gestures
-                    .entry(gesture)
-                    .or_insert(Action::Builtin(Builtin::Controls));
-            }
-            profile.dial = dial.clone();
+            profile.index.dial = dial.clone();
             list.push(profile);
         }
-        Ok(Profiles {
-            list,
-            picked: 0,
-            apps: BTreeMap::new(),
-            calls: BTreeMap::new(),
-        })
+        Ok(Profiles { band, list, picked: 0, apps: BTreeMap::new(), calls: BTreeMap::new(), drawings: BTreeMap::new() })
     }
 
     /// Load `path`; a missing file means the defaults.
@@ -310,6 +361,97 @@ impl Config {
         let base = xdg("XDG_CONFIG_HOME").unwrap_or_else(|| home().join(".config"));
         base.join("air-gestures").join("config.toml")
     }
+}
+
+/// How loud a config note is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Level {
+    Info,
+    Warn,
+    Error,
+}
+
+/// Something the daemon logs about the loaded config (never blocks loading it).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Note {
+    pub level: Level,
+    pub text: String,
+}
+
+impl Note {
+    fn new(level: Level, text: impl Into<String>) -> Self {
+        Self { level, text: text.into() }
+    }
+}
+
+/// The sub-table a palm override is written in.
+pub fn palm_section(palm: Palm) -> &'static str {
+    match palm {
+        Palm::Down => "palm_down",
+        Palm::Side => "sideways",
+        Palm::Up => "palm_up",
+    }
+}
+
+fn place_text(profiles: &Profiles<String>, place: Place) -> String {
+    match place {
+        Place::Profile(index) => format!("profile \"{}\"", profiles.list[index].name),
+        Place::Calls => "the call layer".into(),
+    }
+}
+
+/// What to log on every config load: the core's warnings (no lock gesture is Linux's
+/// default, so that one is info), what's invalid (errors), and every entry a band control
+/// pauses (warnings).
+pub fn notes(profiles: &Profiles<String>) -> Vec<Note> {
+    let mut notes = Vec::new();
+    for warning in profiles.warnings() {
+        notes.push(match warning {
+            Warning::NoControls => Note::new(Level::Info, "no band gesture turns the controls off/on: set [band] toggle to one (or use `air-gestures toggle`)"),
+            Warning::NoWayOut => Note::new(
+                Level::Warn,
+                format!("{} profiles, but no band gesture switches them: set [band] next_profile (or previous_profile), or use `air-gestures profile next`", profiles.list.len()),
+            ),
+            Warning::DrawOnTap => Note::new(Level::Warn, "[band] draw is on a single tap: in a drawing a short pinch is that tap, and cancels the drawing"),
+        });
+    }
+    for invalid in profiles.invalid() {
+        notes.push(Note::new(Level::Error, match invalid {
+            Invalid::DrawCantCancel => format!(
+                "[band] draw is on {}, which can't cancel a drawing: it ends by itself 1 s after the last stroke (or after 10 s with none)",
+                profiles.band.draw.map_or("?", |c| c.gesture.key())
+            ),
+            Invalid::Binding { place, gesture } => format!("{} in {}: more than two palm overrides", gesture.key(), place_text(profiles, place)),
+            Invalid::BandControl(builtin) => format!("[band] {}_palm: list one or two positions", band_key(builtin)),
+        }));
+    }
+    for paused in profiles.paused() {
+        let what = match paused.used.palm {
+            None => paused.gesture.key().to_owned(),
+            Some(palm) => format!("{} ({})", paused.gesture.key(), palm_section(palm)),
+        };
+        notes.push(Note::new(Level::Warn, format!(
+            "{what} in {} is overridden by [band] {}{}",
+            place_text(profiles, paused.used.place),
+            band_key(paused.builtin),
+            palm_suffix(paused.positions)
+        )));
+    }
+    for slider in profiles.paused_sliders() {
+        let finger = match slider.finger {
+            band_core::controls::Finger::Index => "index",
+            band_core::controls::Finger::Middle => "middle",
+        };
+        let pair = ["left_right", "toward_away", "up_down"][slider.pair];
+        notes.push(Note::new(Level::Warn, format!(
+            "{finger}_slider_{pair} in profile \"{}\" is overridden by [band] {} on {}{}",
+            profiles.list[slider.profile].name,
+            band_key(slider.builtin),
+            slider.gesture.key(),
+            palm_suffix(slider.positions)
+        )));
+    }
+    notes
 }
 
 pub(crate) fn home() -> PathBuf {
