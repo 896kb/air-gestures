@@ -435,7 +435,10 @@ async fn connection(stream: UnixStream, handles: Handles) -> io::Result<()> {
                 }
                 let response = if waits {
                     // A teaching step waits for the band; a client that hangs up meanwhile
-                    // drops `response`, and the daemon ends the step.
+                    // drops `response`, and the daemon ends the step. `hung_up` reads (and
+                    // discards) whatever the client sends during the step, so a request
+                    // pipelined behind it is lost; and a client that only shuts down its
+                    // writing half counts as hung up too (its EOF is all we can see).
                     tokio::select! {
                         response = response => response,
                         () = hung_up(&mut reader) => return Ok(()),

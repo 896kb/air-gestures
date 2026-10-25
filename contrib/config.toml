@@ -14,7 +14,9 @@ toggle = "none"            # controls off/on (works while they're off)
 next_profile = "none"      # next profile (needs 2+ profiles)
 previous_profile = "none"  # previous profile
 draw = "none"              # open a drawing; again: cancel it
-# toggle_palm = ["down"]   # <key>_palm: only in these palm positions ("down", "sideways", "up"; 1–2)
+# <key>_palm limits a band control to 1–2 palm positions ("down", "sideways", "up"), e.g.:
+# toggle = "middle_hold"
+# toggle_palm = ["down"]   # the middle hold locks only palm down; palm up it's the profile's
 on_toggle = ""             # after a gesture toggled controls, with AIR_GESTURES_ENABLED=1|0
 on_profile = ""            # after the profile changed, with AIR_GESTURES_PROFILE=<name>
 on_draw = 'notify-send -a air-gestures "Drawing" "${AIR_GESTURES_DRAWING:-not recognised}"'  # AIR_GESTURES_DRAWING="" = not recognised

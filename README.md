@@ -146,7 +146,8 @@ When a finger's dial and drags do nothing, its hold acts as soon as the band rep
 volume|brightness|off|cycle` changes the index dial until the profile changes.
 
 **Teach your drags:** `air-gestures teach-drags` takes one pinch per move (the turn, then the
-six drags) and keeps them for this band and hand; `--reset` forgets them.
+six drags) and keeps them for this band and hand; `--reset` forgets them (with the band
+connected: it's for the hand the band is on).
 
 ### Band controls
 
@@ -194,7 +195,8 @@ index_tap = "playerctl next"
 
 The right hand works out of the box; `air-gestures calibrate` (palm down, then palm up, 2 s
 each) fits it to your wrist, and is needed for the left hand (until then every gesture counts
-as palm down). It's kept per band and hand; `--reset` forgets it.
+as palm down). It's kept per band and hand; `--reset` forgets it (with the band connected: it's
+for the hand the band is on).
 
 ### Drawings
 

@@ -303,12 +303,17 @@ fn a_corrupt_calibration_file_is_an_error_and_a_save_sets_it_aside() {
     let root = tempfile::tempdir().unwrap();
     let store = Store::open(root.path()).unwrap();
     let path = root.path().join("calibration.json");
-    for corrupt in ["{nope", r#"{"version":9,"bands":{}}"#, r#"{"bands":{}}"#] {
+    let corrupt = ["{nope", r#"{"version":9,"bands":{}}"#, r#"{"bands":{}}"#];
+    for (i, corrupt) in corrupt.iter().enumerate() {
         std::fs::write(&path, corrupt).unwrap();
         let error = store.load_calibration("AA", Hand::Right).unwrap_err();
         assert_eq!(error.kind(), std::io::ErrorKind::InvalidData, "{corrupt}");
         store.save_calibration("AA", Hand::Right, &taught()).unwrap();
-        assert_eq!(std::fs::read_to_string(root.path().join("calibration.json.bad")).unwrap(), corrupt, "kept aside");
+        let aside = match i {
+            0 => "calibration.json.bad".to_owned(),
+            i => format!("calibration.json.bad.{i}"),
+        };
+        assert_eq!(std::fs::read_to_string(root.path().join(aside)).unwrap(), *corrupt, "kept aside, none overwritten");
         assert_eq!(store.load_calibration("AA", Hand::Right).unwrap(), taught(), "started afresh");
     }
 }
@@ -350,4 +355,30 @@ fn a_calibration_is_checked_on_the_way_in() {
     assert!(problems.iter().any(|p| p.contains("teach-drags")), "{problems:?}");
     assert!(problems.iter().any(|p| p.contains("air-gestures calibrate") && p.contains("60°")), "{problems:?}");
     assert_eq!(HandCalibration::default().apply(), (None, None, Vec::new()), "nothing taught: the core's defaults");
+}
+
+#[test]
+fn one_bad_field_spoils_nothing_else_and_stays_until_changed() {
+    let root = tempfile::tempdir().unwrap();
+    let store = Store::open(root.path()).unwrap();
+    store.save_calibration("AA", Hand::Right, &taught()).unwrap();
+    let path = root.path().join("calibration.json");
+    let read = || -> serde_json::Value { serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap() };
+    let mut json = read();
+    json["bands"]["AA"]["right"]["drags"] = serde_json::json!("nope");
+    json["note"] = serde_json::json!("mine");
+    std::fs::write(&path, serde_json::to_vec(&json).unwrap()).unwrap();
+    let loaded = store.load_calibration("AA", Hand::Right).unwrap();
+    assert_eq!(loaded.palm, taught().palm, "the good field is kept");
+    assert_eq!(loaded.drags, None);
+    let palm = StoredPalm { down_roll: -130.0, up_roll: -5.0 };
+    store.save_palm("AA", Hand::Right, Some(palm)).unwrap();
+    let json = read();
+    assert_eq!(json["bands"]["AA"]["right"]["drags"], "nope", "a field nobody changed stays as it was");
+    assert_eq!(json["note"], "mine", "unknown top-level keys survive");
+    assert_eq!(store.load_calibration("AA", Hand::Right).unwrap().palm, Some(palm));
+    store.save_drags("AA", Hand::Right, None).unwrap();
+    assert!(read()["bands"]["AA"]["right"].get("drags").is_none(), "forgetting clears it");
+    store.save_palm("AA", Hand::Right, None).unwrap();
+    assert!(read()["bands"].get("AA").is_none(), "an empty entry goes");
 }

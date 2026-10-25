@@ -362,63 +362,110 @@ impl Store {
     }
 
     /// What was taught on the band at `address` for `hand` (the default when nothing was).
-    /// An entry that can't be read is skipped (with a warning); a file that can't be read is
-    /// an `InvalidData` error.
+    /// Each field is read on its own: one that can't be read is skipped (with a warning) and
+    /// the rest kept. A file that can't be read is an `InvalidData` error.
     pub fn load_calibration(&self, address: &str, hand: Hand) -> io::Result<HandCalibration> {
-        let bands = self.calibration_bands()?;
-        let Some(entry) = bands.get(address).and_then(|hands| hands.get(hand_key(hand))) else {
-            return Ok(HandCalibration::default());
+        let file = self.calibration_file()?;
+        let entry = file.get("bands").and_then(|bands| bands.get(address)).and_then(|hands| hands.get(hand_key(hand)));
+        let read = |name: &str| entry.and_then(|entry| entry.get(name)).filter(|value| !value.is_null()).cloned();
+        let warn = |name: &str, error: serde_json::Error| {
+            tracing::warn!("{CALIBRATION}: the {} hand's {name} for {address} can't be read ({error}); skipping it", hand_key(hand));
         };
-        Ok(serde_json::from_value(entry.clone()).unwrap_or_else(|error| {
-            tracing::warn!("{CALIBRATION}: the {} hand's entry for {address} can't be read ({error}); skipping it", hand_key(hand));
-            HandCalibration::default()
-        }))
+        let palm = read("palm").and_then(|value| serde_json::from_value(value).map_err(|e| warn("palm", e)).ok());
+        let drags = read("drags").and_then(|value| serde_json::from_value(value).map_err(|e| warn("drags", e)).ok());
+        Ok(HandCalibration { palm, drags })
     }
 
-    /// Replace it (an empty one removes the entry); every other entry is written back as it
-    /// was. A file that can't be read is moved aside to `calibration.json.bad` first.
+    /// Replace both fields for `address` and `hand` (`None`: forgotten).
     pub fn save_calibration(&self, address: &str, hand: Hand, calibration: &HandCalibration) -> io::Result<()> {
-        let mut bands = match self.calibration_bands() {
-            Ok(bands) => bands,
+        let palm = calibration.palm.map(serde_json::to_value).transpose().map_err(io::Error::other)?;
+        let drags = calibration.drags.as_ref().map(serde_json::to_value).transpose().map_err(io::Error::other)?;
+        self.edit_calibration(address, hand, [("palm", palm), ("drags", drags)])
+    }
+
+    /// Replace the palm calibration only (the drags stay as they are in the file).
+    pub fn save_palm(&self, address: &str, hand: Hand, palm: Option<StoredPalm>) -> io::Result<()> {
+        let palm = palm.map(serde_json::to_value).transpose().map_err(io::Error::other)?;
+        self.edit_calibration(address, hand, [("palm", palm)])
+    }
+
+    /// Replace the taught drags only (the palm calibration stays as it is in the file).
+    pub fn save_drags(&self, address: &str, hand: Hand, drags: Option<StoredDrags>) -> io::Result<()> {
+        let drags = drags.map(serde_json::to_value).transpose().map_err(io::Error::other)?;
+        self.edit_calibration(address, hand, [("drags", drags)])
+    }
+
+    /// Set (`Some`) or remove (`None`) these fields of one entry; everything else in the file
+    /// is written back as it was. A file that can't be read is moved aside first, to
+    /// `calibration.json.bad` (or `.bad.1`, `.bad.2`, …: none is overwritten).
+    fn edit_calibration<const N: usize>(&self, address: &str, hand: Hand, fields: [(&str, Option<Value>); N]) -> io::Result<()> {
+        let mut file = match self.calibration_file() {
+            Ok(file) => file,
             Err(error) if error.kind() == io::ErrorKind::InvalidData => {
-                tracing::warn!("{error}; moving it aside to {CALIBRATION}.bad and starting afresh");
-                fs::rename(self.path(CALIBRATION), self.path(&format!("{CALIBRATION}.bad")))?;
+                let aside = self.aside_name();
+                tracing::warn!("{error}; moving it aside to {aside} and starting afresh");
+                fs::rename(self.path(CALIBRATION), self.path(&aside))?;
                 self.sync_dir()?;
                 Map::new()
             }
             Err(error) => return Err(error),
         };
-        let hands = bands.entry(address.to_owned()).or_insert_with(|| Value::Object(Map::new()));
-        if !hands.is_object() {
-            *hands = Value::Object(Map::new());
+        file.insert("version".into(), Value::from(CALIBRATION_VERSION));
+        let bands = object_at(&mut file, "bands");
+        let hands = object_at(bands, address);
+        let entry = object_at(hands, hand_key(hand));
+        for (name, value) in fields {
+            match value {
+                Some(value) => entry.insert(name.to_owned(), value),
+                None => entry.remove(name),
+            };
         }
-        if let Value::Object(hands) = hands {
-            if calibration.is_empty() {
-                hands.remove(hand_key(hand));
-            } else {
-                hands.insert(hand_key(hand).to_owned(), serde_json::to_value(calibration).map_err(io::Error::other)?);
-            }
+        if entry.is_empty() {
+            hands.remove(hand_key(hand));
         }
-        bands.retain(|_, hands| hands.as_object().is_none_or(|hands| !hands.is_empty()));
-        let file = serde_json::json!({ "version": CALIBRATION_VERSION, "bands": bands });
-        let json = serde_json::to_vec_pretty(&file).map_err(io::Error::other)?;
+        if hands.is_empty() {
+            bands.remove(address);
+        }
+        let json = serde_json::to_vec_pretty(&Value::Object(file)).map_err(io::Error::other)?;
         self.write_secret(CALIBRATION, &json)
     }
 
-    /// The file's bands (address → hand → entry, still JSON: each is read on its own).
-    fn calibration_bands(&self) -> io::Result<Map<String, Value>> {
+    /// The first of `calibration.json.bad`, `.bad.1`, `.bad.2`, … that doesn't exist yet.
+    fn aside_name(&self) -> String {
+        (0..)
+            .map(|i| match i {
+                0 => format!("{CALIBRATION}.bad"),
+                i => format!("{CALIBRATION}.bad.{i}"),
+            })
+            .find(|name| !self.path(name).exists())
+            .expect("some name is free")
+    }
+
+    /// The whole file (checked: version 1, `bands` an object if there); empty without one.
+    fn calibration_file(&self) -> io::Result<Map<String, Value>> {
         let Some(bytes) = self.read(CALIBRATION)? else { return Ok(Map::new()) };
         let invalid = |why: String| io::Error::new(io::ErrorKind::InvalidData, format!("{CALIBRATION}: {why}"));
-        let mut file: Value = serde_json::from_slice(&bytes).map_err(|error| invalid(error.to_string()))?;
+        let file = match serde_json::from_slice(&bytes).map_err(|error| invalid(error.to_string()))? {
+            Value::Object(file) => file,
+            _ => return Err(invalid("not an object".into())),
+        };
         match file.get("version").and_then(Value::as_u64) {
             Some(CALIBRATION_VERSION) => {}
             Some(other) => return Err(invalid(format!("version {other} (this air-gesturesd reads {CALIBRATION_VERSION})"))),
             None => return Err(invalid("no version".into())),
         }
-        match file.get_mut("bands").map(Value::take) {
-            None | Some(Value::Null) => Ok(Map::new()),
-            Some(Value::Object(bands)) => Ok(bands),
+        match file.get("bands") {
+            None | Some(Value::Null | Value::Object(_)) => Ok(file),
             Some(_) => Err(invalid("\"bands\" isn't an object".into())),
         }
     }
+}
+
+/// `map[key]` as an object (a missing, null or non-object value becomes an empty one).
+fn object_at<'a>(map: &'a mut Map<String, Value>, key: &str) -> &'a mut Map<String, Value> {
+    let value = map.entry(key.to_owned()).or_insert_with(|| Value::Object(Map::new()));
+    if !value.is_object() {
+        *value = Value::Object(Map::new());
+    }
+    value.as_object_mut().expect("an object: made one just above")
 }

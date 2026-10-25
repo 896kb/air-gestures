@@ -26,7 +26,7 @@ use crate::link::{LinkCommand, LinkEnd, LinkEvent, LinkOutcome, run_link};
 use crate::meta::ClientFactory;
 use crate::pairing::{PairFailure, pair_band};
 use crate::status::{LinkState, PairResult, Status};
-use crate::store::{BandRecord, HandCalibration, IdentitySource, Store, StoredDrags};
+use crate::store::{BandRecord, IdentitySource, Store, StoredDrags};
 use crate::teach::{Done, Wait};
 use crate::transport::Transport;
 
@@ -37,6 +37,8 @@ const SEMG_IDLE: f64 = 3.0;
 const DIFFERENT_KEY: u32 = 0x1043;
 const ALREADY_PAIRED: &str = "a band is already paired — forget it first (`air-gestures forget`, then factory reset the band)";
 const PAIRING_RUNNING: &str = "a pairing is running; wait for it to finish";
+/// A drawing's temp file this old at start is from an interrupted save.
+const STALE_TEMP: Duration = Duration::from_secs(60);
 /// What a request that needs the band says without one.
 pub const CONNECT_FIRST: &str = "connect the band first (`air-gestures connect`)";
 
@@ -209,6 +211,10 @@ impl<T: Transport, R: Runner, F: ClientFactory> Daemon<T, R, F> {
             semg_unwatched_since: None,
             band_name,
         };
+        // Only now: a reload may run while a CLI's save is under way.
+        for problem in drawings::remove_stale(&daemon.drawings_dir, STALE_TEMP) {
+            tracing::warn!("drawings: {problem}");
+        }
         daemon.reload_drawings(true);
         daemon.publish();
         daemon
@@ -495,16 +501,13 @@ impl<T: Transport, R: Runner, F: ClientFactory> Daemon<T, R, F> {
     }
 
     /// Change what's taught for the paired band and the hand in use, and apply it.
-    fn save_taught(&mut self, change: impl FnOnce(&mut HandCalibration)) -> Response {
+    /// `save` changes one field for the paired band and the hand in use (the store keeps the
+    /// rest of the file as it is, and sets a corrupt file aside).
+    fn save_taught(&mut self, save: impl FnOnce(&Store, &str, Hand) -> std::io::Result<()>) -> Response {
         let (Some(hand), Ok(Some(band))) = (self.hand_in_use(), self.store.load_band()) else {
             return Response::error(CONNECT_FIRST);
         };
-        let mut calibration = self.store.load_calibration(&band.address, hand).unwrap_or_else(|error| {
-            tracing::warn!("calibration: {error}; starting afresh");
-            HandCalibration::default()
-        });
-        change(&mut calibration);
-        if let Err(error) = self.store.save_calibration(&band.address, hand, &calibration) {
+        if let Err(error) = save(&self.store, &band.address, hand) {
             return Response::error(format!("state: {error}"));
         }
         self.refresh_calibration(true);
@@ -1010,7 +1013,7 @@ impl<T: Transport, R: Runner, F: ClientFactory> Daemon<T, R, F> {
                     {
                         break 'answer Response::error(crate::teach::calibration_error_text(error));
                     }
-                    break 'answer self.save_taught(|calibration| calibration.palm = palm);
+                    break 'answer self.save_taught(|store, address, hand| store.save_palm(address, hand, palm));
                 }
                 Request::SetDrags { drags } => {
                     let stored = match drags {
@@ -1020,7 +1023,7 @@ impl<T: Transport, R: Runner, F: ClientFactory> Daemon<T, R, F> {
                             Err(error) => break 'answer Response::error(crate::teach::taught_error_text(error)),
                         },
                     };
-                    break 'answer self.save_taught(|calibration| calibration.drags = stored);
+                    break 'answer self.save_taught(|store, address, hand| store.save_drags(address, hand, stored));
                 }
                 Request::Palm => {
                     if self.state != LinkState::Connected {

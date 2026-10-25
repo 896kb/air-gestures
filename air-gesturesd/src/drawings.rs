@@ -6,7 +6,7 @@
 use std::fs::File;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 use band_core::controls::draw::{self, Drawing, Stroke, TeachError};
 use serde::{Deserialize, Serialize};
@@ -38,13 +38,38 @@ fn invalid(error: String) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, error)
 }
 
-/// The temp file an interrupted `save` of `name` leaves behind.
+/// A `save`'s temp file (`.<name>.json.tmp`), while it runs or after it was interrupted.
 fn temp_name(file: &str) -> Option<&str> {
     file.strip_prefix('.')?.strip_suffix(".json.tmp")
 }
 
+/// Removes the temp files interrupted saves left in `dir`, those older than `older_than` (a
+/// younger one may belong to a save under way, in this process or another). The daemon does
+/// it when it starts. Returns what couldn't be removed.
+pub fn remove_stale(dir: &Path, older_than: Duration) -> Vec<String> {
+    let Ok(entries) = std::fs::read_dir(dir) else { return Vec::new() };
+    let now = SystemTime::now();
+    let mut problems = Vec::new();
+    for entry in entries.flatten() {
+        let file = entry.path();
+        if file.file_name().and_then(|n| n.to_str()).and_then(temp_name).is_none() {
+            continue;
+        }
+        let modified = entry.metadata().and_then(|m| m.modified()).unwrap_or(now);
+        if now.duration_since(modified).unwrap_or_default() < older_than {
+            continue;
+        }
+        if let Err(error) = std::fs::remove_file(&file)
+            && error.kind() != io::ErrorKind::NotFound
+        {
+            problems.push(format!("{}: {error}", file.display()));
+        }
+    }
+    problems
+}
+
 /// Every drawing in `dir`, by name; what couldn't be read (or reads badly), described. No
-/// directory: none. Cleans up what an interrupted save left behind.
+/// directory: none. A save's temp file is skipped (see `remove_stale`).
 pub fn load(dir: &Path) -> (Vec<Drawing>, Vec<String>) {
     let (mut drawings, mut problems) = (Vec::new(), Vec::new());
     let entries = match std::fs::read_dir(dir) {
@@ -59,9 +84,6 @@ pub fn load(dir: &Path) -> (Vec<Drawing>, Vec<String>) {
         let file = entry.path();
         let Some(file_name) = file.file_name().and_then(|n| n.to_str()) else { continue };
         if temp_name(file_name).is_some() {
-            if let Err(error) = std::fs::remove_file(&file) {
-                problems.push(format!("{}: {error}", file.display()));
-            }
             continue;
         }
         let Some(name) = file_name.strip_suffix(".json") else { continue };

@@ -102,13 +102,15 @@ enum Command {
     },
     /// Calibrate palm positions (down, up) for the band and the hand it's on.
     Calibrate {
-        /// Forget the calibration (back to the measured right-hand one; none for the left hand).
+        /// Forget the calibration for the hand the band is on (needs the band connected): back to
+        /// the measured right-hand one, none for the left hand.
         #[arg(long)]
         reset: bool,
     },
     /// Teach the turn and the six drags (one pinch each) for the band and the hand it's on.
     TeachDrags {
-        /// Forget them (back to the measured right-hand ones; turns only for the left hand).
+        /// Forget them for the hand the band is on (needs the band connected): back to the
+        /// measured right-hand ones, turns only for the left hand.
         #[arg(long)]
         reset: bool,
     },

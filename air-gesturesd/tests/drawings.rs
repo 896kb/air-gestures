@@ -46,8 +46,12 @@ fn unreadable_files_are_skipped_and_described() {
     assert!(problems.iter().any(|p| p.contains("broken.json")));
     assert!(problems.iter().any(|p| p.contains("version 9")));
     assert!(problems.iter().any(|p| p.contains("it's.json") && p.contains("name")), "{problems:?}");
+    assert!(dir.join(".ok.json.tmp").exists(), "a save may be under way: load leaves its temp file alone");
+    assert!(drawings::remove_stale(dir, std::time::Duration::from_secs(60)).is_empty());
+    assert!(dir.join(".ok.json.tmp").exists(), "too fresh to be stale");
+    assert!(drawings::remove_stale(dir, std::time::Duration::ZERO).is_empty());
     assert!(!dir.join(".ok.json.tmp").exists(), "an interrupted save's temp file is cleaned up");
-    assert!(dir.join("notes.txt").exists());
+    assert!(dir.join("notes.txt").exists() && dir.join("ok.json").exists());
 }
 
 #[test]
@@ -78,4 +82,23 @@ fn the_file_is_versioned_json_of_strokes() {
     let json: serde_json::Value = serde_json::from_slice(&std::fs::read(root.path().join("z.json")).unwrap()).unwrap();
     assert_eq!(json["version"], 1);
     assert_eq!(json["tries"][0][0][1], serde_json::json!([0.0, 10.0]));
+}
+
+#[test]
+fn loading_while_saving_never_loses_a_save() {
+    let root = tempfile::tempdir().unwrap();
+    let dir = root.path().to_path_buf();
+    let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let loader = {
+        let (dir, done) = (dir.clone(), done.clone());
+        std::thread::spawn(move || {
+            while !done.load(std::sync::atomic::Ordering::Relaxed) {
+                drawings::load(&dir);
+            }
+        })
+    };
+    let failed = (0..2000).filter(|_| drawings::save(&dir, &drawing("z")).is_err()).count();
+    done.store(true, std::sync::atomic::Ordering::Relaxed);
+    loader.join().unwrap();
+    assert_eq!(failed, 0, "saves lost to a concurrent load");
 }
