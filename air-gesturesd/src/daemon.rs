@@ -132,7 +132,7 @@ impl<T: Transport, R: Runner, F: ClientFactory> Daemon<T, R, F> {
         };
         let config_stamp = modified(&config_path);
         let wants_connection = config.band.autostart;
-        let index_dials = config.index_dials();
+        let index_dials = config.index_dials().to_vec();
         let (drawings, problems) = drawings::load(&drawings_dir);
         for problem in problems {
             tracing::warn!("drawings: {problem}");
@@ -140,7 +140,7 @@ impl<T: Transport, R: Runner, F: ClientFactory> Daemon<T, R, F> {
         let drawings_stamp = drawings::stamp(&drawings_dir);
         let drawing_names: Vec<String> = drawings.iter().map(|d| d.name.clone()).collect();
         let options_hand = configured_hand(&config);
-        let mut controls = Controls::new(config.options(), config.profiles());
+        let mut controls = Controls::new(config.options(), config.profiles().clone());
         let (palm, drags) = calibration_for(&store, options_hand);
         controls.set_calibration(palm, drags);
         controls.set_library(Library::new(&drawings));
@@ -742,11 +742,11 @@ impl<T: Transport, R: Runner, F: ClientFactory> Daemon<T, R, F> {
                 let active = self.controls.active();
                 let before = self.index_dials.get(active).copied();
                 self.config = config;
-                self.index_dials = self.config.index_dials();
+                self.index_dials = self.config.index_dials().to_vec();
                 let mut outputs = self.controls.set_options(self.config.options());
                 // Those options carry no calibration: put it back.
                 self.refresh_calibration(true);
-                outputs.extend(self.controls.set_profiles(self.config.profiles()));
+                outputs.extend(self.controls.set_profiles(self.config.profiles().clone()));
                 if self.controls.dial_overridden() {
                     // A changed dial in the file wins over a runtime choice, as before.
                     if self.index_dials.get(self.controls.active()).copied() != before {

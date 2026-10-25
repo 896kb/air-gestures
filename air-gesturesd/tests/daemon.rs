@@ -785,16 +785,33 @@ async fn the_dial_override_lasts_until_the_profile_changes() {
     let transport = SimTransport::new(SimMode::Enrolled);
     let mut daemon = start(transport.clone(), true, fake(&transport));
     daemon.connected().await;
-    daemon.configure("[[profile]]\nname = \"quiet\"\nindex_dial = \"off\"\n").await;
-    assert_eq!(daemon.status.borrow().dial, DialTarget::Volume);
-    daemon.call(Request::Dial { target: DialTarget::Brightness }).await;
-    daemon.wait("brightness", |s| s.dial == DialTarget::Brightness).await;
+    daemon.configure("[gestures]\nindex_dial = \"brightness\"\n[[profile]]\nname = \"quiet\"\nindex_dial = \"off\"\n").await;
+    assert_eq!(daemon.status.borrow().dial, DialTarget::Brightness);
+    daemon.call(Request::Dial { target: DialTarget::Volume }).await;
+    daemon.wait("volume", |s| s.dial == DialTarget::Volume).await;
     daemon.call(Request::Profile { to: "quiet".into() }).await;
     daemon.wait("quiet's own dial", |s| s.dial == DialTarget::Off).await;
     daemon.call(Request::CycleDial).await;
     daemon.wait("cycled from off", |s| s.dial == DialTarget::Volume).await;
     daemon.call(Request::Profile { to: "default".into() }).await;
-    daemon.wait("default's own dial", |s| s.dial == DialTarget::Volume && s.profile.as_deref() == Some("default")).await;
+    daemon.wait("default's own dial", |s| s.dial == DialTarget::Brightness && s.profile.as_deref() == Some("default")).await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_reload_keeps_the_dial_override_unless_the_active_profiles_dial_changed() {
+    let transport = SimTransport::new(SimMode::Enrolled);
+    let mut daemon = start(transport.clone(), true, fake(&transport));
+    daemon.connected().await;
+    daemon.call(Request::Dial { target: DialTarget::Brightness }).await;
+    daemon.wait("brightness", |s| s.dial == DialTarget::Brightness).await;
+    daemon.configure("[band]\non_toggle = \"osd\"\n").await;
+    assert_eq!(daemon.status.borrow().dial, DialTarget::Brightness, "an unrelated change keeps the override");
+    daemon.configure("[band]\non_toggle = \"osd\"\n[gestures]\nindex_dial = \"off\"\n").await;
+    daemon.wait("the file's new index_dial", |s| s.dial == DialTarget::Off).await;
+    daemon.call(Request::Dial { target: DialTarget::Brightness }).await;
+    daemon.wait("brightness again", |s| s.dial == DialTarget::Brightness).await;
+    daemon.configure("[dial]\ntarget = \"volume\"\n").await;
+    daemon.wait("the file's [dial] target", |s| s.dial == DialTarget::Volume).await;
 }
 
 const PRESS: u64 = 1;

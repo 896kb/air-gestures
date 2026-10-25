@@ -6,7 +6,7 @@ fn run(command: &str) -> Option<Binding<String>> {
 }
 
 fn texts(config: &Config) -> Vec<(Level, String)> {
-    notes(&config.profiles()).into_iter().map(|n| (n.level, n.text)).collect()
+    notes(config.profiles()).into_iter().map(|n| (n.level, n.text)).collect()
 }
 
 #[test]
@@ -130,7 +130,7 @@ fn band_controls_take_any_gesture_and_palm_positions() {
 #[test]
 fn two_band_controls_may_share_a_gesture_only_in_different_positions() {
     let error = Config::parse("[band]\ntoggle = \"middle_hold\"\ndraw = \"middle_hold\"\n").unwrap_err();
-    assert!(error.contains("band.toggle and band.draw") && error.contains("middle_hold"), "{error}");
+    assert!(error.contains("[band] toggle and [band] draw are both on middle_hold"), "{error}");
     let error = Config::parse("[band]\ntoggle = \"middle_hold\"\ndraw = \"middle_hold\"\ndraw_palm = [\"up\"]\n").unwrap_err();
     assert!(error.contains("with the palm up"), "{error}");
     let fine = "[band]\ntoggle = \"middle_hold\"\ntoggle_palm = [\"down\"]\ndraw = \"middle_hold\"\ndraw_palm = [\"up\", \"sideways\"]\n";
@@ -182,35 +182,46 @@ fn texts_of(text: &str) -> Vec<(Level, String)> {
 fn mistakes_are_reported() {
     for (text, needle) in [
         ("[band]\ncolour = \"red\"\n", "colour"),
-        ("[band]\ntoggle = \"pinky_hold\"\n", "pinky_hold"),
-        ("[band]\ntoggle_palm = [\"up\"]\n", "set band.toggle"),
-        ("[band]\ntoggle = \"middle_hold\"\ntoggle_palm = [\"left\"]\n", "\"left\""),
-        ("[band]\ntoggle = \"middle_hold\"\ntoggle_palm = [\"down\", \"sideways\", \"up\"]\n", "one or two"),
-        ("[band]\ntoggle = \"middle_hold\"\ntoggle_palm = []\n", "one or two"),
-        ("[gestures]\npinky_tap = \"x\"\n", "pinky_tap"),
-        ("[gestures]\nmiddle_hold = \"@controls\"\n", "[band]"),
-        ("[gestures]\nswipe_up = \"@lock\"\n", "@lock"),
-        ("[dial]\nsensitivity = 9.0\n", "sensitivity"),
-        ("[[profile]]\nswipe_up = \"x\"\n", "name"),
-        ("[[profile]]\nname = \"default\"\n", "default"),
-        ("[[profile]]\nname = \"a\"\n[[profile]]\nname = \"a\"\n", "\"a\""),
-        ("[[profile]]\nname = \"it's\"\n", "it's"),
-        ("[[profile]]\nname = \".hidden\"\n", ".hidden"),
-        ("[[profile]]\nname = \"x\"\nnope = \"y\"\n", "nope"),
-        ("[[profile]]\nname = \"x\"\nindex_tap = \"@next-profile\"\n", "next_profile"),
-        ("[gestures]\nindex_dial = \"loud\"\n", "loud"),
-        ("[gestures]\nmiddle_drags = \"both\"\n", "both"),
-        ("[gestures]\nindex_slider_sideways = \"volume\"\n", "index_slider_sideways"),
-        ("[gestures]\nring_dial = \"volume\"\n", "ring_dial"),
-        ("[gestures.palm_up]\nnope = \"x\"\n", "nope"),
-        ("[gestures.palm_up]\nindex_tap = \"@controls\"\n", "[band]"),
-        ("[gestures]\nindex_tap = 3\n", "expected a string"),
-        ("[gestures.palm_left]\nindex_tap = \"x\"\n", "palm_left"),
-        ("[gestures]\npalm_up = \"x\"\n", "expected a table"),
-        ("[drawings]\n\"it's\" = \"x\"\n", "it's"),
-        ("[drawings]\nz = \"@draw\"\n", "[band]"),
-        ("[drawings]\nz = 1\n", "expected a string"),
-        ("[[profile]]\nname = \"x\"\ndrawings = \"z\"\n", "expected a table"),
+        ("[band]\ntoggle = \"pinky_hold\"\n", "[band] toggle: unknown gesture \"pinky_hold\""),
+        ("[band]\ntoggle_palm = [\"up\"]\n", "[band] toggle_palm: set [band] toggle to a gesture first"),
+        ("[band]\ntoggle = \"middle_hold\"\ntoggle_palm = [\"left\"]\n", "[band] toggle_palm: unknown position \"left\""),
+        ("[band]\ntoggle = \"middle_hold\"\ntoggle_palm = [\"down\", \"sideways\", \"up\"]\n", "[band] toggle_palm: list one or two"),
+        ("[band]\ntoggle = \"middle_hold\"\ntoggle_palm = []\n", "[band] toggle_palm: list one or two"),
+        ("[band]\ntoggle = \"middle_hold\"\ntoggle_palm = [\"up\", \"up\"]\n", "[band] toggle_palm: \"up\" is listed twice"),
+        ("[band]\nprofile = \"it's\"\n", "[band] profile: profile name \"it's\""),
+        ("[gestures]\npinky_tap = \"x\"\n", "[gestures] pinky_tap: unknown key"),
+        ("[gestures]\nmiddle_hold = \"@controls\"\n", "set in [band] now: toggle = \"middle_hold\""),
+        ("[gestures]\nindex_triple = \"@next-profile\"\n", "next_profile = \"index_triple\""),
+        ("[gestures]\nmiddle_triple = \"@previous-profile\"\n", "previous_profile = \"middle_triple\""),
+        ("[gestures]\nswipe_up = \"@draw\"\n", "draw = \"swipe_up\""),
+        ("[gestures]\nswipe_up = \"@lock\"\n", "[gestures] swipe_up = \"@lock\""),
+        ("[dial]\nsensitivity = 9.0\n", "[dial] sensitivity must be between 0.5 and 4"),
+        ("[[profile]]\nswipe_up = \"x\"\n", "every [[profile]] needs a name"),
+        ("[[profile]]\nname = 3\n", "a profile's name must be text"),
+        ("[[profile]]\nname = \"default\"\n", "two profiles are called \"default\""),
+        ("[[profile]]\nname = \"a\"\n[[profile]]\nname = \"a\"\n", "two profiles are called \"a\""),
+        ("[[profile]]\nname = \"it's\"\n", "profile name \"it's\""),
+        ("[[profile]]\nname = \".hidden\"\n", "profile name \".hidden\""),
+        ("[[profile]]\nname = \"x\"\nnope = \"y\"\n", "[profile \"x\"] nope: unknown key"),
+        ("[[profile]]\nname = \"x\"\nindex_tap = \"@next-profile\"\n", "[profile \"x\"] index_tap = \"@next-profile\": band controls are set in [band] now: next_profile = \"index_tap\""),
+        ("[gestures]\nindex_dial = \"loud\"\n", "[gestures] index_dial: \"loud\" isn't a dial"),
+        ("[gestures]\nmiddle_drags = \"both\"\n", "[gestures] middle_drags: \"both\" isn't a drag mode (\"gestures\" or \"sliders\")"),
+        ("[gestures]\nindex_slider_sideways = \"volume\"\n", "[gestures] index_slider_sideways: unknown key"),
+        ("[gestures]\nring_dial = \"volume\"\n", "[gestures] ring_dial: unknown key"),
+        ("[gestures.palm_up]\nnope = \"x\"\n", "[gestures.palm_up] nope: unknown key"),
+        ("[gestures.palm_up]\nindex_tap = \"@controls\"\n", "toggle = \"index_tap\", toggle_palm = [\"up\"]"),
+        ("[gestures.palm_up]\nindex_dial = \"volume\"\n", "[gestures.palm_up] index_dial: dials don't take palm overrides"),
+        ("[gestures.sideways]\nmiddle_drags = \"sliders\"\n", "[gestures.sideways] middle_drags: drag modes and sliders don't take palm overrides"),
+        ("[gestures]\nindex_tap = 3\n", "[gestures] index_tap: expected a string"),
+        ("[gestures]\nnope = 3\n", "[gestures] nope: unknown key"),
+        ("[gestures.palm_left]\nindex_tap = \"x\"\n", "[gestures] palm_left: unknown table"),
+        ("[[profile]]\nname = \"x\"\n[profile.drawing]\nz = \"x\"\n", "[profile \"x\"] drawing: unknown table"),
+        ("[gestures]\npalm_up = \"x\"\n", "[gestures] palm_up: expected a table"),
+        ("[drawings]\n\"it's\" = \"x\"\n", "[drawings] drawing name \"it's\""),
+        ("[drawings]\nz = \"@draw\"\n", "[drawings] z = \"@draw\": a drawing runs a command; band controls are set in [band]"),
+        ("[[profile]]\nname = \"x\"\n[profile.drawings]\nz = \"@draw\"\n", "[profile \"x\".drawings] z = \"@draw\": a drawing runs a command"),
+        ("[drawings]\nz = 1\n", "[drawings] z: expected a string"),
+        ("[[profile]]\nname = \"x\"\ndrawings = \"z\"\n", "[profile \"x\"] drawings: expected a table"),
     ] {
         let error = Config::parse(text).unwrap_err();
         assert!(error.contains(needle), "{text:?} → {error}");
@@ -301,7 +312,7 @@ fn a_band_control_on_a_drag_pauses_that_pairs_slider() {
         "[band]\ndraw = \"middle_drag_up\"\n[gestures]\nmiddle_drags = \"sliders\"\nmiddle_slider_up_down = \"volume\"\n",
     )
     .unwrap();
-    let notes = notes(&config.profiles());
+    let notes = notes(config.profiles());
     assert!(
         notes.iter().any(|n| n.level == Level::Warn
             && n.text == "middle_slider_up_down in profile \"default\" is overridden by [band] draw on middle_drag_up"),
@@ -343,7 +354,7 @@ fn three_palm_overrides_on_one_gesture_are_an_error() {
         "[gestures.palm_up]\nindex_tap = \"a\"\n[gestures.sideways]\nindex_tap = \"b\"\n[gestures.palm_down]\nindex_tap = \"c\"\n",
     )
     .unwrap_err();
-    assert!(error.contains("index_tap") && error.contains("at most 2"), "{error}");
+    assert!(error.contains("[gestures] index_tap: palm overrides in") && error.contains("at most 2"), "{error}");
 }
 
 #[test]
@@ -360,7 +371,7 @@ fn an_override_a_band_control_pauses_is_named_with_its_position() {
         "#,
     )
     .unwrap();
-    let texts: Vec<String> = notes(&config.profiles()).into_iter().map(|n| n.text).collect();
+    let texts: Vec<String> = notes(config.profiles()).into_iter().map(|n| n.text).collect();
     assert!(texts.contains(&"index_tap (palm_up) in profile \"default\" is overridden by [band] draw with the palm up".to_owned()), "{texts:?}");
     assert!(!texts.iter().any(|t| t.starts_with("index_tap in")), "the normal action isn't used with the palm up: {texts:?}");
 }
@@ -390,8 +401,54 @@ fn drawings_have_shared_and_profile_actions() {
 #[test]
 fn drawings_with_an_action_but_no_template_are_noted() {
     let config = Config::parse("[drawings]\nlightbulb = \"x\"\nz = \"y\"\n").unwrap();
-    let notes = air_gesturesd::config::missing_drawings(&config.profiles(), &["z"]);
+    let notes = air_gesturesd::config::missing_drawings(config.profiles(), &["z"]);
     assert_eq!(notes.len(), 1, "{notes:?}");
     assert_eq!(notes[0].level, Level::Warn);
     assert!(notes[0].text.contains("air-gestures draw teach lightbulb"), "{notes:?}");
+}
+
+#[test]
+fn the_first_profiles_own_drawings_are_in_gestures_drawings() {
+    let config = Config::parse(
+        "[gestures.drawings]\nz = \"echo first\"\n[drawings]\nz = \"echo shared\"\n[[profile]]\nname = \"b\"\n",
+    )
+    .unwrap();
+    let p = config.profiles();
+    assert_eq!(p.drawing_action(0, "z").map(String::as_str), Some("echo first"));
+    assert_eq!(p.drawing_action(1, "z").map(String::as_str), Some("echo shared"));
+}
+
+#[test]
+fn three_palm_overrides_in_a_profile_are_an_error() {
+    let error = Config::parse(
+        "[[profile]]\nname = \"b\"\n[profile.palm_up]\nindex_tap = \"a\"\n[profile.sideways]\nindex_tap = \"b\"\n[profile.palm_down]\nindex_tap = \"c\"\n",
+    )
+    .unwrap_err();
+    assert!(error.contains("[profile \"b\"] index_tap: palm overrides in") && error.contains("at most 2"), "{error}");
+}
+
+#[test]
+fn an_empty_override_without_a_normal_action_leaves_nothing() {
+    let config = Config::parse(
+        "[gestures.palm_up]\nindex_tap = \"\"\nswipe_left = \"\"\n[[profile]]\nname = \"b\"\n[profile.sideways]\nmiddle_tap = \"\"\n",
+    )
+    .unwrap();
+    let profiles = config.profiles();
+    assert!(!profiles.list[0].gestures.contains_key(&Gesture::IndexTap));
+    assert!(profiles.list[0].gestures.contains_key(&Gesture::SwipeLeft), "its normal action stays");
+    assert!(profiles.list[1].gestures.is_empty(), "{:?}", profiles.list[1].gestures);
+}
+
+#[test]
+fn a_band_control_on_a_drag_in_some_positions_pauses_the_slider_there() {
+    let config = Config::parse(
+        "[band]\ndraw = \"middle_drag_up\"\ndraw_palm = [\"up\"]\n[gestures]\nmiddle_drags = \"sliders\"\nmiddle_slider_up_down = \"volume\"\n",
+    )
+    .unwrap();
+    let notes = notes(config.profiles());
+    assert!(
+        notes.iter().any(|n| n.level == Level::Warn
+            && n.text == "middle_slider_up_down in profile \"default\" is overridden by [band] draw on middle_drag_up with the palm up"),
+        "{notes:?}"
+    );
 }
