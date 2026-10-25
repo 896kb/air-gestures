@@ -1,12 +1,17 @@
-//! Owner keys, the paired band and (Task 8) the Meta session, under
+//! Owner keys, the paired band, the Meta session and, per band and hand, what was taught
+//! (`calibration.json`), under
 //! `$XDG_STATE_HOME/air-gestures` (else `~/.local/state/air-gestures`): a 0700 directory
 //! of 0600 files, each written atomically and fsynced. Nothing here is logged.
 
+use std::collections::BTreeMap;
 use std::fs::{self, DirBuilder, File, OpenOptions};
 use std::io::{self, Write};
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
+use band_core::controls::pinch::{Prototypes, TaughtError};
+use band_core::controls::{Options, PalmCalibration};
+use band_core::events::Hand;
 use band_core::identity::EnrollmentIdentity;
 use serde::{Deserialize, Serialize};
 
@@ -14,6 +19,7 @@ const OWNER: &str = "owner.key";
 const PENDING_OWNER: &str = "owner.pending.key";
 const BAND: &str = "band.json";
 pub(crate) const META_SESSION: &str = "meta-session.json";
+const CALIBRATION: &str = "calibration.json";
 /// Pre-single-file-identity layout; `forget()` still cleans these up if found.
 const LEGACY_BAND_KEY: &str = "band.pub";
 const LEGACY_PENDING_BAND_KEY: &str = "band.pending.pub";
@@ -54,6 +60,87 @@ pub fn identity_from_bytes(bytes: &[u8]) -> Result<EnrollmentIdentity, String> {
         length => return Err(format!("invalid identity file length ({length} bytes)")),
     };
     EnrollmentIdentity::from_bytes(private, band).map_err(|error| error.to_string())
+}
+
+/// Palm down and up, as the band's roll about the forearm (degrees).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct StoredPalm {
+    pub down_roll: f64,
+    pub up_roll: f64,
+}
+
+impl StoredPalm {
+    pub fn calibration(&self) -> PalmCalibration {
+        PalmCalibration { down_roll: self.down_roll, up_roll: self.up_roll }
+    }
+}
+
+impl From<PalmCalibration> for StoredPalm {
+    fn from(c: PalmCalibration) -> Self {
+        Self { down_roll: c.down_roll, up_roll: c.up_roll }
+    }
+}
+
+/// Taught drag directions (forearm frame, unit): the turn, then the six drags in
+/// `Drag::ALL` order.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct StoredDrags {
+    pub palm_down_roll: f64,
+    pub turn: [f64; 3],
+    pub drags: [[f64; 3]; 6],
+}
+
+impl StoredDrags {
+    /// `None` for turns-only prototypes (nothing taught).
+    pub fn from_prototypes(p: &Prototypes) -> Option<Self> {
+        Some(Self { palm_down_roll: p.palm_down_roll, turn: p.turn, drags: p.drags? })
+    }
+
+    /// Checked again on the way in: a hand-edited file can't make lookalike drags.
+    pub fn prototypes(&self) -> Result<Prototypes, TaughtError> {
+        Prototypes::taught(self.turn, self.drags, self.palm_down_roll)
+    }
+}
+
+/// What was taught on one band for one hand.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct HandCalibration {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub palm: Option<StoredPalm>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub drags: Option<StoredDrags>,
+}
+
+impl HandCalibration {
+    pub fn is_empty(&self) -> bool {
+        self.palm.is_none() && self.drags.is_none()
+    }
+
+    /// Into `options` (meant for the hand in use; nothing taught = the core's defaults).
+    /// Returns what couldn't be used.
+    pub fn apply(&self, options: &mut Options) -> Vec<String> {
+        let mut problems = Vec::new();
+        options.palm = self.palm.map(|p| p.calibration());
+        options.drags = match self.drags.as_ref().map(StoredDrags::prototypes) {
+            None => None,
+            Some(Ok(prototypes)) => Some(prototypes),
+            Some(Err(error)) => {
+                problems.push(format!(
+                    "the taught drags can't be used ({}); teach them again with `air-gestures teach-drags`",
+                    crate::teach::taught_error_text(error)
+                ));
+                None
+            }
+        };
+        problems
+    }
+}
+
+fn hand_key(hand: Hand) -> &'static str {
+    match hand {
+        Hand::Left => "left",
+        Hand::Right => "right",
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -222,7 +309,8 @@ impl Store {
     /// Remove every stored key, the band record and the legacy files, plus
     /// any temp file an interrupted write left behind. The Meta sign-in
     /// (`meta-session.json`) survives: signing out is a separate action
-    /// (`delete_meta_session`), not implied by forgetting a band.
+    /// (`delete_meta_session`), not implied by forgetting a band. `calibration.json`
+    /// survives too: it describes the wrist.
     pub fn forget(&self) -> io::Result<()> {
         for name in [
             OWNER,
@@ -259,5 +347,33 @@ impl Store {
 
     pub fn delete_meta_session(&self) -> io::Result<()> {
         self.remove(META_SESSION)
+    }
+
+    /// What was taught on the band at `address` for `hand` (the default when nothing was).
+    pub fn load_calibration(&self, address: &str, hand: Hand) -> io::Result<HandCalibration> {
+        Ok(self.calibrations()?.get(address).and_then(|hands| hands.get(hand_key(hand))).cloned().unwrap_or_default())
+    }
+
+    /// Replace it (an empty one removes the entry).
+    pub fn save_calibration(&self, address: &str, hand: Hand, calibration: &HandCalibration) -> io::Result<()> {
+        let mut all = self.calibrations()?;
+        let hands = all.entry(address.to_owned()).or_default();
+        if calibration.is_empty() {
+            hands.remove(hand_key(hand));
+        } else {
+            hands.insert(hand_key(hand).to_owned(), calibration.clone());
+        }
+        all.retain(|_, hands| !hands.is_empty());
+        let json = serde_json::to_vec_pretty(&all).map_err(io::Error::other)?;
+        self.write_secret(CALIBRATION, &json)
+    }
+
+    /// Band address → hand ("left"/"right") → what was taught.
+    fn calibrations(&self) -> io::Result<BTreeMap<String, BTreeMap<String, HandCalibration>>> {
+        match self.read(CALIBRATION)? {
+            Some(bytes) => serde_json::from_slice(&bytes)
+                .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, format!("{CALIBRATION}: {error}"))),
+            None => Ok(BTreeMap::new()),
+        }
     }
 }

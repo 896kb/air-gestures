@@ -12,4 +12,5 @@ pub mod meta;
 pub mod pairing;
 pub mod status;
 pub mod store;
+pub mod teach;
 pub mod transport;

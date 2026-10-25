@@ -267,3 +267,63 @@ fn forget_also_removes_leftover_temp_files() {
     }
     assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 0);
 }
+
+use air_gesturesd::store::{HandCalibration, StoredDrags, StoredPalm};
+use band_core::controls::Options;
+use band_core::controls::palm::PalmCalibration;
+use band_core::controls::pinch::Prototypes;
+use band_core::events::Hand;
+
+fn taught() -> HandCalibration {
+    HandCalibration {
+        palm: Some(StoredPalm { down_roll: -140.0, up_roll: -10.0 }),
+        drags: StoredDrags::from_prototypes(&Prototypes::right_hand()),
+    }
+}
+
+#[test]
+fn calibrations_round_trip_per_band_and_hand_and_survive_forget() {
+    let root = tempfile::tempdir().unwrap();
+    let store = Store::open(root.path()).unwrap();
+    assert_eq!(store.load_calibration("AA", Hand::Right).unwrap(), HandCalibration::default());
+    store.save_calibration("AA", Hand::Right, &taught()).unwrap();
+    let left = HandCalibration { palm: Some(StoredPalm { down_roll: 30.0, up_roll: 150.0 }), drags: None };
+    store.save_calibration("BB", Hand::Left, &left).unwrap();
+    assert_eq!(store.load_calibration("AA", Hand::Right).unwrap(), taught());
+    assert_eq!(store.load_calibration("AA", Hand::Left).unwrap(), HandCalibration::default());
+    assert_eq!(store.load_calibration("BB", Hand::Left).unwrap(), left);
+    assert_eq!(mode(&root.path().join("calibration.json")), 0o600);
+    store.forget().unwrap();
+    assert_eq!(store.load_calibration("AA", Hand::Right).unwrap(), taught(), "it describes the wrist, not the key");
+    store.save_calibration("AA", Hand::Right, &HandCalibration::default()).unwrap();
+    assert_eq!(store.load_calibration("AA", Hand::Right).unwrap(), HandCalibration::default());
+}
+
+#[test]
+fn a_corrupt_calibration_file_is_an_error() {
+    let root = tempfile::tempdir().unwrap();
+    let store = Store::open(root.path()).unwrap();
+    std::fs::write(root.path().join("calibration.json"), "{nope").unwrap();
+    let error = store.load_calibration("AA", Hand::Right).unwrap_err();
+    assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+}
+
+#[test]
+fn a_calibration_goes_into_the_options_and_lookalike_drags_dont() {
+    let mut options = Options::default();
+    assert!(taught().apply(&mut options).is_empty());
+    assert_eq!(options.palm, Some(PalmCalibration { down_roll: -140.0, up_roll: -10.0 }));
+    let measured = Prototypes::right_hand().drags.unwrap();
+    for (a, b) in options.drags.as_ref().unwrap().drags.unwrap().iter().zip(measured) {
+        assert!((0..3).all(|k| (a[k] - b[k]).abs() < 1e-12));
+    }
+    let mut bad = taught();
+    let stored = bad.drags.as_mut().unwrap();
+    stored.drags[1] = stored.drags[0];
+    let problems = bad.apply(&mut options);
+    assert_eq!(problems.len(), 1);
+    assert!(problems[0].contains("teach-drags"), "{problems:?}");
+    assert!(options.drags.is_none());
+    HandCalibration::default().apply(&mut options);
+    assert!(options.palm.is_none(), "nothing taught: the core's defaults");
+}
