@@ -12,12 +12,12 @@
 
 **Architecture:**
 - **`config.rs`** keeps reading `[gestures]` and `[[profile]]` as raw tables (so it knows what was written), now `toml::Table` because of the palm and drawings sub-tables. It validates everything at parse time and builds `Profiles<String>` (band controls, `Binding`s, `FingerSetup`s, drawings) and `Options`. A pure `config::notes()` turns `Profiles::warnings()`, `invalid()`, `paused()` and `paused_sliders()` into log lines, so they're unit-tested.
-- **`store.rs`** keeps, per band address and hand, a `HandCalibration { palm, drags }` in `calibration.json`; the daemon puts the one for the hand in use into `Options::palm` / `Options::drags`, and swaps it when the band reports another hand.
+- **`store.rs`** keeps, per band address and hand, a `HandCalibration { palm, drags }` in `calibration.json`; the daemon hands the one for the hand in use to `Controls::set_calibration(palm, drags)`, again whenever the band reports another hand (that keeps the runtime hand and writes nothing to the band).
 - **`drawings.rs`** (new) keeps the templates as `$XDG_DATA_HOME/air-gestures/drawings/<name>.json`; the daemon loads them into a `draw::Library` at start and whenever the directory's mtime changes (polled on the 250 ms tick, like the config file).
 - **`teach.rs`** (new, daemon side) is the state of one teaching step that waits for the band (rolls for 2 s, one `DragSample`, one `DrawFinished`). The daemon keeps the step and its reply `oneshot` and answers when it's done or at its deadline, so the IPC call blocks without blocking the daemon loop.
 - **The CLI** drives the guided flows (`air-gestures/src/teach.rs`) over those IPC steps. It checks the results with band-core (`PalmCalibration::from_rolls`, `Prototypes::taught`, `draw::check_tries`, `Library::looks_like`) so it can say what to redo, then stores them through the daemon (`set-palm`, `set-drags`) or the drawings directory.
 
-**Tech Stack:** Rust 2024, tokio, serde/serde_json/toml 0.8, clap 4. band-core at its local `controls` branch tip (0.5.0, unreleased).
+**Tech Stack:** Rust 2024, tokio, serde/serde_json/toml 0.8, clap 4. band-core at its local `controls` branch tip **at execution time** (0.5.0, unreleased; at least `5ff7ca7`, which adds `Controls::set_calibration`, `Controls::palm` and the responder's `gyro3` / `orientation`).
 
 **Specs (band-core repo, branch `controls`):**
 - `docs/superpowers/specs/2026-10-25-shared-controls-design.md` (revised: band controls; its "Linux" section and "Changes from the first build");
@@ -46,13 +46,15 @@
 - `Profile<A> { name, gestures: BTreeMap<Gesture, Binding<A>>, index, middle, drawings: BTreeMap<String, A> }`, `Profile::new(name)`.
 - `Profiles<A> { band, list, picked, apps, calls, drawings }`; `warnings() -> Vec<Warning::{NoControls, NoWayOut, DrawOnTap}>`; `invalid() -> Vec<Invalid::{Binding{place, gesture}, BandControl(builtin), DrawCantCancel}>`; `paused() -> Vec<Paused { builtin, gesture, used: Use { place, palm, action }, positions }>`; `paused_sliders() -> Vec<PausedSlider { builtin, gesture, profile, finger, pair, positions }>`; `drawing_action(profile, name)`; `Place::{Profile(i), Calls}`.
 - `Options { hand, autostart, dial_sensitivity, drags: Option<Prototypes>, palm: Option<PalmCalibration> }` (`Default`).
-- `Controls<String>`: as before (`new`, `on_event`, `poll`, `next_deadline`, `pause`/`resume`/`toggle`, `pick`, `request_hand`, `set_options`, `set_profiles`, `status`, `active`, `profiles`, `options`, `enabled`), plus `set_dial(Option<Dial>)` / `clear_dial()` / `dial()` / `dial_overridden()`; `set_library(draw::Library)`; `set_teaching(bool)`; `start_drawing(now) -> Vec<Output>`; `cancel_drawing() -> Vec<Output>`; `drawing()`; `set_drag_teaching(bool) -> Vec<Output>`.
+- `Controls<String>`: as before (`new`, `on_event`, `poll`, `next_deadline`, `pause`/`resume`/`toggle`, `pick`, `request_hand`, `set_options`, `set_profiles`, `status`, `active`, `profiles`, `options`, `enabled`), plus `set_dial(Option<Dial>)` / `clear_dial()` / `dial()` / `dial_overridden()`; `set_library(draw::Library)`; `set_teaching(bool)`; `start_drawing(now) -> Vec<Output>`; `cancel_drawing() -> Vec<Output>`; `drawing()`; `set_drag_teaching(bool) -> Vec<Output>`; `set_calibration(palm: Option<PalmCalibration>, drags: Option<Prototypes>)` (no outputs; keeps the hand, a runtime one from `request_hand` too, and writes nothing to the band; re-reads the palm; loses a live pinch only when the drags change); `palm(now) -> Palm` (down without an orientation in the last 0.5 s or without a calibration).
 - `Output<String>`: `Gesture`, `Run`, `Controls{enabled}`, `Profile{index, step}`, `ProfileHeld{app}`, `SetHand`, `Practiced`, `DrawStarted`, `DrawPoint{stroke, x, y}`, `DrawFinished{strokes}`, `Drawn{name, distance}`, `NotDrawn`, `DragSample{finger, direction}`, `DrawCancelled`.
 - `controls::palm::{PalmCalibration { down_roll, up_roll }, PalmCalibration::from_rolls(&[f64], &[f64]) -> Result<_, CalibrationError::{Empty(Palm), NotStill(Palm), TooClose}>, RIGHT_PALM_DOWN_ROLL, MIN_APART}`.
 - `controls::pinch::{Prototypes { palm_down_roll, turn, drags: Option<[[f64; 3]; 6]> }, Prototypes::right_hand(), Prototypes::taught(turn, drags, palm_down_roll) -> Result<_, TaughtError::{NoTurn, NoDrag(Drag), TooAlike(Drag, Drag), LikeTheTurn(Drag)}>, Drag::{ALL, index()}, up_in_band(q), roll_or(up, fallback)}`.
 - `controls::draw::{Stroke = Vec<[f64; 2]>, Drawing { name, tries: Vec<Vec<Stroke>> }, Library::new(&[Drawing]), Library::names(), Library::looks_like(&[Vec<Stroke>]) -> Option<String>, check_tries(&[Vec<Stroke>]) -> Result<(), TeachError::{TooSmall(i), NotAlike{first, second, distance}, NoTries}>}`.
 
-The sim band (`band_core::responder::Responder`, behind `SimTransport`) can send gestures (any action number: press = 1, release = 2), one-axis gyro (`SimInject::Gyro(x)`) and raw sEMG, but **no orientation**. So palm-roll collection is unit-tested with fed events (Task 8), and the daemon/CLI integration tests use x-axis gyro pinches: with no orientation the pinch frame is palm down, so `+x` is a drag **away** (forearm direction ≈ `[-0.791, 0, -0.612]`) outside a drawing and a **vertical stroke** (`[0, +y]`) inside one.
+The sim band (`band_core::responder::Responder`, behind `SimTransport`) sends gestures (any action number: press = 1, release = 2), one-axis gyro (`gyro(x)`), three-axis gyro (`gyro3(axes)`), orientation (`orientation(q)`) and raw sEMG. Task 7 adds `SimInject::Gyro3([i16; 3])` and `SimInject::Orientation([f32; 4])` to `SimTransport`, so daemon and CLI tests run palm positions, calibration and teaching end to end. Two facts the tests rely on:
+- an orientation `q = [cos(−r/2), 0, sin(−r/2), 0]` has roll `r` about the forearm (`roll_or(up_in_band(q), …)`); the right hand's measured palm down is −142.3°, palm up −11.3° (sideways ≈ −76.8°);
+- with no fresh orientation the pinch frame is palm down, so an x-axis pinch (`Gyro(+x)`) is a drag **away** (forearm direction ≈ `[-0.791, 0, -0.612]`) outside a drawing and a **vertical stroke** (`[0, +y]`) inside one.
 
 ## File structure
 
@@ -64,7 +66,8 @@ The sim band (`band_core::responder::Responder`, behind `SimTransport`) can send
 | `air-gesturesd/src/drawings.rs` | new: the drawings directory |
 | `air-gesturesd/src/teach.rs` | new: error texts; the waiting teaching step (`Wait`) |
 | `air-gesturesd/src/ipc.rs` | `palm-rolls`, `teach-drag`, `draw-try`, `set-palm`, `set-drags`; `Response::teach` |
-| `air-gesturesd/src/daemon.rs` | notes on load, new outputs, `on_draw`, dial override via `set_dial`, per-hand calibration, library reload, teaching steps |
+| `air-gesturesd/src/daemon.rs` | notes on load, new outputs, `on_draw`, dial override via `set_dial`, per-hand calibration via `set_calibration`, library reload, teaching steps, the `palm` request |
+| `air-gesturesd/src/transport.rs` | `SimInject::Gyro3`, `SimInject::Orientation` |
 | `air-gesturesd/src/main.rs`, `src/lib.rs` | drawings dir into `Daemon::new`; new modules |
 | `air-gesturesd/tests/{config,store,drawings,teach,ipc,daemon}.rs` | tests |
 | `air-gestures/src/client.rs` | `request_within` |
@@ -90,7 +93,8 @@ git status -s                        # only "?? air-gestures/examples/"
 git branch --show-current            # controls
 git -C band-core fetch -q /home/user888/Projects/band-core controls
 git -C band-core checkout -q FETCH_HEAD
-git -C band-core log --oneline -1    # 6833662 changelog: teach your drags (or later)
+git -C band-core log --oneline -1    # the band-core controls tip right now: 5ff7ca7 "controls: set_calibration and palm(); motion in the responder" or later
+git -C band-core grep -q 'pub fn set_calibration' src/controls/mod.rs && echo ok   # ok: the API this plan uses
 cargo build --workspace 2>&1 | grep -c '^error'   # > 0: Action is gone; the steps below fix it
 ```
 
@@ -1766,7 +1770,7 @@ pub fn stamp(dir: &Path) -> Option<SystemTime> {
 ### Task 7: The daemon: calibration per hand, the drawings library, `on_draw`
 
 **Files:**
-- Modify: `air-gesturesd/src/config.rs`, `air-gesturesd/src/daemon.rs`, `air-gesturesd/src/main.rs`, `air-gesturesd/tests/daemon.rs`, `air-gesturesd/tests/config.rs`, `air-gestures/tests/support/mod.rs`
+- Modify: `air-gesturesd/src/config.rs`, `air-gesturesd/src/daemon.rs`, `air-gesturesd/src/main.rs`, `air-gesturesd/src/transport.rs`, `air-gesturesd/tests/daemon.rs`, `air-gesturesd/tests/config.rs`, `air-gestures/tests/support/mod.rs`
 
 Decisions: drawings are reloaded by polling the directory's mtime on the 250 ms tick (as the config is); `DrawPoint` logs at trace (50 per second); no "drawing" state in status (YAGNI).
 
@@ -1788,8 +1792,8 @@ const SWIPE_UP: SimInject = SimInject::Gesture { action: 6, finger: 1, derived: 
 
 impl Harness {
     /// An index pinch turning the wrist about the band's x axis: `raw` gyro units for
-    /// `samples` × 10 ms. With no orientation (the sim sends none) that's a vertical stroke
-    /// in a drawing, and a drag away from you outside one.
+    /// `samples` × 10 ms. With no fresh orientation that's a vertical stroke in a drawing,
+    /// and a drag away from you outside one.
     async fn pinch_moving(&self, raw: i16, samples: usize) {
         self.transport.inject(SimInject::Gesture { action: PRESS, finger: INDEX, derived: 0 });
         for _ in 0..samples {
@@ -1797,6 +1801,14 @@ impl Harness {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
         self.transport.inject(SimInject::Gesture { action: RELEASE, finger: INDEX, derived: 0 });
+    }
+
+    /// Orientation samples with this roll about the forearm, every 50 ms for `seconds`.
+    async fn hold_roll(&self, degrees: f64, seconds: f64) {
+        for _ in 0..(seconds / 0.05).round() as usize {
+            self.transport.inject(SimInject::Orientation(rolled(degrees)));
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
     }
 
     /// A taught drawing called `name`: three vertical lines.
@@ -1808,6 +1820,48 @@ impl Harness {
 }
 
 const DRAWING_CONFIG: &str = "[band]\ndraw = \"swipe_up\"\non_draw = \"osd\"\n[drawings]\nline = \"echo line\"\n";
+
+/// An orientation (w, x, y, z) whose roll about the forearm is `degrees`.
+fn rolled(degrees: f64) -> [f32; 4] {
+    let half = (-degrees).to_radians() / 2.0;
+    [half.cos() as f32, 0.0, half.sin() as f32, 0.0]
+}
+
+/// The right hand's measured palm down and palm up (band-core's `PalmCalibration::right_hand`).
+const PALM_DOWN: f64 = -142.3;
+const PALM_UP: f64 = -11.3;
+
+#[tokio::test(start_paused = true)]
+async fn a_palm_override_runs_with_the_palm_that_way() {
+    let transport = SimTransport::new(SimMode::Enrolled);
+    let mut daemon = start(transport.clone(), true, fake(&transport));
+    daemon.connected().await;
+    daemon.wait("the right hand", |s| s.hand.as_deref() == Some("right")).await;
+    daemon.configure("[gestures.palm_up]\nswipe_left = \"echo up\"\n").await;
+    daemon.hold_roll(PALM_UP, 0.3).await;
+    daemon.transport.inject(SWIPE_LEFT);
+    daemon.wait("the palm-up command", |s| s.last_action.as_deref() == Some("echo up")).await;
+    daemon.hold_roll(PALM_DOWN, 0.6).await; // also past the 0.4 s action gate
+    daemon.transport.inject(SWIPE_LEFT);
+    daemon.wait("the normal command", |s| s.last_action.as_deref() == Some("hyprctl dispatch workspace e-1")).await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_stored_calibration_applies_to_the_hand_in_use() {
+    let transport = SimTransport::new(SimMode::Enrolled);
+    let mut daemon = start_seeded(transport.clone(), true, fake(&transport), |store| {
+        // A wrist where -11.3° is palm down: the measured palm-up roll no longer reads as up.
+        let palm = air_gesturesd::store::StoredPalm { down_roll: -11.3, up_roll: 120.0 };
+        let calibration = air_gesturesd::store::HandCalibration { palm: Some(palm), drags: None };
+        store.save_calibration(SIM_ADDRESS, band_core::events::Hand::Right, &calibration).unwrap();
+    });
+    daemon.connected().await;
+    daemon.wait("the right hand", |s| s.hand.as_deref() == Some("right")).await;
+    daemon.configure("[gestures.palm_up]\nswipe_left = \"echo up\"\n").await;
+    daemon.hold_roll(PALM_UP, 0.3).await;
+    daemon.transport.inject(SWIPE_LEFT);
+    daemon.wait("the normal command", |s| s.last_action.as_deref() == Some("hyprctl dispatch workspace e-1")).await;
+}
 
 #[tokio::test(start_paused = true)]
 async fn a_drawing_runs_on_draw_then_its_action() {
@@ -1881,7 +1935,7 @@ pub const DEFAULT_ON_DRAW: &str = r#"notify-send -a air-gestures "Drawing" "${AI
 
 - [ ] **Step 4: The daemon**
 
-Imports: `use std::time::SystemTime;` (already), `use band_core::controls::{Builtin, PalmSet, Profiles};`, `use band_core::controls::draw::Library;`, `use crate::config::HandSetting;`, `use crate::drawings;`.
+Imports: `use std::time::SystemTime;` (already), `use band_core::controls::{Builtin, Options, PalmCalibration, PalmSet, Profiles};`, `use band_core::controls::draw::Library;`, `use band_core::controls::pinch::Prototypes;`, `use crate::config::HandSetting;`, `use crate::drawings;`.
 
 New fields:
 
@@ -1890,10 +1944,8 @@ New fields:
     drawings_stamp: Option<SystemTime>,
     /// The taught drawings' names (for the config notes).
     drawing_names: Vec<String>,
-    /// The hand whose calibration is in the controls' options.
+    /// The hand whose calibration is in the controls.
     options_hand: Option<Hand>,
-    /// A hand chosen over IPC: kept when the options change for a calibration.
-    hand_choice: Option<Hand>,
 ```
 
 Free functions:
@@ -1908,19 +1960,21 @@ fn configured_hand(config: &Config) -> Option<Hand> {
     }
 }
 
-/// The config's options, with what was taught on the paired band for `hand`.
-fn calibrated(config: &Config, store: &Store, hand: Option<Hand>) -> Options {
-    let mut options = config.options();
-    let (Some(hand), Ok(Some(band))) = (hand, store.load_band()) else { return options };
-    match store.load_calibration(&band.address, hand) {
-        Ok(calibration) => {
-            for problem in calibration.apply(&mut options) {
-                tracing::warn!("calibration: {problem}");
+/// What was taught on the paired band for `hand`, for `Controls::set_calibration`
+/// (`None`s: the core's defaults for that hand).
+fn calibration_for(store: &Store, hand: Option<Hand>) -> (Option<PalmCalibration>, Option<Prototypes>) {
+    let mut options = Options::default();
+    if let (Some(hand), Ok(Some(band))) = (hand, store.load_band()) {
+        match store.load_calibration(&band.address, hand) {
+            Ok(calibration) => {
+                for problem in calibration.apply(&mut options) {
+                    tracing::warn!("calibration: {problem}");
+                }
             }
+            Err(error) => tracing::warn!("calibration: {error}"),
         }
-        Err(error) => tracing::warn!("calibration: {error}"),
     }
-    options
+    (options.palm, options.drags)
 }
 
 /// Some gesture or band control depends on the palm position.
@@ -1942,7 +1996,9 @@ fn uses_palm(profiles: &Profiles<String>) -> bool {
         let drawings_stamp = drawings::stamp(&drawings_dir);
         let drawing_names: Vec<String> = drawings.iter().map(|d| d.name.clone()).collect();
         let options_hand = configured_hand(&config);
-        let mut controls = Controls::new(calibrated(&config, &store, options_hand), config.profiles());
+        let mut controls = Controls::new(config.options(), config.profiles());
+        let (palm, drags) = calibration_for(&store, options_hand);
+        controls.set_calibration(palm, drags);
         controls.set_library(Library::new(&drawings));
         log_notes(controls.profiles(), &drawing_names);
 ```
@@ -1956,24 +2012,18 @@ Methods:
     }
 
     /// The hand in use changed (or, `force`, what's taught for it): its calibration into the
-    /// options. `set_options` forgets a hand chosen over IPC and asks for the configured one
-    /// again, so that request is dropped and the IPC choice asked for instead.
+    /// controls. `set_calibration` keeps the hand (an IPC choice too) and writes nothing.
     fn refresh_calibration(&mut self, force: bool) {
         let hand = self.hand_in_use();
         if !force && hand == self.options_hand {
             return;
         }
         self.options_hand = hand;
-        let options = calibrated(&self.config, &self.store, hand);
-        if hand == Some(Hand::Left) && options.palm.is_none() && uses_palm(self.controls.profiles()) {
+        let (palm, drags) = calibration_for(&self.store, hand);
+        if hand == Some(Hand::Left) && palm.is_none() && uses_palm(self.controls.profiles()) {
             tracing::info!("the left hand has no palm calibration: every gesture counts as palm down until `air-gestures calibrate`");
         }
-        let mut outputs = self.controls.set_options(options);
-        if let Some(choice) = self.hand_choice {
-            outputs.retain(|output| !matches!(output, Output::SetHand(_)));
-            outputs.extend(self.controls.request_hand(choice));
-        }
-        self.apply(outputs, false);
+        self.controls.set_calibration(palm, drags);
     }
 
     fn reload_drawings(&mut self) {
@@ -2007,8 +2057,17 @@ Methods:
 Wire them in:
 - `on_link_event`: after `self.apply(outputs, true);` add `self.refresh_calibration(false);`.
 - `on_tick`: after `self.reload_config();` add `self.reload_drawings();`.
-- `handle`, `Request::Hand`: set `self.hand_choice = Some(hand);` before `request_hand`.
-- `reload_config`: the options become `self.hand_choice = None; self.options_hand = self.hand_in_use(); let mut outputs = self.controls.set_options(calibrated(&self.config, &self.store, self.options_hand));` (a reloaded file wins over an IPC hand, as `set_options` always did), and `log_notes(self.controls.profiles(), &self.drawing_names)`.
+- `reload_config`: after `set_options(self.config.options())` (whose options carry no calibration), `self.refresh_calibration(true);` puts it back; and `log_notes(self.controls.profiles(), &self.drawing_names)`.
+- `transport.rs`: `SimInject` gains
+
+  ```rust
+      /// One gyro sample with all three axes (raw units).
+      Gyro3([i16; 3]),
+      /// One orientation sample (w, x, y, z).
+      Orientation([f32; 4]),
+  ```
+
+  and `serve` maps them: `Some(SimInject::Gyro3(axes)) => band.gyro3(axes),` and `Some(SimInject::Orientation(q)) => band.orientation(q),`.
 - `apply`: take `Drawn` and `NotDrawn` out of the debug arm:
 
 ```rust
@@ -2027,7 +2086,7 @@ Wire them in:
 
 - [ ] **Step 5: Run the tests** — as Task 1 Step 6. If `a_drawing_runs_on_draw_then_its_action` sees no stroke, check with `AIR_GESTURES_LOG=air_gesturesd=debug cargo test -p air-gesturesd --test daemon a_drawing -- --nocapture` that `DrawStarted` and `DrawFinished` appear; the stroke must last ≥ 0.3 s (40 samples) to count.
 
-- [ ] **Step 6: Commit** `air-gesturesd/src/config.rs air-gesturesd/src/daemon.rs air-gesturesd/src/main.rs air-gesturesd/tests/config.rs air-gesturesd/tests/daemon.rs air-gestures/tests/support/mod.rs` — message `daemon: calibration per hand, the drawings library, on_draw`.
+- [ ] **Step 6: Commit** `air-gesturesd/src/config.rs air-gesturesd/src/daemon.rs air-gesturesd/src/main.rs air-gesturesd/src/transport.rs air-gesturesd/tests/config.rs air-gesturesd/tests/daemon.rs air-gestures/tests/support/mod.rs` — message `daemon: calibration per hand, the drawings library, on_draw`.
 
 ---
 
@@ -2042,7 +2101,8 @@ Design:
 - `teach-drag {seconds}`: `set_drag_teaching(true)` until the next `DragSample` or `seconds` (1–60); answer `teach: {kind: "drag", finger, direction}`. Decision: one request per sample (teaching is off between them), so a killed CLI leaves the band in teaching mode for at most `seconds`.
 - `draw-try {seconds}`: `set_teaching(true)` and `start_drawing` now; answer the `DrawFinished` strokes (`teach: {kind: "strokes", strokes}`), or an error on `DrawCancelled` / `seconds` (1–120).
 - One waiting step at a time; each needs a connected band; a disconnect fails it.
-- `set-palm {palm: {down_roll, up_roll} | null}` / `set-drags {drags: {turn, drags} | null}`: store for the paired band and the hand in use (`null` forgets), and apply. The daemon checks them again (`from_rolls` / `Prototypes::taught`).
+- `set-palm {palm: {down_roll, up_roll} | null}` / `set-drags {drags: {turn, drags} | null}`: store for the paired band and the hand in use (`null` forgets), and apply (`set_calibration`). The daemon checks them again (`from_rolls` / `Prototypes::taught`).
+- `palm`: answers at once with the palm position the band reads now (`Controls::palm`), `teach: {kind: "palm", palm: "down" | "sideways" | "up"}`; `calibrate` uses it to confirm.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -2130,7 +2190,8 @@ fn errors_say_what_to_do() {
     let line = serde_json::to_string(&Request::SetDrags { drags: Some(drags.clone()) }).unwrap();
     assert!(line.starts_with(r#"{"cmd":"set-drags""#), "{line}");
     assert_eq!(parse(&line), Request::SetDrags { drags: Some(drags) });
-    assert!(Request::DrawTry { seconds: 1.0 }.waits() && !Request::SetPalm { palm: None }.waits());
+    assert_eq!(parse(r#"{"cmd":"palm"}"#), Request::Palm);
+    assert!(Request::DrawTry { seconds: 1.0 }.waits() && !Request::SetPalm { palm: None }.waits() && !Request::Palm.waits());
     let answer: Response = serde_json::from_str(r#"{"ok":true,"teach":{"kind":"rolls","rolls":[1.5],"samples":2}}"#).unwrap();
     assert_eq!(answer.teach, Some(Taught::Rolls { rolls: vec![1.5], samples: 2 }));
 ```
@@ -2209,6 +2270,23 @@ async fn palm_rolls_without_orientation_come_back_empty() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn palm_rolls_and_the_palm_now_come_from_the_bands_orientation() {
+    let transport = SimTransport::new(SimMode::Enrolled);
+    let mut daemon = start(transport.clone(), true, fake(&transport));
+    daemon.right_hand().await;
+    let answer = daemon.call_later(Request::PalmRolls { seconds: 2.0 }).await;
+    daemon.hold_roll(-140.0, 2.5).await;
+    let Some(Taught::Rolls { rolls, samples }) = answer.await.unwrap().teach else { panic!() };
+    assert!(samples >= 30 && rolls.len() == samples, "{samples} samples, {} rolls", rolls.len());
+    assert!(rolls.iter().all(|r| (r + 140.0).abs() < 0.01), "{rolls:?}");
+    daemon.hold_roll(PALM_UP, 0.3).await;
+    assert_eq!(daemon.call(Request::Palm).await.teach, Some(Taught::Palm { palm: "up".into() }));
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    let stale = daemon.call(Request::Palm).await.teach;
+    assert_eq!(stale, Some(Taught::Palm { palm: "down".into() }), "no orientation for 0.5 s reads as down");
+}
+
+#[tokio::test(start_paused = true)]
 async fn teaching_needs_a_band_and_one_step_at_a_time() {
     let lonely = SimTransport::new(SimMode::Enrolled);
     let alone = start(lonely.clone(), false, fake(&lonely));
@@ -2268,6 +2346,8 @@ async fn set_palm_and_set_drags_store_for_the_band_and_hand() {
         #[serde(default)]
         drags: Option<TaughtDrags>,
     },
+    /// The palm position the band reads now (answers `teach: palm` at once).
+    Palm,
 ```
 
 and:
@@ -2297,6 +2377,8 @@ pub enum Taught {
     Drag { finger: String, direction: [f64; 3] },
     /// One drawing's strokes of [x, y] points (degrees).
     Strokes { strokes: Vec<Vec<[f64; 2]>> },
+    /// The palm position now: "down", "sideways" or "up" (`Palm::key`).
+    Palm { palm: String },
 }
 ```
 
@@ -2397,7 +2479,7 @@ impl Wait {
 
 - [ ] **Step 5: The daemon**
 
-Imports: `use tokio::sync::oneshot;`, `use band_core::controls::palm::{PalmCalibration, RIGHT_PALM_DOWN_ROLL};`, `use band_core::controls::pinch::Prototypes;`, `use crate::store::{HandCalibration, StoredDrags};`, `use crate::teach::{Done, Step, Wait};`.
+Imports: `use tokio::sync::oneshot;`, `use band_core::controls::palm::RIGHT_PALM_DOWN_ROLL;`, `use crate::ipc::Taught;`, `use crate::store::{HandCalibration, StoredDrags};`, `use crate::teach::{Done, Step, Wait};` (`PalmCalibration` and `Prototypes` came in Task 7).
 
 Field: `/// The teaching step waiting for the band, and where its answer goes. waiting: Option<(Wait, oneshot::Sender<Response>)>,` (initialised `None`).
 
@@ -2538,6 +2620,14 @@ Wire-up:
                 };
                 return self.save_taught(|calibration| calibration.drags = stored);
             }
+            Request::Palm => {
+                if self.state != LinkState::Connected {
+                    return Response::error("connect the band first (`air-gestures connect`)");
+                }
+                let palm = self.controls.palm(now).key().to_owned();
+                self.publish();
+                return Response::taught(self.status.borrow().clone(), Taught::Palm { palm });
+            }
 ```
 
   (`set_palm_and_set_drags_store…` sends the palm first, so the drags are taught under −140.)
@@ -2551,10 +2641,10 @@ Wire-up:
 ### Task 9: `air-gestures calibrate`
 
 **Files:**
-- Modify: `air-gestures/src/client.rs`, `air-gestures/src/lib.rs` (`pub mod teach;`), `air-gestures/src/main.rs`
+- Modify: `air-gestures/src/client.rs`, `air-gestures/src/lib.rs` (`pub mod teach;`), `air-gestures/src/main.rs`, `air-gestures/tests/support/mod.rs`
 - Create: `air-gestures/src/teach.rs`, `air-gestures/tests/teach.rs`
 
-Decision: each position starts on Enter (the user's other hand is on the keyboard), then a notification and 2 s of holding still; up to three rounds, redoing only what failed.
+Decisions: each position starts on Enter (the user's other hand is on the keyboard), then a notification and 2 s of holding still; up to three rounds, redoing only what failed. After saving, `calibrate` asks for the palm up once more and reads `palm` (band-core's `Controls::palm`): "palm up now" confirms it; anything else is said, but the calibration stays saved (the user decides whether to run it again).
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -2567,13 +2657,20 @@ use std::time::Duration;
 
 use air_gestures::teach::{self, Guide};
 use air_gesturesd::status::LinkState;
+use std::sync::{Arc, Mutex};
+
+use air_gesturesd::transport::SIM_ADDRESS;
+use band_core::events::Hand;
 use band_core::responder::SimMode;
 use tokio::sync::mpsc;
 
-/// Records what the flow says; each notification goes to the test (the cue to act).
+/// Records what the flow says; each notification goes to the test (the cue to act). With
+/// `roll`, the "Palm down" / "Palm up" notifications also turn the simulated wrist (before
+/// the flow asks the daemon for rolls, so no sample of the other position gets in).
 struct Recorded {
     said: Vec<String>,
     notified: mpsc::UnboundedSender<String>,
+    roll: Option<Arc<Mutex<f64>>>,
 }
 
 impl Guide for Recorded {
@@ -2581,6 +2678,13 @@ impl Guide for Recorded {
         self.said.push(text.to_owned());
     }
     fn notify(&mut self, title: &str, body: &str) {
+        if let Some(roll) = &self.roll {
+            match title {
+                "Palm down" => *roll.lock().unwrap() = -140.0,
+                "Palm up" => *roll.lock().unwrap() = -10.0,
+                _ => {}
+            }
+        }
         let _ = self.notified.send(format!("{title}: {body}"));
     }
     fn ready(&mut self, _prompt: &str) -> bool {
@@ -2590,7 +2694,25 @@ impl Guide for Recorded {
 
 fn guide() -> (Recorded, mpsc::UnboundedReceiver<String>) {
     let (notified, cues) = mpsc::unbounded_channel();
-    (Recorded { said: Vec::new(), notified }, cues)
+    (Recorded { said: Vec::new(), notified, roll: None }, cues)
+}
+
+#[tokio::test]
+async fn calibrating_saves_palm_down_and_up_and_confirms_palm_up() {
+    let daemon = support::start(SimMode::Enrolled, true).await;
+    daemon.wait("the hand", |s| s.state == LinkState::Connected && s.hand.as_deref() == Some("right")).await;
+    let roll = Arc::new(Mutex::new(-140.0));
+    let feeder = tokio::spawn(support::feed_roll(daemon.transport.clone(), roll.clone()));
+    let (mut guide, _cues) = guide();
+    guide.roll = Some(roll);
+    let socket = daemon.socket.clone();
+    let flow = tokio::spawn(async move { teach::calibrate(&socket, &mut guide).await.map(|c| (c, guide.said)) });
+    let (calibration, said) = flow.await.unwrap().unwrap();
+    feeder.abort();
+    assert!((calibration.down_roll + 140.0).abs() < 0.5 && (calibration.up_roll + 10.0).abs() < 0.5, "{calibration:?}");
+    assert!(said.iter().any(|s| s.contains("palm up now")), "{said:?}");
+    let stored = daemon.store.load_calibration(SIM_ADDRESS, Hand::Right).unwrap();
+    assert_eq!(stored.palm.map(|p| p.calibration()), Some(calibration));
 }
 
 #[tokio::test]
@@ -2608,6 +2730,26 @@ async fn calibrating_needs_a_connected_band() {
     let (mut guide, _cues) = guide();
     let error = teach::calibrate(&daemon.socket, &mut guide).await.unwrap_err();
     assert!(error.contains("connect the band first"), "{error}");
+}
+```
+
+`air-gestures/tests/support/mod.rs` gains:
+
+```rust
+/// An orientation (w, x, y, z) whose roll about the forearm is `degrees`.
+pub fn rolled(degrees: f64) -> [f32; 4] {
+    let half = (-degrees).to_radians() / 2.0;
+    [half.cos() as f32, 0.0, half.sin() as f32, 0.0]
+}
+
+/// The band's orientation every 50 ms, rolled as `roll` says now (until aborted).
+pub async fn feed_roll(transport: SimTransport, roll: std::sync::Arc<std::sync::Mutex<f64>>) {
+    use air_gesturesd::transport::SimInject;
+    loop {
+        let degrees = *roll.lock().unwrap();
+        transport.inject(SimInject::Orientation(rolled(degrees)));
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
 }
 ```
 
@@ -2701,7 +2843,31 @@ async fn hold(socket: &Path, guide: &mut impl Guide, palm: Palm) -> Result<Vec<f
     }
 }
 
-/// Palm down, then palm up, held still: the calibration for the hand in use, stored and applied.
+/// The palm position the band reads now.
+async fn palm_now(socket: &Path) -> Result<String, String> {
+    match client::request(socket, &Request::Palm).await?.teach {
+        Some(Taught::Palm { palm }) => Ok(palm),
+        _ => Err(unexpected()),
+    }
+}
+
+/// Palm up once more: does the band read it that way now? Only says so; the calibration
+/// is saved either way.
+async fn confirm(socket: &Path, guide: &mut impl Guide) -> Result<(), String> {
+    if !guide.ready("Check: turn your palm up again and press Enter.") {
+        return Ok(());
+    }
+    match palm_now(socket).await?.as_str() {
+        "up" => guide.say("The band reads palm up now. Done."),
+        other => guide.say(&format!(
+            "The band reads palm {other} with your palm up: if that's wrong, run `air-gestures calibrate` again."
+        )),
+    }
+    Ok(())
+}
+
+/// Palm down, then palm up, held still: the calibration for the hand in use, stored and
+/// applied, then checked.
 pub async fn calibrate(socket: &Path, guide: &mut impl Guide) -> Result<PalmCalibration, String> {
     let status = client::status(socket).await?;
     let hand = connected_hand(&status)?.to_owned();
@@ -2724,6 +2890,7 @@ pub async fn calibrate(socket: &Path, guide: &mut impl Guide) -> Result<PalmCali
                 );
                 guide.say(&text);
                 guide.notify("Calibrated", &text);
+                confirm(socket, guide).await?;
                 return Ok(calibration);
             }
             Err(error) => {
@@ -2781,7 +2948,7 @@ mod tests {
 
 - [ ] **Step 6: Run the tests** — as Task 1 Step 6 (also runs `cargo test -p air-gestures --bin air-gestures`).
 
-- [ ] **Step 7: Commit** `air-gestures/src/client.rs air-gestures/src/lib.rs air-gestures/src/teach.rs air-gestures/src/main.rs air-gestures/tests/teach.rs` — message `air-gestures calibrate: palm down and up, held still`.
+- [ ] **Step 7: Commit** `air-gestures/src/client.rs air-gestures/src/lib.rs air-gestures/src/teach.rs air-gestures/src/main.rs air-gestures/tests/teach.rs air-gestures/tests/support/mod.rs` — message `air-gestures calibrate: palm down and up, held still, then checked`.
 
 ---
 
@@ -3388,7 +3555,7 @@ kill $D; wait $D; rm -rf "$T"
 Expected log lines: `middle_double in profile "default" is overridden by [band] next_profile`, the same for `"media"`, `drawing "lightbulb" has an action but isn't taught yet`, and the info that no gesture turns the controls off/on. (The dry-run band is never paired, so `status` says how to pair and `calibrate` asks to connect; that's fine here.)
 
 - [ ] **Step 3: Hand over the hardware check to the owner** (don't do it yourself: it needs the band and restarting the service). Checklist for the owner:
-  - `air-gestures calibrate`, then a gesture with a palm override, palm up and sideways (index taps sideways: the spec's open question);
+  - `air-gestures calibrate` (its last step should read "palm up now"), then a gesture with a palm override, palm up and sideways (index taps sideways: the spec's open question);
   - `air-gestures teach-drags`, then drags and a slider with the palm up;
   - `air-gestures draw teach lightbulb` (air), and a pen-grip check mark on the table; Draw on a non-default gesture; `on_draw`'s notification;
   - a paused command coming back after moving its band control; the lock while off.
@@ -3397,9 +3564,6 @@ Expected log lines: `middle_double in profile "default" is overridden by [band] 
 
 ## Notes for the executor
 
-- **Gaps in band-core found while planning** (not to be fixed here):
-  - `Controls::set_options` is the only way to change `Options::palm` / `Options::drags`, and it forgets a hand chosen with `request_hand` (and emits `SetHand` for the configured hand). Task 7 drops that `SetHand` and re-requests the IPC choice after each calibration swap (`hand_choice`); a `Controls::set_calibration(palm, drags)` that keeps the hand state would make that unnecessary.
-  - `Options` holds one hand's calibration, so the app has to swap it when the band reports another hand (Task 7 `refresh_calibration`).
-  - The sim band (`responder::Responder`) can't send orientation or 3-axis gyro, so palm calibration is unit-tested with fed events and not end to end, and the daemon tests only make x-axis pinches.
-  - `Controls` has no live palm-position getter, so `calibrate` can't show "palm up now" to confirm the result.
+- **band-core API this plan relies on** (added for it in `5ff7ca7`): `Controls::set_calibration` (Task 7's per-hand swap: no outputs, the hand and any IPC choice stay), `Controls::palm(now)` (Task 8's `palm` request, which `calibrate` confirms with), and `Responder::gyro3` / `Responder::orientation` (Task 7's `SimInject::Gyro3` / `SimInject::Orientation`, used by the end-to-end palm and calibration tests). If Task 1's `grep` for `set_calibration` fails, the submodule isn't at a new enough tip: stop and ask.
+- `Options` still holds one hand's calibration, so the daemon swaps it (`refresh_calibration`) whenever the band reports another hand.
 - If a daemon test that pinches is flaky, check first that gyro samples keep coming during the pinch (the engine drops a pinch whose motion stops for 0.35 s), and that strokes last ≥ 0.3 s.
