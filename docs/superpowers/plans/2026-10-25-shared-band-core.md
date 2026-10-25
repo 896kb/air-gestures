@@ -645,6 +645,9 @@ Both files currently describe band-core as copied. Replace that with: band-core 
 ```bash
 glab api user > /dev/null    # refreshes the token
 glab repo create 896kb/band-core --public --description "Meta Neural Band protocol core shared by Air Gestures for Linux and Android"
+# The homelab runner (brigadahq-docker, a project runner) must be enabled per project;
+# without it the docker-tagged job stays pending (shared-runner minutes are used up).
+glab api -X POST projects/896kb%2Fband-core/runners -f runner_id=56754740
 cd ~/Projects/band-core
 git remote add origin https://gitlab.com/896kb/band-core.git
 AUTH=$(printf 'oauth2:%s' "$(glab config get token --host gitlab.com)" | base64 -w0)

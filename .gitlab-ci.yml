@@ -108,7 +108,7 @@ build-aarch64:
     - if: $CI_COMMIT_TAG
       when: never
     - if: $CI_COMMIT_BRANCH
-      changes: [Cargo.lock, "**/Cargo.toml", .gitlab-ci.yml, .gitlab/*]
+      changes: [Cargo.lock, "**/Cargo.toml", band-core, .gitlab-ci.yml, .gitlab/*]
   script:
     - cargo build --workspace --release --locked --target aarch64-unknown-linux-gnu
 
