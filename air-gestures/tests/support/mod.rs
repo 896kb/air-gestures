@@ -141,3 +141,19 @@ impl TestDaemon {
         }
     }
 }
+
+/// An orientation (w, x, y, z) whose roll about the forearm is `degrees`.
+pub fn rolled(degrees: f64) -> [f32; 4] {
+    let half = (-degrees).to_radians() / 2.0;
+    [half.cos() as f32, 0.0, half.sin() as f32, 0.0]
+}
+
+/// The band's orientation every 50 ms, rolled as `roll` says now (until aborted).
+pub async fn feed_roll(transport: SimTransport, roll: std::sync::Arc<std::sync::Mutex<f64>>) {
+    use air_gesturesd::transport::SimInject;
+    loop {
+        let degrees = *roll.lock().unwrap();
+        transport.inject(SimInject::Orientation(rolled(degrees)));
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}

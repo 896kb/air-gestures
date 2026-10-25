@@ -71,11 +71,16 @@ async fn send(write: &mut OwnedWriteHalf, request: &Request) -> Result<(), Strin
 /// where the daemon sent one, its stable [`RequestError::code`]) or reports a
 /// transport problem (never carries a code).
 pub async fn request(path: &Path, request: &Request) -> Result<Response, RequestError> {
+    request_within(path, request, CALL_TIMEOUT).await
+}
+
+/// Like [`request`], waiting up to `timeout` for the answer (teaching steps wait for the band).
+pub async fn request_within(path: &Path, request: &Request, timeout: Duration) -> Result<Response, RequestError> {
     let stream = connect(path).await?;
     let (read, mut write) = stream.into_split();
     send(&mut write, request).await?;
     let mut lines = BufReader::new(read).lines();
-    let line = tokio::time::timeout(CALL_TIMEOUT, lines.next_line())
+    let line = tokio::time::timeout(timeout, lines.next_line())
         .await
         .map_err(|_| "air-gesturesd didn't answer in time".to_string())?
         .map_err(|error| format!("reading from air-gesturesd failed: {error}"))?

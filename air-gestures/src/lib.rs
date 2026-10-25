@@ -5,6 +5,7 @@ pub mod metaauth;
 pub mod pair;
 pub mod semg;
 pub mod signin;
+pub mod teach;
 pub mod text;
 pub mod transfer;
 pub mod waybar;

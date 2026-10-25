@@ -100,6 +100,12 @@ enum Command {
         #[arg(long)]
         yes: bool,
     },
+    /// Calibrate palm positions (down, up) for the band and the hand it's on.
+    Calibrate {
+        /// Forget the calibration (back to the measured right-hand one; none for the left hand).
+        #[arg(long)]
+        reset: bool,
+    },
     /// Raw sEMG readings.
     Semg {
         #[command(subcommand)]
@@ -500,6 +506,10 @@ fn main() -> ExitCode {
         Command::Import { file, yes } => {
             report(import(&socket, &store_dir(cli.dry_run), &file, yes))
         }
+        Command::Calibrate { reset: true } => simple(&socket, Request::SetPalm { palm: None }),
+        Command::Calibrate { reset: false } => report(
+            runtime().block_on(air_gestures::teach::calibrate(&socket, &mut air_gestures::teach::Terminal)).map(|_| ()),
+        ),
         Command::Semg {
             what: SemgCommand::View,
         } => report(runtime().block_on(air_gestures::semg::view(&socket))),
@@ -521,5 +531,21 @@ fn main() -> ExitCode {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse(args: &[&str]) -> Command {
+        Cli::try_parse_from(std::iter::once("air-gestures").chain(args.iter().copied())).unwrap().command
+    }
+
+    #[test]
+    fn the_teaching_commands_parse() {
+        assert!(matches!(parse(&["calibrate"]), Command::Calibrate { reset: false }));
+        assert!(matches!(parse(&["calibrate", "--reset"]), Command::Calibrate { reset: true }));
+        assert!(matches!(parse(&["--dry-run", "calibrate"]), Command::Calibrate { .. }));
     }
 }
