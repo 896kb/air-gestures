@@ -156,6 +156,7 @@ async fn main() -> ExitCode {
                 factory,
                 store,
                 config_path,
+                air_gesturesd::drawings::default_dir(dry_run),
             ),
             listener,
         )
@@ -176,6 +177,7 @@ async fn main() -> ExitCode {
                 HttpFactory,
                 store,
                 config_path,
+                air_gesturesd::drawings::default_dir(dry_run),
             ),
             listener,
         )

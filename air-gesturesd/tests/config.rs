@@ -31,6 +31,7 @@ fn defaults_match_the_design() {
     }
     assert_eq!(config.dial.target, DialTarget::Volume);
     assert_eq!(config.dial.sensitivity, 1.0);
+    assert_eq!(config.band.on_draw, r#"notify-send -a air-gestures "Drawing" "${AIR_GESTURES_DRAWING:-not recognised}""#);
     let first = &config.profiles().list[0];
     assert_eq!(first.index.dial.clone().unwrap().up, "wpctl set-volume -l 1.0 @DEFAULT_AUDIO_SINK@ 2%+");
     assert!(first.middle.dial.is_none());

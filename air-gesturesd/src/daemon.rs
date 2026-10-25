@@ -8,7 +8,9 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use band_core::ceremony::FACTORY_RESET_HINT;
-use band_core::controls::{Controls, Output};
+use band_core::controls::draw::Library;
+use band_core::controls::pinch::Prototypes;
+use band_core::controls::{Builtin, Controls, Options, Output, PalmCalibration, PalmSet, Profiles};
 use band_core::events::{Event, Hand};
 use band_core::session::BandSession;
 use tokio::sync::{broadcast, mpsc, watch};
@@ -16,7 +18,8 @@ use tokio::task::JoinHandle;
 
 use crate::actions::Runner;
 use crate::clock::Clock;
-use crate::config::{Config, DialTarget, Level};
+use crate::config::{Config, DialTarget, HandSetting, Level};
+use crate::drawings;
 use crate::ipc::{Call, HandChoice, Request, Response};
 use crate::link::{LinkCommand, LinkEnd, LinkEvent, LinkOutcome, run_link};
 use crate::meta::ClientFactory;
@@ -51,6 +54,12 @@ pub struct Daemon<T: Transport, R: Runner, F: ClientFactory> {
     config_path: PathBuf,
     config_stamp: Option<SystemTime>,
     config_error: Option<String>,
+    drawings_dir: PathBuf,
+    drawings_stamp: Option<SystemTime>,
+    /// The taught drawings' names (for the config notes).
+    drawing_names: Vec<String>,
+    /// The hand whose calibration is in the controls.
+    options_hand: Option<Hand>,
     controls: Controls<String>,
     /// The loaded config (hooks, dial commands, profiles).
     config: Config,
@@ -111,6 +120,7 @@ impl<T: Transport, R: Runner, F: ClientFactory> Daemon<T, R, F> {
         factory: F,
         store: Store,
         config_path: PathBuf,
+        drawings_dir: PathBuf,
     ) -> Self {
         let (config, config_error) = match Config::load(&config_path) {
             Ok(config) => (config, None),
@@ -119,8 +129,18 @@ impl<T: Transport, R: Runner, F: ClientFactory> Daemon<T, R, F> {
         let config_stamp = modified(&config_path);
         let wants_connection = config.band.autostart;
         let index_dials = config.index_dials();
-        let controls = Controls::new(config.options(), config.profiles());
-        log_notes(controls.profiles());
+        let (drawings, problems) = drawings::load(&drawings_dir);
+        for problem in problems {
+            tracing::warn!("drawings: {problem}");
+        }
+        let drawings_stamp = drawings::stamp(&drawings_dir);
+        let drawing_names: Vec<String> = drawings.iter().map(|d| d.name.clone()).collect();
+        let options_hand = configured_hand(&config);
+        let mut controls = Controls::new(config.options(), config.profiles());
+        let (palm, drags) = calibration_for(&store, options_hand);
+        controls.set_calibration(palm, drags);
+        controls.set_library(Library::new(&drawings));
+        log_notes(controls.profiles(), &drawing_names);
         let band_name = store.load_band().ok().flatten().map(|band| band.name);
         let (status, _) = watch::channel(Status::default());
         let (semg, _) = broadcast::channel(256);
@@ -133,6 +153,10 @@ impl<T: Transport, R: Runner, F: ClientFactory> Daemon<T, R, F> {
             config_path,
             config_stamp,
             config_error,
+            drawings_dir,
+            drawings_stamp,
+            drawing_names,
+            options_hand,
             controls,
             config,
             dial_override: DialTarget::Off,
@@ -324,10 +348,16 @@ impl<T: Transport, R: Runner, F: ClientFactory> Daemon<T, R, F> {
                 Output::Practiced(_) => {}
                 Output::DrawPoint { stroke, x, y } => tracing::trace!(stroke, x, y, "draw point"),
                 Output::Pen { down } => tracing::trace!(down, "pen"),
+                Output::Drawn { name, distance } => {
+                    tracing::info!(drawing = %name, distance, "drawn");
+                    self.run_draw_hook(&name);
+                }
+                Output::NotDrawn => {
+                    tracing::info!("drawing not recognised");
+                    self.run_draw_hook("");
+                }
                 other @ (Output::DrawStarted
                 | Output::DrawFinished { .. }
-                | Output::Drawn { .. }
-                | Output::NotDrawn
                 | Output::DrawCancelled
                 | Output::DragSample { .. }) => tracing::debug!(?other, "controls"),
             }
@@ -346,6 +376,53 @@ impl<T: Transport, R: Runner, F: ClientFactory> Daemon<T, R, F> {
     fn override_dial(&mut self, target: DialTarget) {
         self.dial_override = target;
         self.controls.set_dial(self.config.dial.dial(target));
+    }
+
+    /// The hand whose calibration applies: the band's, else the configured one.
+    fn hand_in_use(&self) -> Option<Hand> {
+        self.controls.status().hand.or_else(|| configured_hand(&self.config))
+    }
+
+    /// The hand in use changed (or, `force`, what's taught for it): its calibration into the
+    /// controls. `set_calibration` keeps the hand (an IPC choice too) and writes nothing.
+    fn refresh_calibration(&mut self, force: bool) {
+        let hand = self.hand_in_use();
+        if !force && hand == self.options_hand {
+            return;
+        }
+        self.options_hand = hand;
+        let (palm, drags) = calibration_for(&self.store, hand);
+        if hand == Some(Hand::Left) && palm.is_none() && uses_palm(self.controls.profiles()) {
+            tracing::info!("the left hand has no palm calibration: every gesture counts as palm down until `air-gestures calibrate`");
+        }
+        self.controls.set_calibration(palm, drags);
+    }
+
+    fn reload_drawings(&mut self) {
+        let stamp = drawings::stamp(&self.drawings_dir);
+        if stamp == self.drawings_stamp {
+            return;
+        }
+        self.drawings_stamp = stamp;
+        let (drawings, problems) = drawings::load(&self.drawings_dir);
+        for problem in problems {
+            tracing::warn!("drawings: {problem}");
+        }
+        tracing::info!(count = drawings.len(), "drawings loaded");
+        self.drawing_names = drawings.iter().map(|d| d.name.clone()).collect();
+        self.controls.set_library(Library::new(&drawings));
+        let names: Vec<&str> = self.drawing_names.iter().map(String::as_str).collect();
+        for note in crate::config::missing_drawings(self.controls.profiles(), &names) {
+            tracing::warn!("config: {}", note.text);
+        }
+    }
+
+    fn run_draw_hook(&self, name: &str) {
+        let hook = self.config.band.on_draw.trim();
+        if !hook.is_empty() {
+            // Names are checked (config and drawings): no quotes inside.
+            self.runner.run(format!("export AIR_GESTURES_DRAWING='{name}'; {hook}"));
+        }
     }
 
     fn on_link_event(&mut self, event: LinkEvent) {
@@ -384,6 +461,7 @@ impl<T: Transport, R: Runner, F: ClientFactory> Daemon<T, R, F> {
         let now = self.clock.now();
         let outputs = self.controls.on_event(&event, now);
         self.apply(outputs, true);
+        self.refresh_calibration(false);
     }
 
     async fn on_link_closed(&mut self) {
@@ -531,6 +609,7 @@ impl<T: Transport, R: Runner, F: ClientFactory> Daemon<T, R, F> {
         }
         self.stop_unwatched_semg(now);
         self.reload_config();
+        self.reload_drawings();
     }
 
     /// sEMG streaming is tied to viewers: with none attached for
@@ -564,6 +643,8 @@ impl<T: Transport, R: Runner, F: ClientFactory> Daemon<T, R, F> {
                 self.config = config;
                 self.index_dials = self.config.index_dials();
                 let mut outputs = self.controls.set_options(self.config.options());
+                // Those options carry no calibration: put it back.
+                self.refresh_calibration(true);
                 outputs.extend(self.controls.set_profiles(self.config.profiles()));
                 if self.controls.dial_overridden() {
                     // A changed dial in the file wins over a runtime choice, as before.
@@ -573,7 +654,7 @@ impl<T: Transport, R: Runner, F: ClientFactory> Daemon<T, R, F> {
                         self.override_dial(self.dial_override);
                     }
                 }
-                log_notes(self.controls.profiles());
+                log_notes(self.controls.profiles(), &self.drawing_names);
                 self.apply(outputs, false);
             }
             Err(error) => {
@@ -823,14 +904,47 @@ impl<T: Transport, R: Runner, F: ClientFactory> Daemon<T, R, F> {
     }
 }
 
-fn log_notes(profiles: &band_core::controls::Profiles<String>) {
-    for note in crate::config::notes(profiles) {
+fn log_notes(profiles: &Profiles<String>, drawings: &[String]) {
+    let names: Vec<&str> = drawings.iter().map(String::as_str).collect();
+    for note in crate::config::notes(profiles).into_iter().chain(crate::config::missing_drawings(profiles, &names)) {
         match note.level {
             Level::Info => tracing::info!("config: {}", note.text),
             Level::Warn => tracing::warn!("config: {}", note.text),
             Level::Error => tracing::error!("config: {}", note.text),
         }
     }
+}
+
+/// The configured hand, before the band says.
+fn configured_hand(config: &Config) -> Option<Hand> {
+    match config.band.hand {
+        HandSetting::Left => Some(Hand::Left),
+        HandSetting::Right => Some(Hand::Right),
+        HandSetting::Band => None,
+    }
+}
+
+/// What was taught on the paired band for `hand`, for `Controls::set_calibration`
+/// (`None`s: the core's defaults for that hand).
+fn calibration_for(store: &Store, hand: Option<Hand>) -> (Option<PalmCalibration>, Option<Prototypes>) {
+    let mut options = Options::default();
+    if let (Some(hand), Ok(Some(band))) = (hand, store.load_band()) {
+        match store.load_calibration(&band.address, hand) {
+            Ok(calibration) => {
+                for problem in calibration.apply(&mut options) {
+                    tracing::warn!("calibration: {problem}");
+                }
+            }
+            Err(error) => tracing::warn!("calibration: {error}"),
+        }
+    }
+    (options.palm, options.drags)
+}
+
+/// Some gesture or band control depends on the palm position.
+fn uses_palm(profiles: &Profiles<String>) -> bool {
+    profiles.list.iter().any(|p| p.gestures.values().any(|b| !b.overrides.is_empty()))
+        || Builtin::ALL.into_iter().any(|b| profiles.band.control(b).is_some_and(|c| c.palm != PalmSet::All))
 }
 
 /// Sleeps until `deadline` on `clock`; never finishes without one.

@@ -61,9 +61,14 @@ pub struct BandConfig {
     pub on_toggle: String,
     /// Run after the active profile changed, with `AIR_GESTURES_PROFILE=<name>` exported.
     pub on_profile: String,
+    /// Run after a drawing, with AIR_GESTURES_DRAWING=<name> exported (empty: nothing matched).
+    pub on_draw: String,
     /// The name of the `[gestures]` profile (the first one).
     pub profile: String,
 }
+
+/// The default `on_draw`: the drawing's name (or "not recognised") as a notification.
+pub const DEFAULT_ON_DRAW: &str = r#"notify-send -a air-gestures "Drawing" "${AIR_GESTURES_DRAWING:-not recognised}""#;
 
 impl Default for BandConfig {
     fn default() -> Self {
@@ -80,6 +85,7 @@ impl Default for BandConfig {
             draw_palm: None,
             on_toggle: String::new(),
             on_profile: String::new(),
+            on_draw: DEFAULT_ON_DRAW.into(),
             profile: "default".into(),
         }
     }

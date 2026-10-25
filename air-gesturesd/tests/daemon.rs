@@ -33,6 +33,7 @@ struct Harness {
     transport: SimTransport,
     store: Store,
     config_path: PathBuf,
+    drawings: PathBuf,
     _dir: tempfile::TempDir,
 }
 
@@ -50,6 +51,7 @@ fn start_seeded<F: ClientFactory>(
     let dir = tempfile::tempdir().unwrap();
     let store = Store::open(dir.path().join("state")).unwrap();
     let config_path = dir.path().join("config.toml");
+    let drawings = dir.path().join("drawings");
     if paired {
         store
             .save_band(&BandRecord {
@@ -71,6 +73,7 @@ fn start_seeded<F: ClientFactory>(
         factory,
         store.clone(),
         config_path.clone(),
+        drawings.clone(),
     );
     let status = daemon.status();
     let semg = daemon.semg();
@@ -84,6 +87,7 @@ fn start_seeded<F: ClientFactory>(
         transport,
         store,
         config_path,
+        drawings,
         _dir: dir,
     }
 }
@@ -787,4 +791,127 @@ async fn the_dial_override_lasts_until_the_profile_changes() {
     daemon.wait("cycled from off", |s| s.dial == DialTarget::Volume).await;
     daemon.call(Request::Profile { to: "default".into() }).await;
     daemon.wait("default's own dial", |s| s.dial == DialTarget::Volume && s.profile.as_deref() == Some("default")).await;
+}
+
+const PRESS: u64 = 1;
+const RELEASE: u64 = 2;
+const INDEX: u64 = 2;
+const SWIPE_UP: SimInject = SimInject::Gesture { action: 6, finger: 1, derived: 0 };
+
+impl Harness {
+    /// An index pinch turning the wrist about the band's x axis: `raw` gyro units for
+    /// `samples` × 10 ms. With no fresh orientation that's a vertical stroke in a drawing,
+    /// and a drag away from you outside one.
+    async fn pinch_moving(&self, raw: i16, samples: usize) {
+        self.transport.inject(SimInject::Gesture { action: PRESS, finger: INDEX, derived: 0 });
+        for _ in 0..samples {
+            self.transport.inject(SimInject::Gyro(raw));
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        self.transport.inject(SimInject::Gesture { action: RELEASE, finger: INDEX, derived: 0 });
+    }
+
+    /// Orientation samples with this roll about the forearm, every 50 ms for `seconds`.
+    async fn hold_roll(&self, degrees: f64, seconds: f64) {
+        for _ in 0..(seconds / 0.05).round() as usize {
+            self.transport.inject(SimInject::Orientation(rolled(degrees)));
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+
+    /// A taught drawing called `name`: three vertical lines.
+    fn teach_line(&self, name: &str) {
+        let line = vec![vec![[0.0, 0.0], [0.0, 15.0]]];
+        let drawing = band_core::controls::draw::Drawing { name: name.into(), tries: vec![line.clone(), line.clone(), line] };
+        air_gesturesd::drawings::save(&self.drawings, &drawing).unwrap();
+    }
+}
+
+const DRAWING_CONFIG: &str = "[band]\ndraw = \"swipe_up\"\non_draw = \"osd\"\n[drawings]\nline = \"echo line\"\n";
+
+/// An orientation (w, x, y, z) whose roll about the forearm is `degrees`.
+fn rolled(degrees: f64) -> [f32; 4] {
+    let half = (-degrees).to_radians() / 2.0;
+    [half.cos() as f32, 0.0, half.sin() as f32, 0.0]
+}
+
+/// The right hand's measured palm down and palm up (band-core's `PalmCalibration::right_hand`).
+const PALM_DOWN: f64 = -142.3;
+const PALM_UP: f64 = -11.3;
+
+#[tokio::test(start_paused = true)]
+async fn a_palm_override_runs_with_the_palm_that_way() {
+    let transport = SimTransport::new(SimMode::Enrolled);
+    let mut daemon = start(transport.clone(), true, fake(&transport));
+    daemon.connected().await;
+    daemon.wait("the right hand", |s| s.hand.as_deref() == Some("right")).await;
+    daemon.configure("[gestures.palm_up]\nswipe_left = \"echo up\"\n").await;
+    daemon.hold_roll(PALM_UP, 0.3).await;
+    daemon.transport.inject(SWIPE_LEFT);
+    daemon.wait("the palm-up command", |s| s.last_action.as_deref() == Some("echo up")).await;
+    daemon.hold_roll(PALM_DOWN, 0.6).await; // also past the 0.4 s action gate
+    daemon.transport.inject(SWIPE_LEFT);
+    daemon.wait("the normal command", |s| s.last_action.as_deref() == Some("hyprctl dispatch workspace e-1")).await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_stored_calibration_applies_to_the_hand_in_use() {
+    let transport = SimTransport::new(SimMode::Enrolled);
+    let mut daemon = start_seeded(transport.clone(), true, fake(&transport), |store| {
+        // A wrist where -11.3° is palm down: the measured palm-up roll no longer reads as up.
+        let palm = air_gesturesd::store::StoredPalm { down_roll: -11.3, up_roll: 120.0 };
+        let calibration = air_gesturesd::store::HandCalibration { palm: Some(palm), drags: None };
+        store.save_calibration(SIM_ADDRESS, band_core::events::Hand::Right, &calibration).unwrap();
+    });
+    daemon.connected().await;
+    daemon.wait("the right hand", |s| s.hand.as_deref() == Some("right")).await;
+    daemon.configure("[gestures.palm_up]\nswipe_left = \"echo up\"\n").await;
+    daemon.hold_roll(PALM_UP, 0.3).await;
+    daemon.transport.inject(SWIPE_LEFT);
+    daemon.wait("the normal command", |s| s.last_action.as_deref() == Some("hyprctl dispatch workspace e-1")).await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_drawing_runs_on_draw_then_its_action() {
+    let transport = SimTransport::new(SimMode::Enrolled);
+    let mut daemon = start(transport.clone(), true, fake(&transport));
+    daemon.connected().await;
+    daemon.teach_line("line"); // after start: the library reloads on the tick
+    daemon.configure(DRAWING_CONFIG).await;
+    daemon.transport.inject(SWIPE_UP);
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    daemon.pinch_moving(600, 40).await;
+    daemon.wait("the drawing's action", |s| s.last_action.as_deref() == Some("echo line")).await;
+    assert_eq!(
+        daemon.runner.commands(),
+        ["export AIR_GESTURES_DRAWING='line'; osd".to_string(), "echo line".to_string()],
+        "swipe_up's own command is paused by [band] draw"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_unrecognised_drawing_runs_on_draw_with_nothing() {
+    let transport = SimTransport::new(SimMode::Enrolled);
+    let mut daemon = start(transport.clone(), true, fake(&transport));
+    daemon.connected().await;
+    daemon.teach_line("line");
+    daemon.configure(DRAWING_CONFIG).await;
+    daemon.transport.inject(SWIPE_UP);
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    daemon.pinch_moving(50, 40).await; // 1.4°: too small to read
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    assert_eq!(daemon.runner.commands(), ["export AIR_GESTURES_DRAWING=''; osd".to_string()]);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_hand_chosen_over_ipc_survives_its_calibration_swap() {
+    let transport = SimTransport::new(SimMode::Enrolled);
+    let mut daemon = start(transport.clone(), true, fake(&transport));
+    daemon.connected().await;
+    daemon.configure("[band]\nhand = \"right\"\n").await;
+    daemon.wait("the right hand", |s| s.hand.as_deref() == Some("right")).await;
+    daemon.call(Request::Hand { hand: HandChoice::Left }).await;
+    daemon.wait("the left hand", |s| s.hand.as_deref() == Some("left")).await;
+    tokio::time::sleep(Duration::from_secs(5)).await;
+    assert_eq!(daemon.status.borrow().hand.as_deref(), Some("left"), "the left hand's options didn't undo the choice");
 }

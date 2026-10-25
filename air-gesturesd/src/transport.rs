@@ -59,6 +59,10 @@ pub enum SimInject {
         derived: u64,
     },
     Gyro(i16),
+    /// One gyro sample with all three axes (raw units).
+    Gyro3([i16; 3]),
+    /// One orientation sample (w, x, y, z).
+    Orientation([f32; 4]),
     RawEmg,
     /// Stop answering requests.
     Silence,
@@ -313,6 +317,8 @@ async fn serve(
                     }
                     Some(SimInject::Gesture { action, finger, derived }) => band.gesture(action, finger, derived),
                     Some(SimInject::Gyro(x)) => band.gyro(x),
+                    Some(SimInject::Gyro3(axes)) => band.gyro3(axes),
+                    Some(SimInject::Orientation(q)) => band.orientation(q),
                     Some(SimInject::RawEmg) => band.raw_emg(),
                 };
                 sync_state(&band, &mut synced, &state);

@@ -98,6 +98,7 @@ async fn spawn(
         factory,
         store.clone(),
         state_dir.join("config.toml"),
+        state_dir.join("drawings"),
     );
     let listener = ipc::bind(socket).unwrap();
     let (calls, call_rx) = mpsc::channel(16);
@@ -114,6 +115,11 @@ async fn spawn(
 }
 
 impl TestDaemon {
+    /// Where this daemon reads its drawings.
+    pub fn drawings(&self) -> PathBuf {
+        self.dir.path().join("drawings")
+    }
+
     /// Poll `status` until `until` holds (real time, 20 s cap).
     pub async fn wait(
         &self,
