@@ -61,6 +61,8 @@ pub struct Status {
     pub semg: bool,
     /// The paired band's name.
     pub band: Option<String>,
+    /// The active profile's name, when there is more than one profile.
+    pub profile: Option<String>,
 }
 
 impl Default for Status {
@@ -84,6 +86,7 @@ impl Default for Status {
             last_pair: None,
             semg: false,
             band: None,
+            profile: None,
         }
     }
 }

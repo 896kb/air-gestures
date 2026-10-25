@@ -1,24 +1,38 @@
 # air-gesturesd config: ~/.config/air-gestures/config.toml (reloaded on save).
 # Every gesture runs a shell command through `sh -c`; "" leaves it unassigned.
+# Built-in actions work on any gesture:
+#   "@controls"          turn the controls off/on (works while they're off)
+#   "@next-profile"      switch to the next profile  (needs 2+ profiles)
+#   "@previous-profile"  switch to the previous one
+# Triple taps: taps <0.45 s apart; with one waiting, that finger's taps wait 0.45 s.
 
 [band]
 hand = "band"        # "band" = whatever the band reports | "left" | "right"
 autostart = true     # connect and enable controls when air-gesturesd starts
-toggle = "none"       # gesture that turns controls off/on (works while off):
-                      # "middle_hold" (long press) | "index_triple" | "middle_triple"
-                      # (triple: taps <0.45 s apart; that finger's double tap waits 0.45 s)
-on_toggle = ""        # run after toggling, with AIR_GESTURES_ENABLED=1|0 set (e.g. an OSD)
+toggle = "none"      # old style; put "@controls" on a gesture instead
+on_toggle = ""       # run after a gesture toggled controls, with AIR_GESTURES_ENABLED=1|0
+on_profile = ""      # run after the profile changed, with AIR_GESTURES_PROFILE=<name>
+profile = "default"  # the name of the [gestures] profile
 
-[gestures]
+[gestures]           # the first profile
 swipe_left    = "hyprctl dispatch workspace e-1"
 swipe_right   = "hyprctl dispatch workspace e+1"
 swipe_up      = "wofi --show drun"
 swipe_down    = "hyprctl dispatch sendshortcut , Escape, activewindow"
 index_tap     = ""
 index_double  = "playerctl play-pause"
+index_triple  = "@next-profile"
 middle_tap    = ""
 middle_double = "wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle"
-middle_hold   = ""
+middle_triple = "@previous-profile"
+middle_hold   = "@controls"
+
+# More profiles: same keys; a key you leave out does nothing there.
+# [[profile]]
+# name = "games"
+# swipe_left = "…"
+# index_triple = "@next-profile"
+# middle_hold = "@controls"
 
 [dial]               # pinch thumb + index, hold a moment, then turn your wrist
 target = "volume"    # "volume" | "brightness" | "off"

@@ -1,5 +1,5 @@
 //! The supervisor: keeps one link to the paired band (reconnecting with
-//! backoff), routes its events through the controller to the runner, reloads
+//! backoff), routes its events through band-core's controls to the runner, reloads
 //! the config, runs pairings and answers control-socket calls.
 
 use std::future::Future;
@@ -8,6 +8,7 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use band_core::ceremony::FACTORY_RESET_HINT;
+use band_core::controls::{Controls, Output};
 use band_core::events::{Event, Hand};
 use band_core::session::BandSession;
 use tokio::sync::{broadcast, mpsc, watch};
@@ -15,8 +16,7 @@ use tokio::task::JoinHandle;
 
 use crate::actions::Runner;
 use crate::clock::Clock;
-use crate::config::Config;
-use crate::controller::{Command, Controller};
+use crate::config::{Config, DialTarget};
 use crate::ipc::{Call, HandChoice, Request, Response};
 use crate::link::{LinkCommand, LinkEnd, LinkEvent, LinkOutcome, run_link};
 use crate::meta::ClientFactory;
@@ -51,7 +51,11 @@ pub struct Daemon<T: Transport, R: Runner, F: ClientFactory> {
     config_path: PathBuf,
     config_stamp: Option<SystemTime>,
     config_error: Option<String>,
-    controller: Controller,
+    controls: Controls<String>,
+    /// The loaded config (hooks, dial commands, profiles).
+    config: Config,
+    /// What the dial turns: the file's `[dial] target`, or a runtime choice over IPC.
+    dial_target: DialTarget,
     clock: Clock,
     status: watch::Sender<Status>,
     semg: broadcast::Sender<Vec<u8>>,
@@ -112,6 +116,9 @@ impl<T: Transport, R: Runner, F: ClientFactory> Daemon<T, R, F> {
         };
         let config_stamp = modified(&config_path);
         let wants_connection = config.band.autostart;
+        let dial_target = config.dial.target;
+        let controls = Controls::new(config.options(), config.profiles(dial_target));
+        warn_profiles(&controls);
         let band_name = store.load_band().ok().flatten().map(|band| band.name);
         let (status, _) = watch::channel(Status::default());
         let (semg, _) = broadcast::channel(256);
@@ -124,7 +131,9 @@ impl<T: Transport, R: Runner, F: ClientFactory> Daemon<T, R, F> {
             config_path,
             config_stamp,
             config_error,
-            controller: Controller::new(config),
+            controls,
+            config,
+            dial_target,
             clock: Clock::new(),
             status,
             semg,
@@ -190,11 +199,10 @@ impl<T: Transport, R: Runner, F: ClientFactory> Daemon<T, R, F> {
                     }
                 }
                 _ = ticker.tick() => self.on_tick(),
-                _ = until(self.controller.held_tap_due(), self.clock) => {
+                _ = until(self.controls.next_deadline(), self.clock) => {
                     let now = self.clock.now();
-                    for command in self.controller.fire_held_tap(now) {
-                        self.apply(command);
-                    }
+                    let outputs = self.controls.poll(now);
+                    self.apply(outputs, true);
                 }
             }
             self.publish();
@@ -206,7 +214,26 @@ impl<T: Transport, R: Runner, F: ClientFactory> Daemon<T, R, F> {
     }
 
     fn publish(&self) {
-        let mut status = self.controller.status().clone();
+        let controls = self.controls.status();
+        let mut status = Status {
+            paused: controls.paused,
+            battery: controls.battery,
+            charging: controls.charging,
+            hand: controls.hand.map(|hand| match hand {
+                Hand::Left => "left".to_owned(),
+                Hand::Right => "right".to_owned(),
+            }),
+            dial: self.dial_target,
+            last_gesture: controls.last_gesture.map(str::to_owned),
+            last_action: controls.last_action.clone(),
+            gestures: controls.gestures,
+            profile: (self.controls.profiles().list.len() > 1).then(|| {
+                self.controls.profiles().list[self.controls.active()]
+                    .name
+                    .clone()
+            }),
+            ..Status::default()
+        };
         status.state = self.state;
         status.error = self.error.clone();
         status.pairing_error = self.pairing_error.clone();
@@ -247,16 +274,61 @@ impl<T: Transport, R: Runner, F: ClientFactory> Daemon<T, R, F> {
         }
     }
 
-    fn apply(&mut self, command: Command) {
-        match command {
-            Command::Run(command) => {
-                tracing::info!(%command, "action");
-                self.runner.run(command);
-            }
-            Command::SetHand(hand) => {
-                self.send_link(LinkCommand::SetHand(hand));
+    /// Do what the controls asked. `from_band`: caused by a band gesture, not a request
+    /// (`on_toggle` only runs for those, as before).
+    fn apply(&mut self, outputs: Vec<Output<String>>, from_band: bool) {
+        for output in outputs {
+            match output {
+                Output::Run(command) => {
+                    tracing::info!(%command, "action");
+                    self.runner.run(command);
+                }
+                Output::SetHand(hand) => {
+                    self.send_link(LinkCommand::SetHand(hand));
+                }
+                Output::Gesture(gesture) => {
+                    tracing::debug!(
+                        gesture = gesture.label(),
+                        enabled = self.controls.enabled(),
+                        "recognized"
+                    );
+                }
+                Output::Controls { enabled } => {
+                    tracing::info!(enabled, "controls");
+                    let hook = self.config.band.on_toggle.trim();
+                    if from_band && !hook.is_empty() {
+                        // Exported, not a prefix assignment: the hook's own `$AIR_GESTURES_ENABLED`
+                        // expansions must see it.
+                        self.runner.run(format!(
+                            "export AIR_GESTURES_ENABLED={}; {hook}",
+                            u8::from(enabled)
+                        ));
+                    }
+                }
+                Output::Profile { index, .. } => {
+                    let name = self.controls.profiles().list[index].name.clone();
+                    tracing::info!(profile = %name, "profile");
+                    let hook = self.config.band.on_profile.trim();
+                    if !hook.is_empty() {
+                        // Names are checked when the config loads: no quotes inside.
+                        self.runner
+                            .run(format!("export AIR_GESTURES_PROFILE='{name}'; {hook}"));
+                    }
+                }
+                Output::ProfileHeld { app } => {
+                    tracing::debug!(%app, "profile held by the app in front")
+                }
+                Output::Practiced(_) => {}
             }
         }
+    }
+
+    /// The profiles again (the dial target or the config changed).
+    fn rebuild_profiles(&mut self) {
+        let outputs = self
+            .controls
+            .set_profiles(self.config.profiles(self.dial_target));
+        self.apply(outputs, false);
     }
 
     fn on_link_event(&mut self, event: LinkEvent) {
@@ -293,9 +365,8 @@ impl<T: Transport, R: Runner, F: ClientFactory> Daemon<T, R, F> {
             _ => {}
         }
         let now = self.clock.now();
-        for command in self.controller.on_event(&event, now) {
-            self.apply(command);
-        }
+        let outputs = self.controls.on_event(&event, now);
+        self.apply(outputs, true);
     }
 
     async fn on_link_closed(&mut self) {
@@ -307,7 +378,7 @@ impl<T: Transport, R: Runner, F: ClientFactory> Daemon<T, R, F> {
             scheme_guess: None,
             authenticated: false,
         });
-        self.controller.on_disconnect();
+        self.controls.on_disconnect();
         self.semg_on = false;
         self.state = LinkState::Idle;
         match &outcome.end {
@@ -414,7 +485,7 @@ impl<T: Transport, R: Runner, F: ClientFactory> Daemon<T, R, F> {
 
     async fn stop_link(&mut self) {
         let Some(link) = self.link.take() else { return };
-        self.controller.on_disconnect();
+        self.controls.on_disconnect();
         self.semg_on = false;
         self.state = LinkState::Idle;
         self.publish();
@@ -471,9 +542,18 @@ impl<T: Transport, R: Runner, F: ClientFactory> Daemon<T, R, F> {
             Ok(config) => {
                 self.config_error = None;
                 tracing::info!("config reloaded");
-                for command in self.controller.set_config(config) {
-                    self.apply(command);
+                if config.dial.target != self.config.dial.target {
+                    // A changed target in the file wins over a runtime choice.
+                    self.dial_target = config.dial.target;
                 }
+                self.config = config;
+                let mut outputs = self.controls.set_options(self.config.options());
+                outputs.extend(
+                    self.controls
+                        .set_profiles(self.config.profiles(self.dial_target)),
+                );
+                warn_profiles(&self.controls);
+                self.apply(outputs, false);
             }
             Err(error) => {
                 tracing::warn!("config: {error}");
@@ -626,11 +706,26 @@ impl<T: Transport, R: Runner, F: ClientFactory> Daemon<T, R, F> {
                     self.transport.release(&band.address).await;
                 }
             }
-            Request::Pause => self.controller.pause(),
-            Request::Resume => self.controller.resume(now),
-            Request::TogglePause => self.controller.toggle(now),
-            Request::Dial { target } => self.controller.set_dial_target(target),
-            Request::CycleDial => self.controller.cycle_dial(),
+            Request::Pause => {
+                let outputs = self.controls.pause();
+                self.apply(outputs, false);
+            }
+            Request::Resume => {
+                let outputs = self.controls.resume(now);
+                self.apply(outputs, false);
+            }
+            Request::TogglePause => {
+                let outputs = self.controls.toggle(now);
+                self.apply(outputs, false);
+            }
+            Request::Dial { target } => {
+                self.dial_target = target;
+                self.rebuild_profiles();
+            }
+            Request::CycleDial => {
+                self.dial_target = self.dial_target.next();
+                self.rebuild_profiles();
+            }
             Request::Hand { hand } => {
                 if self.state != LinkState::Connected {
                     return Response::error("connect the band first");
@@ -639,10 +734,9 @@ impl<T: Transport, R: Runner, F: ClientFactory> Daemon<T, R, F> {
                     HandChoice::Left => Hand::Left,
                     HandChoice::Right => Hand::Right,
                 };
-                // Through the controller, so the config's hand doesn't undo the choice.
-                for command in self.controller.request_hand(hand) {
-                    self.apply(command);
-                }
+                // Through the controls, so the config's hand doesn't undo the choice.
+                let outputs = self.controls.request_hand(hand);
+                self.apply(outputs, false);
             }
             Request::Semg { on } => {
                 self.semg_wanted = on;
@@ -687,6 +781,26 @@ impl<T: Transport, R: Runner, F: ClientFactory> Daemon<T, R, F> {
         }
         self.publish();
         Response::ok(self.status.borrow().clone())
+    }
+}
+
+fn warn_profiles(controls: &Controls<String>) {
+    use band_core::controls::Warning;
+    for warning in controls.profiles().warnings() {
+        let (profile, what) = match warning {
+            Warning::NoControls { profile } => (
+                profile,
+                "no gesture turns the controls off/on (\"@controls\")",
+            ),
+            Warning::NoWayOut { profile } => (
+                profile,
+                "no gesture switches away from it (\"@next-profile\" / \"@previous-profile\")",
+            ),
+        };
+        tracing::warn!(
+            "profile \"{}\": {what}",
+            controls.profiles().list[profile].name
+        );
     }
 }
 

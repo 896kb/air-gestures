@@ -5,7 +5,6 @@ pub mod actions;
 pub mod bluez;
 pub mod clock;
 pub mod config;
-pub mod controller;
 pub mod daemon;
 pub mod ipc;
 pub mod link;

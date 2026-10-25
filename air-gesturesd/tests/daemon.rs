@@ -636,3 +636,93 @@ async fn semg_stays_on_while_a_viewer_is_attached() {
     drop(viewer);
     daemon.wait("sEMG off", |s| !s.semg).await;
 }
+
+const MIDDLE_HOLD: SimInject = SimInject::Gesture {
+    action: 0,
+    finger: 3,
+    derived: 3,
+};
+
+const INDEX_TAP: SimInject = SimInject::Gesture {
+    action: 3,
+    finger: 2,
+    derived: 0,
+};
+
+const INDEX_DOUBLE: SimInject = SimInject::Gesture {
+    action: 4,
+    finger: 2,
+    derived: 0,
+};
+
+impl Harness {
+    /// Write the config and let the daemon pick it up.
+    async fn configure(&self, text: &str) {
+        std::fs::write(&self.config_path, text).unwrap();
+        tokio::time::sleep(Duration::from_secs(2)).await;
+    }
+
+    /// Three index taps the way the band reports them: the 2nd and 3rd also come with a
+    /// double tap (band-core's `controls_common::triple`).
+    async fn index_triple(&self) {
+        self.transport.inject(INDEX_TAP);
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        self.transport.inject(INDEX_TAP);
+        self.transport.inject(INDEX_DOUBLE);
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        self.transport.inject(INDEX_TAP);
+        self.transport.inject(INDEX_DOUBLE);
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_band_toggle_runs_on_toggle_but_ipc_pause_does_not() {
+    let transport = SimTransport::new(SimMode::Enrolled);
+    let mut daemon = start(transport.clone(), true, fake(&transport));
+    daemon.connected().await;
+    // The default middle_hold is "@controls".
+    daemon.configure("[band]\non_toggle = \"osd\"\n").await;
+    daemon.transport.inject(MIDDLE_HOLD);
+    daemon.wait("the band's toggle", |s| s.paused).await;
+    let toggled = vec!["export AIR_GESTURES_ENABLED=0; osd".to_string()];
+    assert_eq!(daemon.runner.commands(), toggled);
+    assert!(!daemon.call(Request::Resume).await.status.unwrap().paused);
+    assert!(daemon.call(Request::Pause).await.status.unwrap().paused);
+    assert!(!daemon.call(Request::Resume).await.status.unwrap().paused);
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert_eq!(
+        daemon.runner.commands(),
+        toggled,
+        "IPC pause/resume runs no hook"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn profiles_switch_from_the_band_and_run_on_profile() {
+    let transport = SimTransport::new(SimMode::Enrolled);
+    let mut daemon = start(transport.clone(), true, fake(&transport));
+    daemon.connected().await;
+    daemon
+        .configure("[band]\non_profile = \"osd\"\n[[profile]]\nname = \"games\"\n")
+        .await;
+    assert_eq!(daemon.status.borrow().profile.as_deref(), Some("default"));
+    daemon.index_triple().await;
+    daemon
+        .wait("the next profile", |s| {
+            s.profile.as_deref() == Some("games")
+        })
+        .await;
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert_eq!(
+        daemon.runner.commands(),
+        vec!["export AIR_GESTURES_PROFILE='games'; osd".to_string()]
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_single_profile_shows_no_profile_in_status() {
+    let transport = SimTransport::new(SimMode::Enrolled);
+    let mut daemon = start(transport.clone(), true, fake(&transport));
+    daemon.connected().await;
+    assert_eq!(daemon.status.borrow().profile, None);
+}

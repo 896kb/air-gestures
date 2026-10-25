@@ -1,9 +1,10 @@
-//! `~/.config/air-gestures/config.toml`: every gesture maps to a shell command
-//! (`""` = unassigned); the dial runs one of two commands per step.
+//! `~/.config/air-gestures/config.toml`: profiles of gesture → shell command (or a built-in:
+//! `@controls`, `@next-profile`, `@previous-profile`; `""` = unassigned), and the dial.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use band_core::gestures::{Recognized, Swipe, Tap};
+use band_core::controls::{Action, Builtin, Dial, Gesture, Options, Profile, Profiles};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
@@ -30,6 +31,18 @@ pub enum ToggleGesture {
     MiddleTriple,
 }
 
+impl ToggleGesture {
+    /// The gesture the old `toggle` key put the lock on.
+    pub fn gesture(self) -> Option<Gesture> {
+        match self {
+            ToggleGesture::None => None,
+            ToggleGesture::MiddleHold => Some(Gesture::MiddleHold),
+            ToggleGesture::IndexTriple => Some(Gesture::IndexTriple),
+            ToggleGesture::MiddleTriple => Some(Gesture::MiddleTriple),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum DialTarget {
@@ -54,11 +67,16 @@ pub struct BandConfig {
     pub hand: HandSetting,
     /// Connect and enable controls when the daemon starts.
     pub autostart: bool,
-    /// The gesture that turns the controls off and on.
+    /// Old style: the gesture that turns the controls off and on, in every profile that
+    /// doesn't set that key itself. Today: put "@controls" on any gesture.
     pub toggle: ToggleGesture,
-    /// Run after that gesture toggled the controls, with `AIR_GESTURES_ENABLED=1`
-    /// or `0` in its environment (e.g. an OSD).
+    /// Run after a gesture toggled the controls, with `AIR_GESTURES_ENABLED=1` or `0`
+    /// exported (e.g. an OSD).
     pub on_toggle: String,
+    /// Run after the active profile changed, with `AIR_GESTURES_PROFILE=<name>` exported.
+    pub on_profile: String,
+    /// The name of the `[gestures]` profile (the first one).
+    pub profile: String,
 }
 
 impl Default for BandConfig {
@@ -68,59 +86,57 @@ impl Default for BandConfig {
             autostart: true,
             toggle: ToggleGesture::None,
             on_toggle: String::new(),
+            on_profile: String::new(),
+            profile: "default".into(),
         }
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct GestureConfig {
-    pub swipe_left: String,
-    pub swipe_right: String,
-    pub swipe_up: String,
-    pub swipe_down: String,
-    pub index_tap: String,
-    pub index_double: String,
-    pub middle_tap: String,
-    pub middle_double: String,
-    pub middle_hold: String,
-}
-
-impl Default for GestureConfig {
-    fn default() -> Self {
-        Self {
-            swipe_left: "hyprctl dispatch workspace e-1".into(),
-            swipe_right: "hyprctl dispatch workspace e+1".into(),
-            swipe_up: "wofi --show drun".into(),
-            swipe_down: "hyprctl dispatch sendshortcut , Escape, activewindow".into(),
-            index_tap: String::new(),
-            index_double: "playerctl play-pause".into(),
-            middle_tap: String::new(),
-            middle_double: "wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle".into(),
-            middle_hold: String::new(),
-        }
+/// `[gestures]` keys nobody wrote: the first profile's defaults.
+fn default_gesture(gesture: Gesture) -> &'static str {
+    match gesture {
+        Gesture::SwipeLeft => "hyprctl dispatch workspace e-1",
+        Gesture::SwipeRight => "hyprctl dispatch workspace e+1",
+        Gesture::SwipeUp => "wofi --show drun",
+        Gesture::SwipeDown => "hyprctl dispatch sendshortcut , Escape, activewindow",
+        Gesture::IndexDouble => "playerctl play-pause",
+        Gesture::MiddleDouble => "wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle",
+        Gesture::MiddleHold => "@controls",
+        Gesture::IndexTriple => "@next-profile",
+        Gesture::MiddleTriple => "@previous-profile",
+        Gesture::IndexTap | Gesture::MiddleTap => "",
     }
 }
 
-impl GestureConfig {
-    /// The configured command, or `""` when it's unassigned (including whitespace-only).
-    pub fn command(&self, gesture: Recognized) -> &str {
-        let command = match gesture {
-            Recognized::Swipe(Swipe::Left) => &self.swipe_left,
-            Recognized::Swipe(Swipe::Right) => &self.swipe_right,
-            Recognized::Swipe(Swipe::Up) => &self.swipe_up,
-            Recognized::Swipe(Swipe::Down) => &self.swipe_down,
-            Recognized::Tap(Tap::IndexTap) => &self.index_tap,
-            Recognized::Tap(Tap::IndexDoubleTap) => &self.index_double,
-            Recognized::Tap(Tap::MiddleTap) => &self.middle_tap,
-            Recognized::Tap(Tap::MiddleDoubleTap) => &self.middle_double,
-            Recognized::Tap(Tap::MiddleHold) => &self.middle_hold,
+/// A gesture's value: `""` (or blanks) = nothing, `@<builtin>`, else a shell command.
+pub fn action(value: &str) -> Result<Option<Action<String>>, String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    if let Some(key) = trimmed.strip_prefix('@') {
+        return match Builtin::from_key(key) {
+            Some(builtin) => Ok(Some(Action::Builtin(builtin))),
+            None => Err(format!(
+                "unknown built-in \"{trimmed}\" (use @controls, @next-profile or @previous-profile)"
+            )),
         };
-        if command.trim().is_empty() {
-            ""
-        } else {
-            command
-        }
+    }
+    Ok(Some(Action::Run(value.to_owned())))
+}
+
+/// Profile names go into `AIR_GESTURES_PROFILE='…'`: letters, digits, space, `.`, `_`, `-`.
+fn check_name(name: &str) -> Result<(), String> {
+    let fine = !name.trim().is_empty()
+        && name
+            .chars()
+            .all(|c| c.is_alphanumeric() || matches!(c, ' ' | '.' | '_' | '-'));
+    if fine {
+        Ok(())
+    } else {
+        Err(format!(
+            "profile name \"{name}\": use letters, digits, spaces, '.', '_' or '-'"
+        ))
     }
 }
 
@@ -162,13 +178,24 @@ impl DialConfig {
         };
         (!command.trim().is_empty()).then_some(command.as_str())
     }
+
+    /// Both commands for this target, or `None` when it's off or either is unassigned.
+    pub fn dial(&self, target: DialTarget) -> Option<Dial<String>> {
+        Some(Dial {
+            up: self.command(target, true)?.to_owned(),
+            down: self.command(target, false)?.to_owned(),
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
     pub band: BandConfig,
-    pub gestures: GestureConfig,
+    /// The first profile, as written (unwritten keys take `default_gesture`).
+    gestures: BTreeMap<String, String>,
+    /// More profiles, in order (`name` plus gesture keys; unwritten keys do nothing).
+    profile: Vec<BTreeMap<String, String>>,
     pub dial: DialConfig,
 }
 
@@ -181,7 +208,89 @@ impl Config {
                 config.dial.sensitivity
             ));
         }
+        config.build(DialTarget::Off)?;
         Ok(config)
+    }
+
+    pub fn options(&self) -> Options {
+        Options {
+            hand: match self.band.hand {
+                HandSetting::Band => band_core::controls::HandSetting::Band,
+                HandSetting::Left => band_core::controls::HandSetting::Left,
+                HandSetting::Right => band_core::controls::HandSetting::Right,
+            },
+            autostart: self.band.autostart,
+            dial_sensitivity: self.dial.sensitivity,
+        }
+    }
+
+    /// Every profile, each turning the dial at `target`.
+    pub fn profiles(&self, target: DialTarget) -> Profiles<String> {
+        self.build(target)
+            .expect("checked when the config was parsed")
+    }
+
+    fn build(&self, target: DialTarget) -> Result<Profiles<String>, String> {
+        let dial = self.dial.dial(target);
+        let lock = self.band.toggle.gesture();
+        let mut list = Vec::new();
+        // The first profile: [gestures] over the defaults.
+        check_name(&self.band.profile).map_err(|e| format!("band.profile: {e}"))?;
+        for key in self.gestures.keys() {
+            if Gesture::from_key(key).is_none() {
+                return Err(format!("gestures: unknown gesture \"{key}\""));
+            }
+        }
+        let mut first = Profile::new(&self.band.profile);
+        for gesture in Gesture::ALL {
+            let value = match self.gestures.get(gesture.key()) {
+                Some(value) => value.as_str(),
+                None if lock == Some(gesture) => "@controls",
+                None => default_gesture(gesture),
+            };
+            if let Some(action) =
+                action(value).map_err(|e| format!("gestures.{}: {e}", gesture.key()))?
+            {
+                first.gestures.insert(gesture, action);
+            }
+        }
+        first.dial = dial.clone();
+        list.push(first);
+        // The other profiles.
+        for table in &self.profile {
+            let name = table.get("name").ok_or("every [[profile]] needs a name")?;
+            check_name(name)?;
+            if list.iter().any(|p: &Profile<String>| p.name == *name) {
+                return Err(format!("two profiles are called \"{name}\""));
+            }
+            let mut profile = Profile::new(name);
+            for (key, value) in table {
+                if key == "name" {
+                    continue;
+                }
+                let gesture = Gesture::from_key(key)
+                    .ok_or_else(|| format!("profile \"{name}\": unknown key \"{key}\""))?;
+                if let Some(action) =
+                    action(value).map_err(|e| format!("profile \"{name}\".{key}: {e}"))?
+                {
+                    profile.gestures.insert(gesture, action);
+                }
+            }
+            if let Some(gesture) = lock {
+                profile
+                    .gestures
+                    .entry(gesture)
+                    .or_insert(Action::Builtin(Builtin::Controls));
+            }
+            profile.dial = dial.clone();
+            list.push(profile);
+        }
+        Ok(Profiles {
+            list,
+            picked: 0,
+            apps: BTreeMap::new(),
+            calls: BTreeMap::new(),
+        })
     }
 
     /// Load `path`; a missing file means the defaults.
