@@ -1,5 +1,7 @@
 mod support;
 
+use std::time::Duration;
+
 use air_gestures::teach::{self, Guide};
 use air_gesturesd::status::LinkState;
 use std::sync::{Arc, Mutex};
@@ -75,4 +77,32 @@ async fn calibrating_needs_a_connected_band() {
     let (mut guide, _cues) = guide();
     let error = teach::calibrate(&daemon.socket, &mut guide).await.unwrap_err();
     assert!(error.contains("connect the band first"), "{error}");
+}
+
+use band_core::controls::Drag;
+use band_core::controls::pinch::TaughtError;
+
+#[test]
+fn a_refused_set_of_drags_names_the_moves_to_teach_again() {
+    assert_eq!(teach::redo(TaughtError::NoTurn), [0]);
+    assert_eq!(teach::redo(TaughtError::NoDrag(Drag::Toward)), [3]);
+    assert_eq!(teach::redo(TaughtError::LikeTheTurn(Drag::Up)), [5]);
+    assert_eq!(teach::redo(TaughtError::TooAlike(Drag::Left, Drag::Right)), [1, 2]);
+    assert_eq!(teach::redo(TaughtError::NoRoll), [0, 1, 2, 3, 4, 5, 6]);
+    assert_eq!(teach::MOVES[0].0, "turn");
+    assert_eq!(teach::MOVES.map(|m| m.0)[1..], Drag::ALL.map(air_gesturesd::teach::drag_name));
+}
+
+#[tokio::test]
+async fn one_drag_sample_comes_back_from_the_band() {
+    let daemon = support::start(SimMode::Enrolled, true).await;
+    daemon.wait("the hand", |s| s.state == LinkState::Connected && s.hand.is_some()).await;
+    let (mut guide, mut cues) = guide();
+    let socket = daemon.socket.clone();
+    let sample = tokio::spawn(async move { teach::drag_sample(&socket, &mut guide, 1).await });
+    cues.recv().await.expect("the cue");
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    support::pinch_moving(&daemon.transport, 600, 50).await;
+    let direction = sample.await.unwrap().unwrap();
+    assert!(direction[0] < -0.75, "{direction:?}");
 }

@@ -157,3 +157,14 @@ pub async fn feed_roll(transport: SimTransport, roll: std::sync::Arc<std::sync::
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
 }
+
+/// An index pinch turning the wrist about the band's x axis (see the daemon tests).
+pub async fn pinch_moving(transport: &SimTransport, raw: i16, samples: usize) {
+    use air_gesturesd::transport::SimInject;
+    transport.inject(SimInject::Gesture { action: 1, finger: 2, derived: 0 });
+    for _ in 0..samples {
+        transport.inject(SimInject::Gyro(raw));
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    transport.inject(SimInject::Gesture { action: 2, finger: 2, derived: 0 });
+}

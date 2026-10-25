@@ -106,6 +106,12 @@ enum Command {
         #[arg(long)]
         reset: bool,
     },
+    /// Teach the turn and the six drags (one pinch each) for the band and the hand it's on.
+    TeachDrags {
+        /// Forget them (back to the measured right-hand ones; turns only for the left hand).
+        #[arg(long)]
+        reset: bool,
+    },
     /// Raw sEMG readings.
     Semg {
         #[command(subcommand)]
@@ -510,6 +516,10 @@ fn main() -> ExitCode {
         Command::Calibrate { reset: false } => report(
             runtime().block_on(air_gestures::teach::calibrate(&socket, &mut air_gestures::teach::Terminal)).map(|_| ()),
         ),
+        Command::TeachDrags { reset: true } => simple(&socket, Request::SetDrags { drags: None }),
+        Command::TeachDrags { reset: false } => {
+            report(runtime().block_on(air_gestures::teach::teach_drags(&socket, &mut air_gestures::teach::Terminal)))
+        }
         Command::Semg {
             what: SemgCommand::View,
         } => report(runtime().block_on(air_gestures::semg::view(&socket))),
@@ -547,5 +557,7 @@ mod tests {
         assert!(matches!(parse(&["calibrate"]), Command::Calibrate { reset: false }));
         assert!(matches!(parse(&["calibrate", "--reset"]), Command::Calibrate { reset: true }));
         assert!(matches!(parse(&["--dry-run", "calibrate"]), Command::Calibrate { .. }));
+        assert!(matches!(parse(&["teach-drags"]), Command::TeachDrags { reset: false }));
+        assert!(matches!(parse(&["teach-drags", "--reset"]), Command::TeachDrags { reset: true }));
     }
 }
