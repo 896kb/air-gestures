@@ -3,23 +3,25 @@
 //! `$XDG_STATE_HOME/air-gestures` (else `~/.local/state/air-gestures`): a 0700 directory
 //! of 0600 files, each written atomically and fsynced. Nothing here is logged.
 
-use std::collections::BTreeMap;
 use std::fs::{self, DirBuilder, File, OpenOptions};
 use std::io::{self, Write};
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
 use band_core::controls::pinch::{Prototypes, TaughtError};
-use band_core::controls::{Options, PalmCalibration};
+use band_core::controls::PalmCalibration;
 use band_core::events::Hand;
 use band_core::identity::EnrollmentIdentity;
 use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
 
 const OWNER: &str = "owner.key";
 const PENDING_OWNER: &str = "owner.pending.key";
 const BAND: &str = "band.json";
 pub(crate) const META_SESSION: &str = "meta-session.json";
+/// `{"version": 1, "bands": {address: {"left"|"right": HandCalibration}}}`.
 const CALIBRATION: &str = "calibration.json";
+const CALIBRATION_VERSION: u64 = 1;
 /// Pre-single-file-identity layout; `forget()` still cleans these up if found.
 const LEGACY_BAND_KEY: &str = "band.pub";
 const LEGACY_PENDING_BAND_KEY: &str = "band.pending.pub";
@@ -116,12 +118,22 @@ impl HandCalibration {
         self.palm.is_none() && self.drags.is_none()
     }
 
-    /// Into `options` (meant for the hand in use; nothing taught = the core's defaults).
-    /// Returns what couldn't be used.
-    pub fn apply(&self, options: &mut Options) -> Vec<String> {
+    /// What goes into `Controls::set_calibration` for the hand in use (nothing taught: the
+    /// core's defaults), each checked again on the way in (a hand-edited file can't make a
+    /// calibration the daemon would refuse); and what couldn't be used.
+    pub fn apply(&self) -> (Option<PalmCalibration>, Option<Prototypes>, Vec<String>) {
         let mut problems = Vec::new();
-        options.palm = self.palm.map(|p| p.calibration());
-        options.drags = match self.drags.as_ref().map(StoredDrags::prototypes) {
+        let palm = self.palm.and_then(|p| match PalmCalibration::from_rolls(&[p.down_roll], &[p.up_roll]) {
+            Ok(_) => Some(p.calibration()),
+            Err(error) => {
+                problems.push(format!(
+                    "the palm calibration can't be used ({}); calibrate again with `air-gestures calibrate`",
+                    crate::teach::calibration_error_text(error)
+                ));
+                None
+            }
+        });
+        let drags = match self.drags.as_ref().map(StoredDrags::prototypes) {
             None => None,
             Some(Ok(prototypes)) => Some(prototypes),
             Some(Err(error)) => {
@@ -132,7 +144,7 @@ impl HandCalibration {
                 None
             }
         };
-        problems
+        (palm, drags, problems)
     }
 }
 
@@ -350,30 +362,63 @@ impl Store {
     }
 
     /// What was taught on the band at `address` for `hand` (the default when nothing was).
+    /// An entry that can't be read is skipped (with a warning); a file that can't be read is
+    /// an `InvalidData` error.
     pub fn load_calibration(&self, address: &str, hand: Hand) -> io::Result<HandCalibration> {
-        Ok(self.calibrations()?.get(address).and_then(|hands| hands.get(hand_key(hand))).cloned().unwrap_or_default())
+        let bands = self.calibration_bands()?;
+        let Some(entry) = bands.get(address).and_then(|hands| hands.get(hand_key(hand))) else {
+            return Ok(HandCalibration::default());
+        };
+        Ok(serde_json::from_value(entry.clone()).unwrap_or_else(|error| {
+            tracing::warn!("{CALIBRATION}: the {} hand's entry for {address} can't be read ({error}); skipping it", hand_key(hand));
+            HandCalibration::default()
+        }))
     }
 
-    /// Replace it (an empty one removes the entry).
+    /// Replace it (an empty one removes the entry); every other entry is written back as it
+    /// was. A file that can't be read is moved aside to `calibration.json.bad` first.
     pub fn save_calibration(&self, address: &str, hand: Hand, calibration: &HandCalibration) -> io::Result<()> {
-        let mut all = self.calibrations()?;
-        let hands = all.entry(address.to_owned()).or_default();
-        if calibration.is_empty() {
-            hands.remove(hand_key(hand));
-        } else {
-            hands.insert(hand_key(hand).to_owned(), calibration.clone());
+        let mut bands = match self.calibration_bands() {
+            Ok(bands) => bands,
+            Err(error) if error.kind() == io::ErrorKind::InvalidData => {
+                tracing::warn!("{error}; moving it aside to {CALIBRATION}.bad and starting afresh");
+                fs::rename(self.path(CALIBRATION), self.path(&format!("{CALIBRATION}.bad")))?;
+                self.sync_dir()?;
+                Map::new()
+            }
+            Err(error) => return Err(error),
+        };
+        let hands = bands.entry(address.to_owned()).or_insert_with(|| Value::Object(Map::new()));
+        if !hands.is_object() {
+            *hands = Value::Object(Map::new());
         }
-        all.retain(|_, hands| !hands.is_empty());
-        let json = serde_json::to_vec_pretty(&all).map_err(io::Error::other)?;
+        if let Value::Object(hands) = hands {
+            if calibration.is_empty() {
+                hands.remove(hand_key(hand));
+            } else {
+                hands.insert(hand_key(hand).to_owned(), serde_json::to_value(calibration).map_err(io::Error::other)?);
+            }
+        }
+        bands.retain(|_, hands| hands.as_object().is_none_or(|hands| !hands.is_empty()));
+        let file = serde_json::json!({ "version": CALIBRATION_VERSION, "bands": bands });
+        let json = serde_json::to_vec_pretty(&file).map_err(io::Error::other)?;
         self.write_secret(CALIBRATION, &json)
     }
 
-    /// Band address → hand ("left"/"right") → what was taught.
-    fn calibrations(&self) -> io::Result<BTreeMap<String, BTreeMap<String, HandCalibration>>> {
-        match self.read(CALIBRATION)? {
-            Some(bytes) => serde_json::from_slice(&bytes)
-                .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, format!("{CALIBRATION}: {error}"))),
-            None => Ok(BTreeMap::new()),
+    /// The file's bands (address → hand → entry, still JSON: each is read on its own).
+    fn calibration_bands(&self) -> io::Result<Map<String, Value>> {
+        let Some(bytes) = self.read(CALIBRATION)? else { return Ok(Map::new()) };
+        let invalid = |why: String| io::Error::new(io::ErrorKind::InvalidData, format!("{CALIBRATION}: {why}"));
+        let mut file: Value = serde_json::from_slice(&bytes).map_err(|error| invalid(error.to_string()))?;
+        match file.get("version").and_then(Value::as_u64) {
+            Some(CALIBRATION_VERSION) => {}
+            Some(other) => return Err(invalid(format!("version {other} (this air-gesturesd reads {CALIBRATION_VERSION})"))),
+            None => return Err(invalid("no version".into())),
+        }
+        match file.get_mut("bands").map(Value::take) {
+            None | Some(Value::Null) => Ok(Map::new()),
+            Some(Value::Object(bands)) => Ok(bands),
+            Some(_) => Err(invalid("\"bands\" isn't an object".into())),
         }
     }
 }

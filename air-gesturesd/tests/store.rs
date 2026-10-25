@@ -269,7 +269,6 @@ fn forget_also_removes_leftover_temp_files() {
 }
 
 use air_gesturesd::store::{HandCalibration, StoredDrags, StoredPalm};
-use band_core::controls::Options;
 use band_core::controls::palm::PalmCalibration;
 use band_core::controls::pinch::Prototypes;
 use band_core::events::Hand;
@@ -300,30 +299,55 @@ fn calibrations_round_trip_per_band_and_hand_and_survive_forget() {
 }
 
 #[test]
-fn a_corrupt_calibration_file_is_an_error() {
+fn a_corrupt_calibration_file_is_an_error_and_a_save_sets_it_aside() {
     let root = tempfile::tempdir().unwrap();
     let store = Store::open(root.path()).unwrap();
-    std::fs::write(root.path().join("calibration.json"), "{nope").unwrap();
-    let error = store.load_calibration("AA", Hand::Right).unwrap_err();
-    assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+    let path = root.path().join("calibration.json");
+    for corrupt in ["{nope", r#"{"version":9,"bands":{}}"#, r#"{"bands":{}}"#] {
+        std::fs::write(&path, corrupt).unwrap();
+        let error = store.load_calibration("AA", Hand::Right).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData, "{corrupt}");
+        store.save_calibration("AA", Hand::Right, &taught()).unwrap();
+        assert_eq!(std::fs::read_to_string(root.path().join("calibration.json.bad")).unwrap(), corrupt, "kept aside");
+        assert_eq!(store.load_calibration("AA", Hand::Right).unwrap(), taught(), "started afresh");
+    }
 }
 
 #[test]
-fn a_calibration_goes_into_the_options_and_lookalike_drags_dont() {
-    let mut options = Options::default();
-    assert!(taught().apply(&mut options).is_empty());
-    assert_eq!(options.palm, Some(PalmCalibration { down_roll: -140.0, up_roll: -10.0 }));
+fn the_calibration_file_is_versioned_and_one_bad_entry_spoils_nothing_else() {
+    let root = tempfile::tempdir().unwrap();
+    let store = Store::open(root.path()).unwrap();
+    store.save_calibration("AA", Hand::Left, &taught()).unwrap();
+    let path = root.path().join("calibration.json");
+    let mut json: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    assert_eq!(json["version"], 1);
+    json["bands"]["AA"]["right"] = serde_json::json!({"palm": "nope"});
+    std::fs::write(&path, serde_json::to_vec(&json).unwrap()).unwrap();
+    assert_eq!(store.load_calibration("AA", Hand::Right).unwrap(), HandCalibration::default(), "skipped");
+    assert_eq!(store.load_calibration("AA", Hand::Left).unwrap(), taught());
+    store.save_calibration("BB", Hand::Right, &taught()).unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    assert_eq!(json["bands"]["AA"]["right"]["palm"], "nope", "an entry nobody changed is written back as it was");
+    assert_eq!(store.load_calibration("BB", Hand::Right).unwrap(), taught());
+}
+
+#[test]
+fn a_calibration_is_checked_on_the_way_in() {
+    let (palm, drags, problems) = taught().apply();
+    assert!(problems.is_empty(), "{problems:?}");
+    assert_eq!(palm, Some(PalmCalibration { down_roll: -140.0, up_roll: -10.0 }));
     let measured = Prototypes::right_hand().drags.unwrap();
-    for (a, b) in options.drags.as_ref().unwrap().drags.unwrap().iter().zip(measured) {
+    for (a, b) in drags.unwrap().drags.unwrap().iter().zip(measured) {
         assert!((0..3).all(|k| (a[k] - b[k]).abs() < 1e-12));
     }
     let mut bad = taught();
     let stored = bad.drags.as_mut().unwrap();
     stored.drags[1] = stored.drags[0];
-    let problems = bad.apply(&mut options);
-    assert_eq!(problems.len(), 1);
-    assert!(problems[0].contains("teach-drags"), "{problems:?}");
-    assert!(options.drags.is_none());
-    HandCalibration::default().apply(&mut options);
-    assert!(options.palm.is_none(), "nothing taught: the core's defaults");
+    bad.palm = Some(StoredPalm { down_roll: -140.0, up_roll: -120.0 });
+    let (palm, drags, problems) = bad.apply();
+    assert_eq!((palm, drags.is_none()), (None, true));
+    assert_eq!(problems.len(), 2, "{problems:?}");
+    assert!(problems.iter().any(|p| p.contains("teach-drags")), "{problems:?}");
+    assert!(problems.iter().any(|p| p.contains("air-gestures calibrate") && p.contains("60°")), "{problems:?}");
+    assert_eq!(HandCalibration::default().apply(), (None, None, Vec::new()), "nothing taught: the core's defaults");
 }

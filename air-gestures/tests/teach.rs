@@ -154,3 +154,18 @@ fn drawings_are_listed_and_deleted() {
     teach::delete_drawing(dir.path(), "z").unwrap();
     assert!(teach::delete_drawing(dir.path(), "z").unwrap_err().contains("no drawing \"z\""));
 }
+
+#[tokio::test]
+async fn a_client_that_hangs_up_ends_its_teaching_step() {
+    use tokio::io::AsyncWriteExt;
+    let daemon = support::start(SimMode::Enrolled, true).await;
+    daemon.wait("the hand", |s| s.state == LinkState::Connected && s.hand.is_some()).await;
+    let mut stream = tokio::net::UnixStream::connect(&daemon.socket).await.unwrap();
+    stream.write_all(b"{\"cmd\":\"teach-drag\",\"seconds\":30.0}\n").await.unwrap();
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    drop(stream);
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let request = air_gesturesd::ipc::Request::TeachDrag { seconds: 1.0 };
+    let error = air_gestures::client::request_within(&daemon.socket, &request, Duration::from_secs(5)).await.unwrap_err();
+    assert!(error.message.contains("no pinch"), "the first step ended: {error}");
+}

@@ -38,12 +38,27 @@ fn unreadable_files_are_skipped_and_described() {
     std::fs::write(dir.join("broken.json"), "{").unwrap();
     std::fs::write(dir.join("old.json"), r#"{"version":9,"tries":[]}"#).unwrap();
     std::fs::write(dir.join(".ok.json.tmp"), "{").unwrap();
+    std::fs::write(dir.join("it's.json"), "{").unwrap();
     std::fs::write(dir.join("notes.txt"), "hi").unwrap();
     let (loaded, problems) = drawings::load(dir);
     assert_eq!(loaded, [drawing("ok")]);
-    assert_eq!(problems.len(), 2, "{problems:?}");
+    assert_eq!(problems.len(), 3, "{problems:?}");
     assert!(problems.iter().any(|p| p.contains("broken.json")));
     assert!(problems.iter().any(|p| p.contains("version 9")));
+    assert!(problems.iter().any(|p| p.contains("it's.json") && p.contains("name")), "{problems:?}");
+    assert!(!dir.join(".ok.json.tmp").exists(), "an interrupted save's temp file is cleaned up");
+    assert!(dir.join("notes.txt").exists());
+}
+
+#[test]
+fn a_drawing_with_unreadable_tries_is_loaded_and_described() {
+    let root = tempfile::tempdir().unwrap();
+    let tiny = Drawing { name: "tiny".into(), tries: vec![vec![vec![[0.0, 0.0]]]] };
+    drawings::save(root.path(), &tiny).unwrap();
+    let (loaded, problems) = drawings::load(root.path());
+    assert_eq!(loaded, [tiny]);
+    assert_eq!(problems.len(), 1, "{problems:?}");
+    assert!(problems[0].contains("tiny") && problems[0].contains("teach it again"), "{problems:?}");
 }
 
 #[test]

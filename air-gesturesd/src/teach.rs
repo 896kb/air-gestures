@@ -4,7 +4,7 @@
 use band_core::controls::Drag;
 use band_core::controls::palm::{CalibrationError, Palm};
 use band_core::controls::pinch::{TaughtError, roll_or, up_in_band};
-use band_core::controls::{Finger, Output};
+use band_core::controls::{Controls, Finger, Output};
 use band_core::events::Event;
 
 use crate::ipc::Taught;
@@ -46,11 +46,52 @@ pub fn calibration_error_text(error: CalibrationError) -> String {
     }
 }
 
+/// A teaching step that waits for the band.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Step {
+    /// The band's roll for a while (palm calibration); nothing changes in the controls.
     Rolls,
+    /// Drag teaching until the next pinch that moves.
     Drag,
+    /// One drawing, opened now, taught (no match, no action).
     Draw,
+}
+
+impl Step {
+    /// The shortest and longest a step may wait (seconds).
+    pub fn limits(self) -> (f64, f64) {
+        match self {
+            Step::Rolls => (0.5, 5.0),
+            Step::Drag => (1.0, 60.0),
+            Step::Draw => (1.0, 120.0),
+        }
+    }
+
+    /// Teaching on in `controls` for this step.
+    pub fn enter(self, controls: &mut Controls<String>, now: f64) -> Vec<Output<String>> {
+        match self {
+            Step::Rolls => Vec::new(),
+            Step::Drag => controls.set_drag_teaching(true),
+            Step::Draw => {
+                let mut outputs = controls.cancel_drawing();
+                controls.set_teaching(true);
+                outputs.extend(controls.start_drawing(now));
+                outputs
+            }
+        }
+    }
+
+    /// Teaching off again (whatever ended the step).
+    pub fn leave(self, controls: &mut Controls<String>) -> Vec<Output<String>> {
+        match self {
+            Step::Rolls => Vec::new(),
+            Step::Drag => controls.set_drag_teaching(false),
+            Step::Draw => {
+                controls.set_teaching(false);
+                controls.cancel_drawing()
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -114,9 +155,9 @@ impl Wait {
     }
 
     /// The deadline passed: the rolls so far, else what didn't happen.
-    pub fn timed_out(&mut self) -> Done {
+    pub fn timed_out(self) -> Done {
         match self.step {
-            Step::Rolls => Done::Taught(Taught::Rolls { rolls: std::mem::take(&mut self.rolls), samples: self.samples }),
+            Step::Rolls => Done::Taught(Taught::Rolls { rolls: self.rolls, samples: self.samples }),
             Step::Drag => Done::Failed(format!("no pinch that moved in {} s", self.seconds)),
             Step::Draw => Done::Failed(format!("the drawing didn't end within {} s", self.seconds)),
         }

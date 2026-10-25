@@ -5,6 +5,7 @@ use air_gesturesd::config::DialTarget;
 use air_gesturesd::ipc::{self, Call, HandChoice, Handles, Request, Response};
 use air_gesturesd::ipc::{Taught, TaughtDrags};
 use air_gesturesd::store::StoredPalm;
+use air_gesturesd::teach::Step;
 use air_gesturesd::status::{LinkState, Status};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
@@ -90,7 +91,11 @@ fn requests_use_kebab_case_commands() {
     assert!(line.starts_with(r#"{"cmd":"set-drags""#), "{line}");
     assert_eq!(parse(&line), Request::SetDrags { drags: Some(drags) });
     assert_eq!(parse(r#"{"cmd":"palm"}"#), Request::Palm);
-    assert!(Request::DrawTry { seconds: 1.0 }.waits() && !Request::SetPalm { palm: None }.waits() && !Request::Palm.waits());
+    assert_eq!(Request::DrawTry { seconds: 500.0 }.teach_step(), Some((Step::Draw, 120.0)), "clamped");
+    assert_eq!(Request::PalmRolls { seconds: 0.1 }.teach_step(), Some((Step::Rolls, 0.5)));
+    assert_eq!(Request::TeachDrag { seconds: 30.0 }.teach_step(), Some((Step::Drag, 30.0)));
+    assert_eq!(Request::SetPalm { palm: None }.teach_step(), None);
+    assert_eq!(Request::Palm.teach_step(), None);
     let answer: Response = serde_json::from_str(r#"{"ok":true,"teach":{"kind":"rolls","rolls":[1.5],"samples":2}}"#).unwrap();
     assert_eq!(answer.teach, Some(Taught::Rolls { rolls: vec![1.5], samples: 2 }));
 }

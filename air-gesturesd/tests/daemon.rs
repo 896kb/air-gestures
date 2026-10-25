@@ -1059,3 +1059,125 @@ async fn set_palm_and_set_drags_store_for_the_band_and_hand() {
     daemon.call(Request::SetDrags { drags: None }).await;
     assert_eq!(daemon.store.load_calibration(SIM_ADDRESS, Hand::Right).unwrap(), HandCalibration::default());
 }
+
+#[tokio::test(start_paused = true)]
+async fn a_client_that_goes_away_ends_its_teaching_step() {
+    let transport = SimTransport::new(SimMode::Enrolled);
+    let mut daemon = start(transport.clone(), true, fake(&transport));
+    daemon.right_hand().await;
+    daemon.configure("[gestures]\nindex_drag_away = \"echo away\"\n").await;
+    drop(daemon.call_later(Request::TeachDrag { seconds: 30.0 }).await);
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    daemon.pinch_moving(600, 50).await;
+    daemon.wait("the drag, teaching off", |s| s.last_action.as_deref() == Some("echo away")).await;
+    let answer = daemon.call_later(Request::TeachDrag { seconds: 30.0 }).await;
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    daemon.pinch_moving(600, 50).await;
+    assert!(matches!(answer.await.unwrap().teach, Some(Taught::Drag { .. })), "a new step is accepted");
+    drop(daemon.call_later(Request::DrawTry { seconds: 30.0 }).await);
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let answer = daemon.call_later(Request::DrawTry { seconds: 30.0 }).await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    daemon.pinch_moving(600, 40).await;
+    assert!(matches!(answer.await.unwrap().teach, Some(Taught::Strokes { .. })), "a new drawing try is accepted");
+}
+
+#[tokio::test(start_paused = true)]
+async fn link_loss_and_timeouts_turn_teaching_off() {
+    let transport = SimTransport::new(SimMode::Enrolled);
+    let mut daemon = start(transport.clone(), true, fake(&transport));
+    daemon.right_hand().await;
+    daemon.configure("[gestures]\nindex_drag_away = \"echo away\"\n").await;
+    assert!(daemon.call(Request::TeachDrag { seconds: 2.0 }).await.error.unwrap().contains("no pinch"));
+    daemon.pinch_moving(600, 50).await;
+    daemon.wait("the drag after a timeout", |s| s.last_action.as_deref() == Some("echo away")).await;
+    let answer = daemon.call_later(Request::TeachDrag { seconds: 30.0 }).await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    daemon.transport.inject(SimInject::Close);
+    assert!(answer.await.unwrap().error.unwrap().contains("disconnected"));
+    daemon.right_hand().await;
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    daemon.pinch_moving(600, 50).await;
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert_eq!(daemon.runner.commands(), ["echo away", "echo away"], "the drag after a link loss");
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_config_reload_during_a_step_keeps_it() {
+    let transport = SimTransport::new(SimMode::Enrolled);
+    let mut daemon = start(transport.clone(), true, fake(&transport));
+    daemon.right_hand().await;
+    let answer = daemon.call_later(Request::TeachDrag { seconds: 30.0 }).await;
+    daemon.configure("[gestures]\nindex_drag_away = \"echo away\"\n").await;
+    daemon.pinch_moving(600, 50).await;
+    assert!(matches!(answer.await.unwrap().teach, Some(Taught::Drag { .. })));
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert!(daemon.runner.commands().is_empty(), "{:?}", daemon.runner.commands());
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_library_reloads_after_a_delete() {
+    let transport = SimTransport::new(SimMode::Enrolled);
+    let mut daemon = start(transport.clone(), true, fake(&transport));
+    daemon.connected().await;
+    daemon.teach_line("line");
+    daemon.configure(DRAWING_CONFIG).await;
+    daemon.transport.inject(SWIPE_UP);
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    daemon.pinch_moving(600, 40).await;
+    daemon.wait("the drawing's action", |s| s.last_action.as_deref() == Some("echo line")).await;
+    assert!(air_gesturesd::drawings::delete(&daemon.drawings, "line").unwrap());
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    daemon.transport.inject(SWIPE_UP);
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    daemon.pinch_moving(600, 40).await;
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    assert_eq!(daemon.runner.commands().last().map(String::as_str), Some("export AIR_GESTURES_DRAWING=''; osd"));
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_corrupt_calibration_file_is_set_aside_by_the_next_save() {
+    let transport = SimTransport::new(SimMode::Enrolled);
+    let mut daemon = start_seeded(transport.clone(), true, fake(&transport), |store| {
+        std::fs::write(store.dir().join("calibration.json"), "{nope").unwrap();
+    });
+    daemon.right_hand().await;
+    let palm = StoredPalm { down_roll: -140.0, up_roll: -10.0 };
+    assert!(daemon.call(Request::SetPalm { palm: Some(palm) }).await.ok);
+    assert_eq!(daemon.store.load_calibration(SIM_ADDRESS, Hand::Right).unwrap().palm, Some(palm));
+    assert_eq!(std::fs::read_to_string(daemon.store.dir().join("calibration.json.bad")).unwrap(), "{nope");
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_ipc_hand_choice_applies_that_hands_calibration() {
+    let transport = SimTransport::new(SimMode::Enrolled);
+    let mut daemon = start_seeded(transport.clone(), true, fake(&transport), |store| {
+        // The left hand has no palm positions until calibrated.
+        let palm = StoredPalm { down_roll: PALM_DOWN, up_roll: PALM_UP };
+        store.save_calibration(SIM_ADDRESS, Hand::Left, &HandCalibration { palm: Some(palm), drags: None }).unwrap();
+    });
+    daemon.right_hand().await;
+    daemon.configure("[gestures.palm_up]\nswipe_left = \"echo up\"\n").await;
+    daemon.call(Request::Hand { hand: HandChoice::Left }).await;
+    daemon.wait("the left hand", |s| s.hand.as_deref() == Some("left")).await;
+    daemon.hold_roll(PALM_UP, 0.3).await;
+    daemon.transport.inject(SWIPE_LEFT);
+    daemon.wait("the palm-up command", |s| s.last_action.as_deref() == Some("echo up")).await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn drags_are_taught_under_the_controls_palm_down() {
+    let transport = SimTransport::new(SimMode::Enrolled);
+    let mut daemon = start(transport.clone(), true, fake(&transport));
+    daemon.right_hand().await;
+    let p = Prototypes::right_hand();
+    let drags = TaughtDrags { turn: p.turn, drags: p.drags.unwrap() };
+    let palm_down_roll = |daemon: &Harness| daemon.store.load_calibration(SIM_ADDRESS, Hand::Right).unwrap().drags.unwrap().palm_down_roll;
+    assert!(daemon.call(Request::SetPalm { palm: Some(StoredPalm { down_roll: -100.0, up_roll: -10.0 }) }).await.ok);
+    assert!(daemon.call(Request::SetDrags { drags: Some(drags.clone()) }).await.ok);
+    assert_eq!(palm_down_roll(&daemon), -100.0);
+    assert!(daemon.call(Request::SetPalm { palm: None }).await.ok);
+    assert!(daemon.call(Request::SetDrags { drags: Some(drags) }).await.ok);
+    // No calibration now: the controls read drags under the taught drags' own palm down.
+    assert_eq!(palm_down_roll(&daemon), -100.0);
+}

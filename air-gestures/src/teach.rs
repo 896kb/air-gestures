@@ -58,7 +58,7 @@ fn unexpected() -> String {
 /// The band's hand, once it's connected and has said.
 pub fn connected_hand(status: &Status) -> Result<&str, String> {
     if status.state != LinkState::Connected {
-        return Err("connect the band first (`air-gestures connect`)".into());
+        return Err(air_gesturesd::daemon::CONNECT_FIRST.into());
     }
     status.hand.as_deref().ok_or_else(|| "the band hasn't said which wrist it's on yet; try again in a moment".into())
 }

@@ -17,6 +17,7 @@ use tokio::sync::{broadcast, mpsc, oneshot, watch};
 use crate::config::DialTarget;
 use crate::status::Status;
 use crate::store::StoredPalm;
+use crate::teach::Step;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -81,9 +82,37 @@ pub enum Request {
 }
 
 impl Request {
-    /// A teaching step: answered when the band has done it (or at its deadline).
-    pub fn waits(&self) -> bool {
-        matches!(self, Request::PalmRolls { .. } | Request::TeachDrag { .. } | Request::DrawTry { .. })
+    /// A teaching step (and how long it may wait, within the step's limits): answered when
+    /// the band has done it, at its deadline, or never if the client hangs up first (which
+    /// ends the step).
+    pub fn teach_step(&self) -> Option<(Step, f64)> {
+        let (step, seconds) = match self {
+            Request::PalmRolls { seconds } => (Step::Rolls, *seconds),
+            Request::TeachDrag { seconds } => (Step::Drag, *seconds),
+            Request::DrawTry { seconds } => (Step::Draw, *seconds),
+            Request::Status
+            | Request::Subscribe
+            | Request::SubscribeSemg
+            | Request::Connect
+            | Request::Disconnect
+            | Request::Pause
+            | Request::Resume
+            | Request::TogglePause
+            | Request::Dial { .. }
+            | Request::CycleDial
+            | Request::Profile { .. }
+            | Request::Hand { .. }
+            | Request::Semg { .. }
+            | Request::Pair { .. }
+            | Request::Forget
+            | Request::SetPalm { .. }
+            | Request::SetDrags { .. }
+            | Request::Palm => return None,
+        };
+        let (shortest, longest) = step.limits();
+        // `clamp` keeps a NaN: that's no time at all.
+        let seconds = if seconds.is_nan() { shortest } else { seconds.clamp(shortest, longest) };
+        Some((step, seconds))
     }
 }
 
@@ -397,13 +426,22 @@ async fn connection(stream: UnixStream, handles: Handles) -> io::Result<()> {
                 }
             }
             request => {
+                let waits = request.teach_step().is_some();
                 let (reply, response) = oneshot::channel();
                 if handles.calls.send((request, reply)).await.is_err() {
                     return Ok(());
                 }
-                let response = response
-                    .await
-                    .unwrap_or_else(|_| Response::error("air-gesturesd is shutting down"));
+                let response = if waits {
+                    // A teaching step waits for the band; a client that hangs up meanwhile
+                    // drops `response`, and the daemon ends the step.
+                    tokio::select! {
+                        response = response => response,
+                        () = hung_up(&mut reader) => return Ok(()),
+                    }
+                } else {
+                    response.await
+                };
+                let response = response.unwrap_or_else(|_| Response::error("air-gesturesd is shutting down"));
                 write_line(&mut write, &response).await?;
             }
         }
