@@ -3,6 +3,8 @@ use std::time::Duration;
 
 use air_gesturesd::config::DialTarget;
 use air_gesturesd::ipc::{self, Call, HandChoice, Handles, Request, Response};
+use air_gesturesd::ipc::{Taught, TaughtDrags};
+use air_gesturesd::store::StoredPalm;
 use air_gesturesd::status::{LinkState, Status};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
@@ -74,6 +76,23 @@ fn requests_use_kebab_case_commands() {
         serde_json::to_string(&Request::SubscribeSemg).unwrap(),
         r#"{"cmd":"subscribe-semg"}"#
     );
+    assert_eq!(parse(r#"{"cmd":"palm-rolls","seconds":2.0}"#), Request::PalmRolls { seconds: 2.0 });
+    assert_eq!(parse(r#"{"cmd":"teach-drag","seconds":30.0}"#), Request::TeachDrag { seconds: 30.0 });
+    assert_eq!(parse(r#"{"cmd":"draw-try","seconds":30.0}"#), Request::DrawTry { seconds: 30.0 });
+    assert_eq!(parse(r#"{"cmd":"set-palm","palm":null}"#), Request::SetPalm { palm: None });
+    assert_eq!(parse(r#"{"cmd":"set-palm"}"#), Request::SetPalm { palm: None });
+    assert_eq!(
+        parse(r#"{"cmd":"set-palm","palm":{"down_roll":-140.0,"up_roll":-10.0}}"#),
+        Request::SetPalm { palm: Some(StoredPalm { down_roll: -140.0, up_roll: -10.0 }) }
+    );
+    let drags = TaughtDrags { turn: [0.0, 1.0, 0.0], drags: [[1.0, 0.0, 0.0]; 6] };
+    let line = serde_json::to_string(&Request::SetDrags { drags: Some(drags.clone()) }).unwrap();
+    assert!(line.starts_with(r#"{"cmd":"set-drags""#), "{line}");
+    assert_eq!(parse(&line), Request::SetDrags { drags: Some(drags) });
+    assert_eq!(parse(r#"{"cmd":"palm"}"#), Request::Palm);
+    assert!(Request::DrawTry { seconds: 1.0 }.waits() && !Request::SetPalm { palm: None }.waits() && !Request::Palm.waits());
+    let answer: Response = serde_json::from_str(r#"{"ok":true,"teach":{"kind":"rolls","rolls":[1.5],"samples":2}}"#).unwrap();
+    assert_eq!(answer.teach, Some(Taught::Rolls { rolls: vec![1.5], samples: 2 }));
 }
 
 #[tokio::test]

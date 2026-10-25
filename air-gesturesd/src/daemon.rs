@@ -9,23 +9,25 @@ use std::time::{Duration, SystemTime};
 
 use band_core::ceremony::FACTORY_RESET_HINT;
 use band_core::controls::draw::Library;
+use band_core::controls::palm::RIGHT_PALM_DOWN_ROLL;
 use band_core::controls::pinch::Prototypes;
 use band_core::controls::{Builtin, Controls, Options, Output, PalmCalibration, PalmSet, Profiles};
 use band_core::events::{Event, Hand};
 use band_core::session::BandSession;
-use tokio::sync::{broadcast, mpsc, watch};
+use tokio::sync::{broadcast, mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 
 use crate::actions::Runner;
 use crate::clock::Clock;
 use crate::config::{Config, DialTarget, HandSetting, Level};
 use crate::drawings;
-use crate::ipc::{Call, HandChoice, Request, Response};
+use crate::ipc::{Call, HandChoice, Request, Response, Taught};
 use crate::link::{LinkCommand, LinkEnd, LinkEvent, LinkOutcome, run_link};
 use crate::meta::ClientFactory;
 use crate::pairing::{PairFailure, pair_band};
 use crate::status::{LinkState, PairResult, Status};
-use crate::store::{BandRecord, IdentitySource, Store};
+use crate::store::{BandRecord, HandCalibration, IdentitySource, Store, StoredDrags};
+use crate::teach::{Done, Step, Wait};
 use crate::transport::Transport;
 
 const TICK: Duration = Duration::from_millis(250);
@@ -60,6 +62,8 @@ pub struct Daemon<T: Transport, R: Runner, F: ClientFactory> {
     drawing_names: Vec<String>,
     /// The hand whose calibration is in the controls.
     options_hand: Option<Hand>,
+    /// The teaching step waiting for the band, and where its answer goes.
+    waiting: Option<(Wait, oneshot::Sender<Response>)>,
     controls: Controls<String>,
     /// The loaded config (hooks, dial commands, profiles).
     config: Config,
@@ -157,6 +161,7 @@ impl<T: Transport, R: Runner, F: ClientFactory> Daemon<T, R, F> {
             drawings_stamp,
             drawing_names,
             options_hand,
+            waiting: None,
             controls,
             config,
             dial_override: DialTarget::Off,
@@ -206,6 +211,7 @@ impl<T: Transport, R: Runner, F: ClientFactory> Daemon<T, R, F> {
             tokio::select! {
                 _ = &mut shutdown => break,
                 call = calls.recv() => match call {
+                    Some((request, reply)) if request.waits() => self.start_wait(request, reply),
                     Some((request, reply)) => {
                         let response = self.handle(request).await;
                         let _ = reply.send(response);
@@ -230,6 +236,11 @@ impl<T: Transport, R: Runner, F: ClientFactory> Daemon<T, R, F> {
                     let now = self.clock.now();
                     let outputs = self.controls.poll(now);
                     self.apply(outputs, true);
+                }
+                _ = until(self.waiting.as_ref().map(|(wait, _)| wait.deadline()), self.clock) => {
+                    if let Some(done) = self.waiting.as_mut().map(|(wait, _)| wait.timed_out()) {
+                        self.finish_wait(done);
+                    }
                 }
             }
             self.publish();
@@ -305,6 +316,9 @@ impl<T: Transport, R: Runner, F: ClientFactory> Daemon<T, R, F> {
     /// (`on_toggle` only runs for those, as before).
     fn apply(&mut self, outputs: Vec<Output<String>>, from_band: bool) {
         for output in outputs {
+            if let Some(done) = self.waiting.as_mut().and_then(|(wait, _)| wait.on_output(&output)) {
+                self.finish_wait(done);
+            }
             match output {
                 Output::Run(command) => {
                     tracing::info!(%command, "action");
@@ -417,6 +431,88 @@ impl<T: Transport, R: Runner, F: ClientFactory> Daemon<T, R, F> {
         }
     }
 
+    fn start_wait(&mut self, request: Request, reply: oneshot::Sender<Response>) {
+        if self.state != LinkState::Connected {
+            let _ = reply.send(Response::error("connect the band first (`air-gestures connect`)"));
+            return;
+        }
+        if self.waiting.is_some() {
+            let _ = reply.send(Response::error("another teaching step is running; wait for it to finish"));
+            return;
+        }
+        let now = self.clock.now();
+        let wait = match request {
+            Request::PalmRolls { seconds } => Wait::new(Step::Rolls, now, seconds.clamp(0.5, 5.0)),
+            Request::TeachDrag { seconds } => {
+                let outputs = self.controls.set_drag_teaching(true);
+                self.apply(outputs, false);
+                Wait::new(Step::Drag, now, seconds.clamp(1.0, 60.0))
+            }
+            Request::DrawTry { seconds } => {
+                let mut outputs = self.controls.cancel_drawing();
+                self.controls.set_teaching(true);
+                outputs.extend(self.controls.start_drawing(now));
+                self.apply(outputs, false);
+                Wait::new(Step::Draw, now, seconds.clamp(1.0, 120.0))
+            }
+            _ => unreachable!("only teaching steps wait"),
+        };
+        self.waiting = Some((wait, reply));
+    }
+
+    /// Teaching off again, and the answer.
+    fn finish_wait(&mut self, done: Done) {
+        let Some((wait, reply)) = self.waiting.take() else { return };
+        let outputs = match wait.step() {
+            Step::Rolls => Vec::new(),
+            Step::Drag => self.controls.set_drag_teaching(false),
+            Step::Draw => {
+                self.controls.set_teaching(false);
+                self.controls.cancel_drawing()
+            }
+        };
+        self.apply(outputs, false);
+        self.publish();
+        let _ = reply.send(match done {
+            Done::Taught(taught) => Response::taught(self.status.borrow().clone(), taught),
+            Done::Failed(why) => Response::error(why),
+        });
+    }
+
+    fn fail_wait(&mut self, why: &str) {
+        if self.waiting.is_some() {
+            self.finish_wait(Done::Failed(why.into()));
+        }
+    }
+
+    /// The palm-down roll drags are taught under: the calibration's, else the right hand's
+    /// measured one (an uncalibrated left hand: 0, like `Prototypes::turns_only`).
+    fn palm_down_roll(&self) -> f64 {
+        match (self.controls.options().palm, self.hand_in_use()) {
+            (Some(palm), _) => palm.down_roll,
+            (None, Some(Hand::Left)) => 0.0,
+            (None, _) => RIGHT_PALM_DOWN_ROLL,
+        }
+    }
+
+    /// Change what's taught for the paired band and the hand in use, and apply it.
+    fn save_taught(&mut self, change: impl FnOnce(&mut HandCalibration)) -> Response {
+        let (Some(hand), Ok(Some(band))) = (self.hand_in_use(), self.store.load_band()) else {
+            return Response::error("connect the band first: it says which wrist it's on when it connects");
+        };
+        let mut calibration = self.store.load_calibration(&band.address, hand).unwrap_or_else(|error| {
+            tracing::warn!("calibration: {error}; starting afresh");
+            HandCalibration::default()
+        });
+        change(&mut calibration);
+        if let Err(error) = self.store.save_calibration(&band.address, hand, &calibration) {
+            return Response::error(format!("state: {error}"));
+        }
+        self.refresh_calibration(true);
+        self.publish();
+        Response::ok(self.status.borrow().clone())
+    }
+
     fn run_draw_hook(&self, name: &str) {
         let hook = self.config.band.on_draw.trim();
         if !hook.is_empty() {
@@ -458,6 +554,9 @@ impl<T: Transport, R: Runner, F: ClientFactory> Daemon<T, R, F> {
             }
             _ => {}
         }
+        if let Some((wait, _)) = &mut self.waiting {
+            wait.on_event(&event);
+        }
         let now = self.clock.now();
         let outputs = self.controls.on_event(&event, now);
         self.apply(outputs, true);
@@ -474,6 +573,7 @@ impl<T: Transport, R: Runner, F: ClientFactory> Daemon<T, R, F> {
             authenticated: false,
         });
         self.controls.on_disconnect();
+        self.fail_wait("the band disconnected");
         self.semg_on = false;
         self.state = LinkState::Idle;
         match &outcome.end {
@@ -581,6 +681,7 @@ impl<T: Transport, R: Runner, F: ClientFactory> Daemon<T, R, F> {
     async fn stop_link(&mut self) {
         let Some(link) = self.link.take() else { return };
         self.controls.on_disconnect();
+        self.fail_wait("the band disconnected");
         self.semg_on = false;
         self.state = LinkState::Idle;
         self.publish();
@@ -897,6 +998,35 @@ impl<T: Transport, R: Runner, F: ClientFactory> Daemon<T, R, F> {
             }
             Request::Subscribe | Request::SubscribeSemg => {
                 return Response::error("subscriptions are handled by the control socket");
+            }
+            Request::PalmRolls { .. } | Request::TeachDrag { .. } | Request::DrawTry { .. } => {
+                return Response::error("teaching steps are answered by the daemon loop");
+            }
+            Request::SetPalm { palm } => {
+                if let Some(p) = palm
+                    && let Err(error) = PalmCalibration::from_rolls(&[p.down_roll], &[p.up_roll])
+                {
+                    return Response::error(crate::teach::calibration_error_text(error));
+                }
+                return self.save_taught(|calibration| calibration.palm = palm);
+            }
+            Request::SetDrags { drags } => {
+                let stored = match drags {
+                    None => None,
+                    Some(taught) => match Prototypes::taught(taught.turn, taught.drags, self.palm_down_roll()) {
+                        Ok(prototypes) => StoredDrags::from_prototypes(&prototypes),
+                        Err(error) => return Response::error(crate::teach::taught_error_text(error)),
+                    },
+                };
+                return self.save_taught(|calibration| calibration.drags = stored);
+            }
+            Request::Palm => {
+                if self.state != LinkState::Connected {
+                    return Response::error("connect the band first (`air-gestures connect`)");
+                }
+                let palm = self.controls.palm(now).key().to_owned();
+                self.publish();
+                return Response::taught(self.status.borrow().clone(), Taught::Palm { palm });
             }
         }
         self.publish();

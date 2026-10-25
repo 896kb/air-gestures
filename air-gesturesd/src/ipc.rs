@@ -16,6 +16,7 @@ use tokio::sync::{broadcast, mpsc, oneshot, watch};
 
 use crate::config::DialTarget;
 use crate::status::Status;
+use crate::store::StoredPalm;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -59,6 +60,52 @@ pub enum Request {
     /// Forget the band: keys, band record and the Bluetooth bond (the Meta
     /// sign-in is kept; `air-gestures signout` removes it).
     Forget,
+    /// Teaching: the band's roll for `seconds`, for the palm calibration (answers `teach: rolls`).
+    PalmRolls { seconds: f64 },
+    /// Teaching drags: the next pinch that moves, within `seconds` (answers `teach: drag`).
+    TeachDrag { seconds: f64 },
+    /// Teaching a drawing: one drawing, opened now, within `seconds` (answers `teach: strokes`).
+    DrawTry { seconds: f64 },
+    /// Store (`null`: forget) the palm calibration for the paired band and the hand in use.
+    SetPalm {
+        #[serde(default)]
+        palm: Option<StoredPalm>,
+    },
+    /// Store (`null`: forget) the taught drags for the paired band and the hand in use.
+    SetDrags {
+        #[serde(default)]
+        drags: Option<TaughtDrags>,
+    },
+    /// The palm position the band reads now (answers `teach: palm` at once).
+    Palm,
+}
+
+impl Request {
+    /// A teaching step: answered when the band has done it (or at its deadline).
+    pub fn waits(&self) -> bool {
+        matches!(self, Request::PalmRolls { .. } | Request::TeachDrag { .. } | Request::DrawTry { .. })
+    }
+}
+
+/// Taught drag samples: the turn, then the six drags in `Drag::ALL` order (forearm frame).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TaughtDrags {
+    pub turn: [f64; 3],
+    pub drags: [[f64; 3]; 6],
+}
+
+/// What a teaching step brought back.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub enum Taught {
+    /// The readable rolls (degrees) of `samples` orientation samples.
+    Rolls { rolls: Vec<f64>, samples: usize },
+    /// One pinch's direction (forearm frame, unit); `finger` is "index" or "middle".
+    Drag { finger: String, direction: [f64; 3] },
+    /// One drawing's strokes of [x, y] points (degrees).
+    Strokes { strokes: Vec<Vec<[f64; 2]>> },
+    /// The palm position now: "down", "sideways" or "up" (`Palm::key`).
+    Palm { palm: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
@@ -77,6 +124,9 @@ pub struct Response {
     /// so a client can react without matching on the human-readable text.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub code: Option<String>,
+    /// What a teaching step (or `palm`) brought back.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub teach: Option<Taught>,
 }
 
 /// `error`'s code when a `Pair` request needs a Meta sign-in first.
@@ -106,6 +156,10 @@ impl Response {
             error: Some(message.into()),
             ..Self::default()
         }
+    }
+
+    pub fn taught(status: Status, taught: Taught) -> Self {
+        Self { ok: true, status: Some(status), teach: Some(taught), ..Self::default() }
     }
 
     /// An `error` carrying a stable `code` a client can match on.

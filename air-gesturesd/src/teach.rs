@@ -1,9 +1,13 @@
-//! Teaching: the words for what went wrong (shared with `air-gestures`), and (Task 8) the
-//! teaching steps that wait for the band.
+//! Teaching: the words for what went wrong (shared with `air-gestures`), and the teaching
+//! steps that wait for the band.
 
 use band_core::controls::Drag;
 use band_core::controls::palm::{CalibrationError, Palm};
-use band_core::controls::pinch::TaughtError;
+use band_core::controls::pinch::{TaughtError, roll_or, up_in_band};
+use band_core::controls::{Finger, Output};
+use band_core::events::Event;
+
+use crate::ipc::Taught;
 
 pub fn drag_name(drag: Drag) -> &'static str {
     match drag {
@@ -39,5 +43,82 @@ pub fn calibration_error_text(error: CalibrationError) -> String {
         CalibrationError::NotStill(palm) => format!("you moved while holding {}: once more, and hold still", palm_name(palm)),
         CalibrationError::Empty(palm) => format!("couldn't read {}: keep your forearm level (not pointing up or down)", palm_name(palm)),
         CalibrationError::TooClose => "palm down and palm up came out less than 60° apart: turn your hand all the way over".into(),
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Step {
+    Rolls,
+    Drag,
+    Draw,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum Done {
+    Taught(Taught),
+    Failed(String),
+}
+
+/// A teaching step waiting for the band.
+#[derive(Debug)]
+pub struct Wait {
+    step: Step,
+    until: f64,
+    seconds: f64,
+    rolls: Vec<f64>,
+    samples: usize,
+}
+
+impl Wait {
+    pub fn new(step: Step, now: f64, seconds: f64) -> Self {
+        Self { step, until: now + seconds, seconds, rolls: Vec::new(), samples: 0 }
+    }
+
+    pub fn step(&self) -> Step {
+        self.step
+    }
+
+    pub fn deadline(&self) -> f64 {
+        self.until
+    }
+
+    /// A band event (rolls: each orientation's roll about the forearm, as the controls read it).
+    pub fn on_event(&mut self, event: &Event) {
+        if let (Step::Rolls, Event::Orientation(q)) = (self.step, event) {
+            self.samples += 1;
+            let roll = roll_or(up_in_band(*q), f64::NAN);
+            if roll.is_finite() {
+                self.rolls.push(roll);
+            }
+        }
+    }
+
+    /// An output of the controls: done when it's this step's.
+    pub fn on_output(&mut self, output: &Output<String>) -> Option<Done> {
+        match (self.step, output) {
+            (Step::Drag, Output::DragSample { finger, direction }) => {
+                let finger = match finger {
+                    Finger::Index => "index",
+                    Finger::Middle => "middle",
+                };
+                Some(Done::Taught(Taught::Drag { finger: finger.into(), direction: *direction }))
+            }
+            (Step::Draw, Output::DrawFinished { strokes }) if !strokes.is_empty() => {
+                Some(Done::Taught(Taught::Strokes { strokes: strokes.clone() }))
+            }
+            (Step::Draw, Output::DrawFinished { .. } | Output::DrawCancelled) => {
+                Some(Done::Failed("nothing was drawn (pinch to put the pen down; a quick tap isn't a stroke)".into()))
+            }
+            _ => None,
+        }
+    }
+
+    /// The deadline passed: the rolls so far, else what didn't happen.
+    pub fn timed_out(&mut self) -> Done {
+        match self.step {
+            Step::Rolls => Done::Taught(Taught::Rolls { rolls: std::mem::take(&mut self.rolls), samples: self.samples }),
+            Step::Drag => Done::Failed(format!("no pinch that moved in {} s", self.seconds)),
+            Step::Draw => Done::Failed(format!("the drawing didn't end within {} s", self.seconds)),
+        }
     }
 }

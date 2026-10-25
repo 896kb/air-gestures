@@ -6,6 +6,10 @@ use air_gesturesd::actions::RecordingRunner;
 use air_gesturesd::config::DialTarget;
 use air_gesturesd::daemon::Daemon;
 use air_gesturesd::ipc::{Call, HandChoice, Request, Response};
+use air_gesturesd::ipc::{Taught, TaughtDrags};
+use air_gesturesd::store::{HandCalibration, StoredPalm};
+use band_core::controls::pinch::Prototypes;
+use band_core::events::Hand;
 use air_gesturesd::meta::{
     ClientFactory, FakeFactory, Final, HttpFactory, MetaSession, PairClient, PairError, Pending,
 };
@@ -914,4 +918,127 @@ async fn a_hand_chosen_over_ipc_survives_its_calibration_swap() {
     daemon.wait("the left hand", |s| s.hand.as_deref() == Some("left")).await;
     tokio::time::sleep(Duration::from_secs(5)).await;
     assert_eq!(daemon.status.borrow().hand.as_deref(), Some("left"), "the left hand's options didn't undo the choice");
+}
+
+impl Harness {
+    /// Send a call and hand back where its answer will arrive.
+    async fn call_later(&self, request: Request) -> oneshot::Receiver<Response> {
+        let (reply, response) = oneshot::channel();
+        self.calls.send((request, reply)).await.unwrap();
+        response
+    }
+
+    async fn right_hand(&mut self) {
+        self.connected().await;
+        self.wait("the right hand", |s| s.hand.as_deref() == Some("right")).await;
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn teaching_a_drag_answers_with_the_pinchs_direction_and_runs_nothing() {
+    let transport = SimTransport::new(SimMode::Enrolled);
+    let mut daemon = start(transport.clone(), true, fake(&transport));
+    daemon.right_hand().await;
+    daemon.configure("[gestures]\nindex_drag_away = \"echo away\"\n").await;
+    let answer = daemon.call_later(Request::TeachDrag { seconds: 30.0 }).await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    daemon.pinch_moving(600, 50).await;
+    let response = answer.await.unwrap();
+    let Some(Taught::Drag { finger, direction }) = response.teach else { panic!("{response:?}") };
+    assert_eq!(finger, "index");
+    // Band x, palm down (roll −142.3°), in the forearm frame.
+    assert!(direction[0] < -0.75 && direction[1].abs() < 0.05 && direction[2] < -0.55, "{direction:?}");
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert!(daemon.runner.commands().is_empty(), "teaching acts on nothing");
+    // Teaching is off again: the same pinch is the drag gesture.
+    daemon.pinch_moving(600, 50).await;
+    daemon.wait("the drag", |s| s.last_action.as_deref() == Some("echo away")).await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_drag_step_with_no_pinch_times_out() {
+    let transport = SimTransport::new(SimMode::Enrolled);
+    let mut daemon = start(transport.clone(), true, fake(&transport));
+    daemon.connected().await;
+    let response = daemon.call(Request::TeachDrag { seconds: 2.0 }).await;
+    assert!(response.error.unwrap().contains("no pinch"));
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_drawing_try_answers_with_its_strokes_and_matches_nothing() {
+    let transport = SimTransport::new(SimMode::Enrolled);
+    let mut daemon = start(transport.clone(), true, fake(&transport));
+    daemon.connected().await;
+    daemon.teach_line("line");
+    daemon.configure(DRAWING_CONFIG).await;
+    let answer = daemon.call_later(Request::DrawTry { seconds: 30.0 }).await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    daemon.pinch_moving(600, 40).await;
+    let response = answer.await.unwrap();
+    let Some(Taught::Strokes { strokes }) = response.teach else { panic!("{response:?}") };
+    assert_eq!(strokes.len(), 1);
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    assert!(daemon.runner.commands().is_empty(), "no on_draw, no action while teaching");
+}
+
+#[tokio::test(start_paused = true)]
+async fn palm_rolls_without_orientation_come_back_empty() {
+    let transport = SimTransport::new(SimMode::Enrolled);
+    let mut daemon = start(transport.clone(), true, fake(&transport));
+    daemon.connected().await;
+    let response = daemon.call(Request::PalmRolls { seconds: 2.0 }).await;
+    assert_eq!(response.teach, Some(Taught::Rolls { rolls: Vec::new(), samples: 0 }));
+}
+
+#[tokio::test(start_paused = true)]
+async fn palm_rolls_and_the_palm_now_come_from_the_bands_orientation() {
+    let transport = SimTransport::new(SimMode::Enrolled);
+    let mut daemon = start(transport.clone(), true, fake(&transport));
+    daemon.right_hand().await;
+    let answer = daemon.call_later(Request::PalmRolls { seconds: 2.0 }).await;
+    daemon.hold_roll(-140.0, 2.5).await;
+    let Some(Taught::Rolls { rolls, samples }) = answer.await.unwrap().teach else { panic!() };
+    assert!(samples >= 30 && rolls.len() == samples, "{samples} samples, {} rolls", rolls.len());
+    assert!(rolls.iter().all(|r| (r + 140.0).abs() < 0.01), "{rolls:?}");
+    daemon.hold_roll(PALM_UP, 0.3).await;
+    assert_eq!(daemon.call(Request::Palm).await.teach, Some(Taught::Palm { palm: "up".into() }));
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    let stale = daemon.call(Request::Palm).await.teach;
+    assert_eq!(stale, Some(Taught::Palm { palm: "down".into() }), "no orientation for 0.5 s reads as down");
+}
+
+#[tokio::test(start_paused = true)]
+async fn teaching_needs_a_band_and_one_step_at_a_time() {
+    let lonely = SimTransport::new(SimMode::Enrolled);
+    let alone = start(lonely.clone(), false, fake(&lonely));
+    assert!(alone.call(Request::PalmRolls { seconds: 2.0 }).await.error.unwrap().contains("connect the band first"));
+    let transport = SimTransport::new(SimMode::Enrolled);
+    let mut daemon = start(transport.clone(), true, fake(&transport));
+    daemon.connected().await;
+    let _first = daemon.call_later(Request::TeachDrag { seconds: 30.0 }).await;
+    let second = daemon.call(Request::DrawTry { seconds: 30.0 }).await;
+    assert!(second.error.unwrap().contains("another teaching step"));
+}
+
+#[tokio::test(start_paused = true)]
+async fn set_palm_and_set_drags_store_for_the_band_and_hand() {
+    let transport = SimTransport::new(SimMode::Enrolled);
+    let mut daemon = start(transport.clone(), true, fake(&transport));
+    daemon.right_hand().await;
+    let palm = StoredPalm { down_roll: -140.0, up_roll: -10.0 };
+    assert!(daemon.call(Request::SetPalm { palm: Some(palm) }).await.ok);
+    let p = Prototypes::right_hand();
+    let drags = TaughtDrags { turn: p.turn, drags: p.drags.unwrap() };
+    assert!(daemon.call(Request::SetDrags { drags: Some(drags.clone()) }).await.ok);
+    let stored = daemon.store.load_calibration(SIM_ADDRESS, Hand::Right).unwrap();
+    assert_eq!(stored.palm, Some(palm));
+    assert_eq!(stored.drags.unwrap().palm_down_roll, -140.0, "taught under the calibration's palm down");
+    let mut alike = drags;
+    alike.drags[1] = alike.drags[0];
+    assert!(daemon.call(Request::SetDrags { drags: Some(alike) }).await.error.unwrap().contains("alike"));
+    let close = StoredPalm { down_roll: -140.0, up_roll: -120.0 };
+    assert!(daemon.call(Request::SetPalm { palm: Some(close) }).await.error.unwrap().contains("60°"));
+    daemon.call(Request::SetPalm { palm: None }).await;
+    daemon.call(Request::SetDrags { drags: None }).await;
+    assert_eq!(daemon.store.load_calibration(SIM_ADDRESS, Hand::Right).unwrap(), HandCalibration::default());
 }
