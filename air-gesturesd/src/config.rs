@@ -312,14 +312,18 @@ impl DialConfig {
     }
 }
 
+fn text<'a>(place: &str, key: &str, value: &'a toml::Value) -> Result<&'a str, String> {
+    value.as_str().ok_or_else(|| format!("{place}.{key}: expected a string"))
+}
+
 #[derive(Debug, Clone, PartialEq, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
     pub band: BandConfig,
-    /// The first profile, as written (unwritten keys take `default_gesture`).
-    gestures: BTreeMap<String, String>,
-    /// More profiles, in order (`name` plus gesture keys; unwritten keys do nothing).
-    profile: Vec<BTreeMap<String, String>>,
+    /// The first profile as written (unwritten gesture keys take `default_gesture`).
+    gestures: toml::Table,
+    /// More profiles, in order (`name` plus the same keys; unwritten gesture keys do nothing).
+    profile: Vec<toml::Table>,
     pub dial: DialConfig,
 }
 
@@ -374,56 +378,75 @@ impl Config {
         (setup(0, index), setup(1, middle), index)
     }
 
-    fn build(&self) -> Result<(Profiles<String>, Vec<DialTarget>), String> {
-        let band = self.band.band_controls()?;
-        check_name("profile", &self.band.profile).map_err(|e| format!("band.profile: {e}"))?;
-        let mut dials = Vec::new();
-        let mut first = Profile::new(&self.band.profile);
-        for gesture in Gesture::ALL {
-            if let Some(command) = default_gesture(gesture) {
-                first.gestures.insert(gesture, Binding::from(command.to_owned()));
+    /// One profile from its table. `first` starts from the defaults. Also returns what its
+    /// index dial turns.
+    fn profile_from(&self, name: &str, table: &toml::Table, place: &str, first: bool) -> Result<(Profile<String>, DialTarget), String> {
+        let mut profile = Profile::new(name);
+        if first {
+            for gesture in Gesture::ALL {
+                if let Some(command) = default_gesture(gesture) {
+                    profile.gestures.insert(gesture, Binding::from(command.to_owned()));
+                }
             }
         }
         let mut fingers = Fingers::default();
-        for (key, value) in &self.gestures {
-            if fingers.set("gestures", key, value)? {
+        for (key, value) in table {
+            let key = key.as_str();
+            if (key == "name" && !first) || Palm::ALL.into_iter().any(|p| palm_section(p) == key) {
                 continue;
             }
-            let gesture = Gesture::from_key(key).ok_or_else(|| format!("gestures: unknown gesture \"{key}\""))?;
-            match command("gestures", key, value)? {
-                Some(command) => first.gestures.insert(gesture, Binding::from(command)),
-                None => first.gestures.remove(&gesture),
+            let value = text(place, key, value)?;
+            if fingers.set(place, key, value)? {
+                continue;
+            }
+            let gesture = Gesture::from_key(key).ok_or_else(|| format!("{place}: unknown key \"{key}\""))?;
+            match command(place, key, value)? {
+                Some(command) => profile.gestures.insert(gesture, Binding::from(command)),
+                None => profile.gestures.remove(&gesture),
             };
         }
+        for palm in Palm::ALL {
+            let section = palm_section(palm);
+            let Some(value) = table.get(section) else { continue };
+            let at = format!("{place}.{section}");
+            let sub = value.as_table().ok_or_else(|| format!("{at}: expected a table of gesture = command"))?;
+            for (key, value) in sub {
+                let gesture = Gesture::from_key(key).ok_or_else(|| format!("{at}: unknown gesture \"{key}\""))?;
+                let action = command(&at, key, text(&at, key, value)?)?;
+                profile
+                    .gestures
+                    .entry(gesture)
+                    .or_insert_with(|| Binding { normal: None, overrides: BTreeMap::new() })
+                    .overrides
+                    .insert(palm, action);
+            }
+        }
+        if let Some((gesture, _)) = profile.gestures.iter().find(|(_, binding)| !binding.valid()) {
+            return Err(format!(
+                "{place}: {} has palm overrides in palm_down, sideways and palm_up; at most 2 (the normal action covers the third position)",
+                gesture.key()
+            ));
+        }
         let (index, middle, target) = self.fingers(&fingers);
-        first.index = index;
-        first.middle = middle;
-        dials.push(target);
+        profile.index = index;
+        profile.middle = middle;
+        Ok((profile, target))
+    }
+
+    fn build(&self) -> Result<(Profiles<String>, Vec<DialTarget>), String> {
+        let band = self.band.band_controls()?;
+        check_name("profile", &self.band.profile).map_err(|e| format!("band.profile: {e}"))?;
+        let (first, target) = self.profile_from(&self.band.profile, &self.gestures, "gestures", true)?;
+        let mut dials = vec![target];
         let mut list = vec![first];
         for table in &self.profile {
-            let name = table.get("name").ok_or("every [[profile]] needs a name")?;
+            let name = table.get("name").and_then(toml::Value::as_str).ok_or("every [[profile]] needs a name")?;
             check_name("profile", name)?;
-            if list.iter().any(|p: &Profile<String>| p.name == *name) {
+            if list.iter().any(|p: &Profile<String>| p.name == name) {
                 return Err(format!("two profiles are called \"{name}\""));
             }
             let place = format!("profile \"{name}\"");
-            let mut profile = Profile::new(name);
-            let mut fingers = Fingers::default();
-            for (key, value) in table {
-                if key == "name" {
-                    continue;
-                }
-                if fingers.set(&place, key, value)? {
-                    continue;
-                }
-                let gesture = Gesture::from_key(key).ok_or_else(|| format!("{place}: unknown key \"{key}\""))?;
-                if let Some(command) = command(&place, key, value)? {
-                    profile.gestures.insert(gesture, Binding::from(command));
-                }
-            }
-            let (index, middle, target) = self.fingers(&fingers);
-            profile.index = index;
-            profile.middle = middle;
+            let (profile, target) = self.profile_from(name, table, &place, false)?;
             dials.push(target);
             list.push(profile);
         }

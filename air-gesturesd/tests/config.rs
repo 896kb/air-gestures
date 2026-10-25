@@ -201,6 +201,11 @@ fn mistakes_are_reported() {
         ("[gestures]\nmiddle_drags = \"both\"\n", "both"),
         ("[gestures]\nindex_slider_sideways = \"volume\"\n", "index_slider_sideways"),
         ("[gestures]\nring_dial = \"volume\"\n", "ring_dial"),
+        ("[gestures.palm_up]\nnope = \"x\"\n", "nope"),
+        ("[gestures.palm_up]\nindex_tap = \"@controls\"\n", "[band]"),
+        ("[gestures]\nindex_tap = 3\n", "expected a string"),
+        ("[gestures.palm_left]\nindex_tap = \"x\"\n", "palm_left"),
+        ("[gestures]\npalm_up = \"x\"\n", "expected a table"),
     ] {
         let error = Config::parse(text).unwrap_err();
         assert!(error.contains(needle), "{text:?} → {error}");
@@ -297,4 +302,60 @@ fn a_band_control_on_a_drag_pauses_that_pairs_slider() {
             && n.text == "middle_slider_up_down in profile \"default\" is overridden by [band] draw on middle_drag_up"),
         "{notes:?}"
     );
+}
+
+#[test]
+fn palm_sub_tables_override_a_gesture_in_that_position() {
+    let config = Config::parse(
+        r#"
+        [gestures]
+        index_tap = "echo tap"
+        [gestures.palm_up]
+        index_tap = "echo up"
+        swipe_left = ""
+        [[profile]]
+        name = "b"
+        [profile.sideways]
+        middle_tap = "echo side"
+        "#,
+    )
+    .unwrap();
+    let profiles = config.profiles();
+    let tap = &profiles.list[0].gestures[&Gesture::IndexTap];
+    assert_eq!(tap.action(Palm::Down).map(String::as_str), Some("echo tap"));
+    assert_eq!(tap.action(Palm::Up).map(String::as_str), Some("echo up"));
+    let left = &profiles.list[0].gestures[&Gesture::SwipeLeft];
+    assert_eq!(left.action(Palm::Up), None, "\"\" = nothing with the palm up");
+    assert_eq!(left.action(Palm::Side).map(String::as_str), Some("hyprctl dispatch workspace e-1"));
+    let side = &profiles.list[1].gestures[&Gesture::MiddleTap];
+    assert_eq!(side.normal, None);
+    assert_eq!(side.action(Palm::Side).map(String::as_str), Some("echo side"));
+}
+
+#[test]
+fn three_palm_overrides_on_one_gesture_are_an_error() {
+    let error = Config::parse(
+        "[gestures.palm_up]\nindex_tap = \"a\"\n[gestures.sideways]\nindex_tap = \"b\"\n[gestures.palm_down]\nindex_tap = \"c\"\n",
+    )
+    .unwrap_err();
+    assert!(error.contains("index_tap") && error.contains("at most 2"), "{error}");
+}
+
+#[test]
+fn an_override_a_band_control_pauses_is_named_with_its_position() {
+    let config = Config::parse(
+        r#"
+        [band]
+        draw = "index_tap"
+        draw_palm = ["up"]
+        [gestures]
+        index_tap = "echo tap"
+        [gestures.palm_up]
+        index_tap = "echo up"
+        "#,
+    )
+    .unwrap();
+    let texts: Vec<String> = notes(&config.profiles()).into_iter().map(|n| n.text).collect();
+    assert!(texts.contains(&"index_tap (palm_up) in profile \"default\" is overridden by [band] draw with the palm up".to_owned()), "{texts:?}");
+    assert!(!texts.iter().any(|t| t.starts_with("index_tap in")), "the normal action isn't used with the palm up: {texts:?}");
 }
