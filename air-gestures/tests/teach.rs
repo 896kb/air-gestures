@@ -106,3 +106,51 @@ async fn one_drag_sample_comes_back_from_the_band() {
     let direction = sample.await.unwrap().unwrap();
     assert!(direction[0] < -0.75, "{direction:?}");
 }
+
+use air_gesturesd::drawings;
+use band_core::controls::draw::Drawing;
+
+#[tokio::test]
+async fn teaching_a_drawing_saves_three_alike_tries() {
+    let daemon = support::start(SimMode::Enrolled, true).await;
+    daemon.wait("the hand", |s| s.state == LinkState::Connected && s.hand.is_some()).await;
+    let (mut guide, mut cues) = guide();
+    let (socket, dir) = (daemon.socket.clone(), daemon.drawings());
+    let teach = tokio::spawn(async move { teach::teach_drawing(&socket, &dir, "line", &mut guide).await.map(|()| guide.said) });
+    for _ in 0..3 {
+        cues.recv().await.expect("a try");
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        support::pinch_moving(&daemon.transport, 600, 40).await;
+    }
+    let said = teach.await.unwrap().unwrap();
+    assert!(said.iter().any(|s| s.contains("[drawings]")), "{said:?}");
+    let (saved, problems) = drawings::load(&daemon.drawings());
+    assert!(problems.is_empty(), "{problems:?}");
+    assert_eq!(saved.len(), 1);
+    assert_eq!(saved[0].name, "line");
+    assert_eq!(saved[0].tries.len(), 3);
+}
+
+#[tokio::test]
+async fn a_taken_or_bad_name_is_refused_before_drawing() {
+    let dir = tempfile::tempdir().unwrap();
+    let line = vec![vec![[0.0, 0.0], [0.0, 10.0]]];
+    drawings::save(dir.path(), &Drawing { name: "z".into(), tries: vec![line] }).unwrap();
+    let nowhere = dir.path().join("no.sock");
+    let (mut guide, _cues) = guide();
+    let taken = teach::teach_drawing(&nowhere, dir.path(), "z", &mut guide).await.unwrap_err();
+    assert!(taken.contains("already taught") && taken.contains("air-gestures draw delete z"), "{taken}");
+    let bad = teach::teach_drawing(&nowhere, dir.path(), "it's", &mut guide).await.unwrap_err();
+    assert!(bad.contains("it's"), "{bad}");
+}
+
+#[test]
+fn drawings_are_listed_and_deleted() {
+    let dir = tempfile::tempdir().unwrap();
+    assert!(teach::list_drawings(dir.path()).unwrap().contains("no drawings yet"));
+    let line = vec![vec![[0.0, 0.0], [0.0, 10.0]]];
+    drawings::save(dir.path(), &Drawing { name: "z".into(), tries: vec![line.clone(), line] }).unwrap();
+    assert_eq!(teach::list_drawings(dir.path()).unwrap(), "z (2 tries)");
+    teach::delete_drawing(dir.path(), "z").unwrap();
+    assert!(teach::delete_drawing(dir.path(), "z").unwrap_err().contains("no drawing \"z\""));
+}

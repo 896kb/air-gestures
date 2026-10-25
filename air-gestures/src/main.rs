@@ -112,11 +112,26 @@ enum Command {
         #[arg(long)]
         reset: bool,
     },
+    /// Drawings: teach one (three tries), list them, delete one.
+    Draw {
+        #[command(subcommand)]
+        what: DrawCommand,
+    },
     /// Raw sEMG readings.
     Semg {
         #[command(subcommand)]
         what: SemgCommand,
     },
+}
+
+#[derive(Subcommand)]
+enum DrawCommand {
+    /// Teach a drawing by drawing it three times.
+    Teach { name: String },
+    /// The taught drawings.
+    List,
+    /// Forget a drawing.
+    Delete { name: String },
 }
 
 #[derive(Subcommand)]
@@ -520,6 +535,19 @@ fn main() -> ExitCode {
         Command::TeachDrags { reset: false } => {
             report(runtime().block_on(air_gestures::teach::teach_drags(&socket, &mut air_gestures::teach::Terminal)))
         }
+        Command::Draw { what } => {
+            let dir = air_gesturesd::drawings::default_dir(cli.dry_run);
+            match what {
+                DrawCommand::Teach { name } => report(runtime().block_on(air_gestures::teach::teach_drawing(
+                    &socket,
+                    &dir,
+                    &name,
+                    &mut air_gestures::teach::Terminal,
+                ))),
+                DrawCommand::List => report(air_gestures::teach::list_drawings(&dir).map(|list| println!("{list}"))),
+                DrawCommand::Delete { name } => report(air_gestures::teach::delete_drawing(&dir, &name).map(|()| println!("deleted \"{name}\""))),
+            }
+        }
         Command::Semg {
             what: SemgCommand::View,
         } => report(runtime().block_on(air_gestures::semg::view(&socket))),
@@ -559,5 +587,9 @@ mod tests {
         assert!(matches!(parse(&["--dry-run", "calibrate"]), Command::Calibrate { .. }));
         assert!(matches!(parse(&["teach-drags"]), Command::TeachDrags { reset: false }));
         assert!(matches!(parse(&["teach-drags", "--reset"]), Command::TeachDrags { reset: true }));
+        assert!(matches!(parse(&["draw", "teach", "lightbulb"]), Command::Draw { what: DrawCommand::Teach { name } } if name == "lightbulb"));
+        assert!(matches!(parse(&["draw", "list"]), Command::Draw { what: DrawCommand::List }));
+        assert!(matches!(parse(&["draw", "delete", "z"]), Command::Draw { what: DrawCommand::Delete { name } } if name == "z"));
+        assert!(Cli::try_parse_from(["air-gestures", "draw", "teach"]).is_err(), "a name is needed");
     }
 }

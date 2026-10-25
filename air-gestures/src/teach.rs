@@ -5,10 +5,12 @@ use std::path::Path;
 use std::process::Stdio;
 use std::time::Duration;
 
+use air_gesturesd::drawings;
 use air_gesturesd::ipc::{Request, Taught, TaughtDrags};
 use air_gesturesd::status::{LinkState, Status};
 use air_gesturesd::store::StoredPalm;
 use air_gesturesd::teach::{calibration_error_text, taught_error_text};
+use band_core::controls::draw::{self, Drawing, Library, Stroke, TeachError};
 use band_core::controls::palm::{CalibrationError, Palm, PalmCalibration};
 use band_core::controls::pinch::{Prototypes, TaughtError};
 
@@ -211,4 +213,86 @@ pub async fn teach_drags(socket: &Path, guide: &mut impl Guide) -> Result<(), St
         }
     }
     Err(format!("teaching didn't work in {ROUNDS} rounds ({last}); nothing was changed"))
+}
+
+/// Tries a drawing is taught with.
+pub const TRIES: usize = 3;
+
+/// `name` as a TOML key.
+fn toml_key(name: &str) -> String {
+    if name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') { name.to_owned() } else { format!("\"{name}\"") }
+}
+
+async fn draw_try(socket: &Path, guide: &mut impl Guide, name: &str, index: usize) -> Result<Vec<Stroke>, String> {
+    guide.say(&format!("Try {} of {TRIES}: draw it now.", index + 1));
+    guide.notify("Draw", &format!("{name}: try {} of {TRIES}", index + 1));
+    let response = client::request_within(socket, &Request::DrawTry { seconds: 30.0 }, Duration::from_secs(40)).await?;
+    match response.teach {
+        Some(Taught::Strokes { strokes }) => Ok(strokes),
+        _ => Err(unexpected()),
+    }
+}
+
+/// Three alike tries of a new drawing, saved in `dir` (where the daemon reads drawings).
+pub async fn teach_drawing(socket: &Path, dir: &Path, name: &str, guide: &mut impl Guide) -> Result<(), String> {
+    drawings::check_name(name)?;
+    let (existing, _) = drawings::load(dir);
+    if existing.iter().any(|d| d.name == name) {
+        return Err(format!("\"{name}\" is already taught: `air-gestures draw delete {name}` first"));
+    }
+    connected_hand(&client::status(socket).await?)?;
+    guide.say(&format!(
+        "Draw \"{name}\" {TRIES} times, the way you'll draw it later (in the air, or pen grip on a table). \
+         Pinch to put the pen down, let go to lift it; each try ends 1 s after your last stroke."
+    ));
+    let mut tries: Vec<Option<Vec<Stroke>>> = vec![None; TRIES];
+    for _ in 0..ROUNDS {
+        for (index, slot) in tries.iter_mut().enumerate() {
+            if slot.is_none() {
+                *slot = Some(draw_try(socket, guide, name, index).await?);
+            }
+        }
+        let all: Vec<Vec<Stroke>> = tries.iter().map(|t| t.clone().unwrap_or_default()).collect();
+        match draw::check_tries(&all) {
+            Ok(()) => {
+                if let Some(other) = Library::new(&existing).looks_like(&all) {
+                    return Err(format!("that looks like \"{other}\": teach something more different (nothing was saved)"));
+                }
+                drawings::save(dir, &Drawing { name: name.to_owned(), tries: all })
+                    .map_err(|error| format!("could not save \"{name}\": {error}"))?;
+                guide.say(&format!("Saved \"{name}\". Give it an action in config.toml:\n  [drawings]\n  {} = \"…\"", toml_key(name)));
+                guide.notify("Drawing taught", name);
+                return Ok(());
+            }
+            Err(TeachError::TooSmall(index)) => {
+                guide.say(&format!("Try {} was too small to read: draw bigger.", index + 1));
+                tries[index] = None;
+            }
+            Err(TeachError::NotAlike { .. } | TeachError::NoTries) => {
+                guide.say("These don't look alike: try again, or draw bigger.");
+                tries.iter_mut().for_each(|t| *t = None);
+            }
+        }
+    }
+    Err(format!("\"{name}\" didn't come out alike in {ROUNDS} rounds; nothing was saved"))
+}
+
+/// One line per drawing, or how to make one.
+pub fn list_drawings(dir: &Path) -> Result<String, String> {
+    let (all, problems) = drawings::load(dir);
+    for problem in problems {
+        eprintln!("{problem}");
+    }
+    if all.is_empty() {
+        return Ok("no drawings yet: `air-gestures draw teach <name>`".into());
+    }
+    Ok(all.iter().map(|d| format!("{} ({} tries)", d.name, d.tries.len())).collect::<Vec<_>>().join("\n"))
+}
+
+pub fn delete_drawing(dir: &Path, name: &str) -> Result<(), String> {
+    match drawings::delete(dir, name) {
+        Ok(true) => Ok(()),
+        Ok(false) => Err(format!("no drawing \"{name}\" (`air-gestures draw list`)")),
+        Err(error) => Err(format!("could not delete \"{name}\": {error}")),
+    }
 }
