@@ -82,7 +82,7 @@ Today each project has its own copy. Android's was copied from Linux at `91e7217
 - **Android (`~/Projects/air-gestures-android`):**
   - `cargo test` in `rust/`, then `./build-rust.sh` and `./gradlew assembleDebug testDebugUnitTest`.
   - The dev build (key `debug.keystore.linux-backup`, dev icon) goes on the phone, where gestures, the dial and handwriting must still work.
-- **Byte-for-byte check:** Android's `rust/band-core` sources after the switch are identical to before, except for the `write_config` addition. `git diff` against the pre-switch tree proves it.
+- **Byte-for-byte check:** Android's `rust/band-core` sources after the switch are identical to before, except for the `write_config` addition and two clippy fixes (`is_multiple_of` in `probe_note`, `while let` in `ota.rs`'s `fill`), so that band-core's CI can run clippy with `-D warnings`. `git diff` against the pre-switch tree proves it.
 
 ## Order of work
 
