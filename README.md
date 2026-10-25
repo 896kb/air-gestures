@@ -122,6 +122,37 @@ systemctl --user daemon-reload && systemctl --user enable --now air-gesturesd
 ```
 
 Gestures and the dial are configured in `~/.config/air-gestures/config.toml` (reloaded on save).
+Every key is in [`contrib/config.toml`](contrib/config.toml).
+
+`[gestures]` maps each gesture (`index_tap`, `middle_double`, `index_triple`, `middle_hold`, ...)
+to a shell command, or to a built-in written with an `@`:
+
+- `@controls` turns the controls off and on (by default the middle hold);
+- `@next-profile` and `@previous-profile` switch profiles (by default the index and middle
+  triple taps; with one profile they do nothing).
+
+**Profiles** are `[[profile]]` tables after `[gestures]`, which is the first profile
+(named `default`, or whatever `profile` under `[band]` says). Each has its own gestures; a gesture a profile leaves out does nothing there:
+
+```toml
+[[profile]]
+name = "games"
+index_triple = "@next-profile"
+middle_hold  = "@controls"
+
+[[profile]]
+name = "media"
+index_triple = "@next-profile"
+index_tap    = "playerctl play-pause"
+```
+
+Switch from the band with the built-ins above, or from a shell with
+`air-gestures profile next|previous|<name>`; the current one shows in `air-gestures status` and
+the waybar tooltip. `on_profile` under `[band]` runs on every switch with
+`AIR_GESTURES_PROFILE` set to the new profile's name.
+
+`toggle` under `[band]` is the old way to pick the gesture that turns the controls off and on;
+it keeps working, and `@controls` on a gesture is the new one.
 `AIR_GESTURES_LOG=air-gesturesd=debug` in the service logs every gesture and frame.
 
 ## Moving the band between devices
