@@ -316,6 +316,17 @@ fn text<'a>(place: &str, key: &str, value: &'a toml::Value) -> Result<&'a str, S
     value.as_str().ok_or_else(|| format!("{place}.{key}: expected a string"))
 }
 
+fn drawing_actions(at: &str, table: &toml::Table) -> Result<BTreeMap<String, String>, String> {
+    let mut actions = BTreeMap::new();
+    for (name, value) in table {
+        check_name("drawing", name).map_err(|e| format!("{at}: {e}"))?;
+        if let Some(command) = command(at, name, text(at, name, value)?)? {
+            actions.insert(name.clone(), command);
+        }
+    }
+    Ok(actions)
+}
+
 #[derive(Debug, Clone, PartialEq, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
@@ -324,6 +335,8 @@ pub struct Config {
     gestures: toml::Table,
     /// More profiles, in order (`name` plus the same keys; unwritten gesture keys do nothing).
     profile: Vec<toml::Table>,
+    /// Drawing name → command in every profile without its own.
+    drawings: toml::Table,
     pub dial: DialConfig,
 }
 
@@ -392,7 +405,7 @@ impl Config {
         let mut fingers = Fingers::default();
         for (key, value) in table {
             let key = key.as_str();
-            if (key == "name" && !first) || Palm::ALL.into_iter().any(|p| palm_section(p) == key) {
+            if (key == "name" && !first) || key == "drawings" || Palm::ALL.into_iter().any(|p| palm_section(p) == key) {
                 continue;
             }
             let value = text(place, key, value)?;
@@ -427,6 +440,11 @@ impl Config {
                 gesture.key()
             ));
         }
+        if let Some(value) = table.get("drawings") {
+            let at = format!("{place}.drawings");
+            let sub = value.as_table().ok_or_else(|| format!("{at}: expected a table of drawing = command"))?;
+            profile.drawings = drawing_actions(&at, sub)?;
+        }
         let (index, middle, target) = self.fingers(&fingers);
         profile.index = index;
         profile.middle = middle;
@@ -450,7 +468,14 @@ impl Config {
             dials.push(target);
             list.push(profile);
         }
-        let profiles = Profiles { band, list, picked: 0, apps: BTreeMap::new(), calls: BTreeMap::new(), drawings: BTreeMap::new() };
+        let profiles = Profiles {
+            band,
+            list,
+            picked: 0,
+            apps: BTreeMap::new(),
+            calls: BTreeMap::new(),
+            drawings: drawing_actions("drawings", &self.drawings)?,
+        };
         Ok((profiles, dials))
     }
 
@@ -559,6 +584,21 @@ pub fn notes(profiles: &Profiles<String>) -> Vec<Note> {
         )));
     }
     notes
+}
+
+/// Drawings with an action whose template isn't taught (yet).
+pub fn missing_drawings(profiles: &Profiles<String>, taught: &[&str]) -> Vec<Note> {
+    let named: std::collections::BTreeSet<&str> = profiles
+        .drawings
+        .keys()
+        .chain(profiles.list.iter().flat_map(|p| p.drawings.keys()))
+        .map(String::as_str)
+        .collect();
+    named
+        .into_iter()
+        .filter(|name| !taught.contains(name))
+        .map(|name| Note::new(Level::Warn, format!("drawing \"{name}\" has an action but isn't taught yet: `air-gestures draw teach {name}`")))
+        .collect()
 }
 
 pub(crate) fn home() -> PathBuf {

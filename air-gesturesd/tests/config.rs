@@ -206,6 +206,10 @@ fn mistakes_are_reported() {
         ("[gestures]\nindex_tap = 3\n", "expected a string"),
         ("[gestures.palm_left]\nindex_tap = \"x\"\n", "palm_left"),
         ("[gestures]\npalm_up = \"x\"\n", "expected a table"),
+        ("[drawings]\n\"it's\" = \"x\"\n", "it's"),
+        ("[drawings]\nz = \"@draw\"\n", "[band]"),
+        ("[drawings]\nz = 1\n", "expected a string"),
+        ("[[profile]]\nname = \"x\"\ndrawings = \"z\"\n", "expected a table"),
     ] {
         let error = Config::parse(text).unwrap_err();
         assert!(error.contains(needle), "{text:?} → {error}");
@@ -358,4 +362,35 @@ fn an_override_a_band_control_pauses_is_named_with_its_position() {
     let texts: Vec<String> = notes(&config.profiles()).into_iter().map(|n| n.text).collect();
     assert!(texts.contains(&"index_tap (palm_up) in profile \"default\" is overridden by [band] draw with the palm up".to_owned()), "{texts:?}");
     assert!(!texts.iter().any(|t| t.starts_with("index_tap in")), "the normal action isn't used with the palm up: {texts:?}");
+}
+
+#[test]
+fn drawings_have_shared_and_profile_actions() {
+    let config = Config::parse(
+        r#"
+        [drawings]
+        lightbulb = "hass-cli light toggle"
+        z = "echo z"
+        nothing = ""
+        [[profile]]
+        name = "media"
+        [profile.drawings]
+        z = "playerctl next"
+        "#,
+    )
+    .unwrap();
+    let p = config.profiles();
+    assert_eq!(p.drawing_action(0, "z").map(String::as_str), Some("echo z"));
+    assert_eq!(p.drawing_action(1, "z").map(String::as_str), Some("playerctl next"), "a profile's own wins");
+    assert_eq!(p.drawing_action(1, "lightbulb").map(String::as_str), Some("hass-cli light toggle"));
+    assert_eq!(p.drawing_action(0, "nothing"), None);
+}
+
+#[test]
+fn drawings_with_an_action_but_no_template_are_noted() {
+    let config = Config::parse("[drawings]\nlightbulb = \"x\"\nz = \"y\"\n").unwrap();
+    let notes = air_gesturesd::config::missing_drawings(&config.profiles(), &["z"]);
+    assert_eq!(notes.len(), 1, "{notes:?}");
+    assert_eq!(notes[0].level, Level::Warn);
+    assert!(notes[0].text.contains("air-gestures draw teach lightbulb"), "{notes:?}");
 }
