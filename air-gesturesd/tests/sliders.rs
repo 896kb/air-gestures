@@ -2,11 +2,19 @@ use air_gesturesd::config::SliderStep;
 use air_gesturesd::sliders::{Run, Sliders, WINDOW};
 
 fn step(slider: &str, step: i32) -> SliderStep {
-    SliderStep { slider: slider.into(), command: "~/bin/lights".into(), profile: "default".into(), step }
+    step_in("default", "~/bin/lights", slider, step)
+}
+
+fn step_in(profile: &str, command: &str, slider: &str, step: i32) -> SliderStep {
+    SliderStep { slider: slider.into(), command: command.into(), profile: profile.into(), step }
 }
 
 fn run(slider: &str, steps: i32) -> Run {
-    Run { slider: slider.into(), command: "~/bin/lights".into(), profile: "default".into(), steps }
+    run_in("default", "~/bin/lights", slider, steps)
+}
+
+fn run_in(profile: &str, command: &str, slider: &str, steps: i32) -> Run {
+    Run { slider: slider.into(), command: command.into(), profile: profile.into(), steps }
 }
 
 const LR: &str = "index_left_right";
@@ -43,6 +51,8 @@ fn steps_are_netted_and_a_net_zero_runs_nothing() {
     assert_eq!(sliders.step(&step(LR, -1), 0.35), None);
     assert!(sliders.flush_due(0.5).is_empty(), "+1 −1: nothing to run");
     assert_eq!(sliders.due(), None);
+    // Nothing ran, so the window didn't start again: the next step runs at once.
+    assert_eq!(sliders.step(&step(LR, 1), 0.5), Some(run(LR, 1)));
 }
 
 #[test]
@@ -54,9 +64,22 @@ fn the_pinchs_end_runs_what_waits() {
     assert_eq!(sliders.flush(0.15), [run(LR, 2)]);
     assert_eq!(sliders.due(), None);
     assert!(sliders.flush(0.2).is_empty(), "nothing left");
-    // Still at most one run per window: the next pinch's first step waits for it.
-    assert_eq!(sliders.step(&step(LR, 1), 0.3), None);
-    assert_eq!(sliders.due(), Some(0.4));
+    // The next pinch's first step runs at once.
+    assert_eq!(sliders.step(&step(LR, 1), 0.2), Some(run(LR, 1)));
+}
+
+/// A profile switch or a reload mid-slide: the steps made before run with the command and
+/// profile they were made with, in their own window.
+#[test]
+fn steps_keep_their_own_command_and_profile() {
+    let mut sliders = Sliders::default();
+    assert_eq!(sliders.step(&step_in("a", "x", LR, 1), 0.0), Some(run_in("a", "x", LR, 1)));
+    assert_eq!(sliders.step(&step_in("a", "x", LR, 1), 0.1), None);
+    assert_eq!(sliders.step(&step_in("b", "x", LR, 1), 0.15), Some(run_in("b", "x", LR, 1)));
+    assert_eq!(sliders.step(&step_in("b", "y", LR, -1), 0.16), Some(run_in("b", "y", LR, -1)));
+    assert_eq!(sliders.step(&step_in("b", "y", LR, -1), 0.2), None);
+    assert_eq!(sliders.flush_due(0.25), [run_in("a", "x", LR, 1)]);
+    assert_eq!(sliders.flush_due(0.45), [run_in("b", "y", LR, -1)]);
 }
 
 #[test]
