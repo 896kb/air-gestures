@@ -3,7 +3,7 @@
 Each release's section becomes its GitLab release notes. Add a section for the version
 before tagging it; the release job fails without one.
 
-## 0.9.17
+## 0.9.18
 
 - **New installs start with band controls:** the sample config (`/usr/share/air-gestures/config.toml`,
   `contrib/config.toml`) puts `toggle` on the middle hold, `next_profile` and
@@ -15,6 +15,8 @@ before tagging it; the release job fails without one.
   (`index_left_right` …), `AIR_GESTURES_STEPS` (the net steps since, `+3` or `-2`) and
   `AIR_GESTURES_PROFILE`, and once more when you let go: one script can drive smart lights
   from every slider (README has a Home Assistant example).
+- **Several actions on one gesture:** the README shows a command that runs a few in a row
+  (`cmd1; cmd2`), the way the Android app's sequences do.
 - **Band controls:** `[band] toggle`, `next_profile`, `previous_profile` and `draw` each sit on
   one gesture you pick (any gesture, or `"none"`), above every profile, optionally only
   in some palm positions (`toggle_palm = ["up"]`). A profile's command on that gesture is kept

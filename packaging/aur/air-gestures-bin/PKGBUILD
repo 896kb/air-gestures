@@ -1,7 +1,7 @@
 # Maintainer: 896kb <raducugarjoaba at gmail dot com>
 pkgname=air-gestures-bin
 _pkgname=air-gestures
-pkgver=0.9.17
+pkgver=0.9.18
 pkgrel=1
 pkgdesc='Control a Linux desktop with a Meta Neural Band (daemon, CLI, waybar module)'
 arch=('x86_64' 'aarch64')

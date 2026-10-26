@@ -182,6 +182,13 @@ case "$AIR_GESTURES_PROFILE:$AIR_GESTURES_SLIDER" in
 esac
 ```
 
+**Several actions on one gesture:** a command runs through `sh -c`, so one gesture can do
+several things, one after another:
+
+```toml
+index_double = "playerctl pause; ~/bin/scene goodnight; notify-send 'Good night'"
+```
+
 ### Band controls
 
 Four controls sit above every profile, each on one gesture you pick in `[band]`:

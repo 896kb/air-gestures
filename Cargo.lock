@@ -24,7 +24,7 @@ dependencies = [
 
 [[package]]
 name = "air-gestures"
-version = "0.9.17"
+version = "0.9.18"
 dependencies = [
  "air-gesturesd",
  "band-core",
@@ -47,7 +47,7 @@ dependencies = [
 
 [[package]]
 name = "air-gesturesd"
-version = "0.9.17"
+version = "0.9.18"
 dependencies = [
  "band-core",
  "base64 0.22.1",
