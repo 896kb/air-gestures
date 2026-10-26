@@ -227,11 +227,15 @@ pub struct Config {
     index_dials: Vec<DialTarget>,
 }
 
+/// Every key left out (what a config without a key gets for it).
 impl Default for Config {
     fn default() -> Self {
         Self::from_raw(Raw::default()).expect("the defaults are a valid config")
     }
 }
+
+/// `contrib/config.toml`, the config new installs copy.
+const SAMPLE: &str = include_str!("../../../contrib/config.toml");
 
 impl Config {
     pub fn parse(text: &str) -> Result<Self, String> {
@@ -270,11 +274,18 @@ impl Config {
         &self.index_dials
     }
 
-    /// Load `path`; a missing file means the defaults.
+    /// The sample config new installs start from: the defaults, plus band controls (toggle on
+    /// the middle hold, next and previous profile on the triple taps, Draw on the middle tap)
+    /// and the middle dial on brightness. A config that leaves those out doesn't get them.
+    pub fn sample() -> Self {
+        Self::parse(SAMPLE).expect("contrib/config.toml is a valid config")
+    }
+
+    /// Load `path`; no file means the sample config (as if it had just been copied there).
     pub fn load(path: &Path) -> Result<Self, String> {
         match std::fs::read_to_string(path) {
             Ok(text) => Self::parse(&text).map_err(|error| format!("{}: {error}", path.display())),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Self::sample()),
             Err(error) => Err(format!("{}: {error}", path.display())),
         }
     }

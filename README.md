@@ -124,7 +124,8 @@ systemctl --user daemon-reload && systemctl --user enable --now air-gesturesd
 ## Configure
 
 Everything is in `~/.config/air-gestures/config.toml` (reloaded on save); every key is in
-[`contrib/config.toml`](contrib/config.toml). A gesture runs a shell command; `""` does nothing.
+[`contrib/config.toml`](contrib/config.toml), the sample a new install copies (with no file at
+all, the daemon runs as if it had been copied). A gesture runs a shell command; `""` does nothing.
 The daemon logs config problems as errors, and every command a band control pauses as a warning.
 
 ### Gestures and the pinch
@@ -135,14 +136,15 @@ The daemon logs config problems as errors, and every command a band control paus
 A pinch (thumb + finger) is one of three things, decided once you've moved 15°:
 - let go without moving: the finger's **hold**;
 - turn your wrist: the finger's **dial**, `index_dial` / `middle_dial` = `"volume"`,
-  `"brightness"` or `"off"` (index: `[dial] target`; middle: off);
+  `"brightness"` or `"off"` (left out, index: `[dial] target`; middle: off; the sample sets
+  the middle dial to brightness);
 - move your hand: a **drag**. With `index_drags = "gestures"` (the default) each drag runs its
   `index_drag_*` command once; with `"sliders"`, the pair you start along (left/right,
   toward/away, up/down) moves `index_slider_left_right|toward_away|up_down` (`"volume"`,
   `"brightness"`, `"off"`, or a command: see below) for as long as you hold the pinch.
 
-When a finger's dial and drags do nothing, its hold acts as soon as the band reports it
-(the middle hold, by default); otherwise when you let go. `air-gestures dial
+When a finger's dial and drags do nothing, its hold acts as soon as the band reports it;
+otherwise when you let go (the sample's middle hold, with the middle dial on). `air-gestures dial
 volume|brightness|off|cycle` changes the index dial until the profile changes.
 
 **Teach your drags:** drags and sliders work best taught to your own hand.
@@ -184,8 +186,11 @@ esac
 
 Four controls sit above every profile, each on one gesture you pick in `[band]`:
 `toggle` (controls off/on; works while they're off), `next_profile`, `previous_profile` and
-`draw`. Each is any gesture key or `"none"` (the default). `<key>_palm = ["up"]` limits one to
-one or two palm positions; in the others the gesture does what the profile says.
+`draw`. Each is any gesture key or `"none"`. The sample config puts them on the middle hold, the
+index triple tap, the middle triple tap and the middle tap (with Draw on the middle tap, draw
+with the index pinch: a short middle pinch is that tap and cancels); a config that leaves a key
+out has none there, as before. `<key>_palm = ["up"]` limits one to one or two palm positions; in
+the others the gesture does what the profile says.
 
 A profile's command on a band-control gesture is kept but doesn't run ("paused"); the daemon
 logs each one, e.g. `middle_double in profile "media" is overridden by [band] next_profile`,

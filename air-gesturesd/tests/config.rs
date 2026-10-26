@@ -15,7 +15,7 @@ fn defaults_match_the_design() {
     assert_eq!(config.band.hand, HandSetting::Band);
     assert!(config.band.autostart);
     let profiles = config.profiles();
-    assert_eq!(profiles.band, BandControls::default(), "Linux: no band controls unless asked");
+    assert_eq!(profiles.band, BandControls::default(), "a config without them keeps 0.3.10's: no band controls");
     assert_eq!(profiles.list.len(), 1);
     let first = &profiles.list[0];
     assert_eq!(first.name, "default");
@@ -243,10 +243,13 @@ fn mistakes_carry_the_bad_value() {
     assert!(error.contains("[band] hand: ") && error.contains("both"), "{error}");
 }
 
+const SAMPLE: &str = include_str!("../../contrib/config.toml");
+
 #[test]
-fn a_missing_file_means_the_defaults() {
+fn a_missing_file_means_the_sample_config() {
     let config = Config::load(std::path::Path::new("/nonexistent/air-gestures/config.toml")).unwrap();
-    assert_eq!(config, Config::default());
+    assert_eq!(config, Config::parse(SAMPLE).unwrap());
+    assert_eq!(config, Config::sample());
 }
 
 #[test]
@@ -257,14 +260,35 @@ fn an_existing_file_is_loaded() {
     assert_eq!(Config::load(&path).unwrap().dial.target, DialTarget::Off);
 }
 
+/// New installs start from the sample: the band controls and a middle dial on top of the
+/// defaults, which a config that leaves those keys out keeps.
 #[test]
-fn the_documented_config_is_the_default() {
-    let documented = Config::parse(include_str!("../../contrib/config.toml")).unwrap();
+fn the_sample_config_is_the_defaults_plus_band_controls_and_a_middle_dial() {
+    let sample = Config::parse(SAMPLE).unwrap();
     let default = Config::default();
-    assert_eq!(documented.band, default.band);
-    assert_eq!(documented.dial, default.dial);
-    assert_eq!(documented.options(), default.options());
-    assert_eq!(documented.profiles(), default.profiles());
+    let band = sample.profiles().band;
+    assert_eq!(band.controls, Some(BandControl::on(Gesture::MiddleHold)));
+    assert_eq!(band.next, Some(BandControl::on(Gesture::IndexTriple)));
+    assert_eq!(band.previous, Some(BandControl::on(Gesture::MiddleTriple)));
+    assert_eq!(band.draw, Some(BandControl::on(Gesture::MiddleTap)));
+    let mut band = sample.band.clone();
+    (band.toggle, band.next_profile, band.previous_profile, band.draw) = ("none".into(), "none".into(), "none".into(), "none".into());
+    assert_eq!(band, default.band, "nothing else in [band] differs");
+    assert_eq!(sample.dial, default.dial);
+    assert_eq!(sample.options(), default.options());
+    let (first, before) = (&sample.profiles().list[0], &default.profiles().list[0]);
+    assert_eq!(first.middle.dial, sample.dial.dial(DialTarget::Brightness));
+    assert_eq!(before.middle.dial, None, "a config without middle_dial: no middle dial, as before");
+    assert_eq!(first.index, before.index);
+    assert_eq!(first.middle.drags, DragMode::Gestures);
+    assert_eq!(first.gestures, before.gestures);
+    assert_eq!(sample.index_dials(), [DialTarget::Volume]);
+}
+
+#[test]
+fn the_sample_configs_band_controls_pause_none_of_its_gestures() {
+    let texts = texts(&Config::sample());
+    assert!(!texts.iter().any(|(level, text)| *level == Level::Error || text.contains("overridden")), "{texts:?}");
 }
 
 #[test]

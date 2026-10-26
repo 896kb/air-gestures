@@ -8,14 +8,13 @@
 hand = "band"              # "band" = whatever the band reports | "left" | "right"
 autostart = true           # connect and enable controls when air-gesturesd starts
 profile = "default"        # the name of the [gestures] profile
-# Band controls: one gesture each (any gesture key, or "none"), above every profile.
-# A profile's command on that gesture is kept but paused (the daemon logs it).
-toggle = "none"            # controls off/on (works while they're off)
-next_profile = "none"      # next profile (needs 2+ profiles)
-previous_profile = "none"  # previous profile
-draw = "none"              # open a drawing; again: cancel it
+# Band controls: one gesture each (any gesture key, or "none"; left out: "none"), above every
+# profile. A profile's command on that gesture is kept but paused (the daemon logs it).
+toggle = "middle_hold"              # controls off/on (works while they're off)
+next_profile = "index_triple"       # next profile (needs 2+ profiles)
+previous_profile = "middle_triple"  # previous profile
+draw = "middle_tap"                 # open a drawing (draw with the index pinch); again: cancel it
 # <key>_palm limits a band control to 1–2 palm positions ("down", "sideways", "up"), e.g.:
-# toggle = "middle_hold"
 # toggle_palm = ["down"]   # the middle hold locks only palm down; palm up it's the profile's
 on_toggle = ""             # after a gesture toggled controls, with AIR_GESTURES_ENABLED=1|0
 on_profile = ""            # after the profile changed, with AIR_GESTURES_PROFILE=<name>
@@ -28,15 +27,16 @@ swipe_up      = "wofi --show drun"
 swipe_down    = "hyprctl dispatch sendshortcut , Escape, activewindow"
 index_tap     = ""
 index_double  = "playerctl play-pause"
-index_triple  = ""
+index_triple  = ""           # [band] next_profile
 index_hold    = ""
-middle_tap    = ""
+middle_tap    = ""           # [band] draw
 middle_double = "wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle"
-middle_triple = ""
-middle_hold   = ""
+middle_triple = ""           # [band] previous_profile
+middle_hold   = ""           # [band] toggle
+# Drags (and sliders) work best taught to your hand first: `air-gestures teach-drags`.
 # index_drag_left = ""     # …_drag_right, _toward, _away, _up, _down; middle_ likewise
 # index_dial  = "volume"   # the turn: "volume" | "brightness" | "off" (default: [dial] target)
-# middle_dial = "off"      # with a middle dial, the middle hold acts when you let go
+middle_dial = "brightness" # left out: off. With a middle dial, the middle hold acts when you let go
 # index_drags = "gestures" # or "sliders": each pair moves a slider while you hold the pinch
 # index_slider_left_right = "off"  # also _toward_away, _up_down: "volume" | "brightness" | "off",
 #   or a command, run at most every 250 ms with AIR_GESTURES_SLIDER=index_left_right,
