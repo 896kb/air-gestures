@@ -1,22 +1,22 @@
-use air_gesturesd::config::DialConfig;
+use air_gesturesd::config::{Action, DialConfig};
 use air_gesturesd::outcome::{Outcomes, short};
 use band_core::controls::{Builtin, Class, Drag, Finger, Gesture, Output, Palm, Profile, Profiles, Unused};
 
-fn profiles() -> Profiles<String> {
+fn profiles() -> Profiles<Action> {
     Profiles::single(Profile::new("default"))
 }
 
-fn two() -> Profiles<String> {
+fn two() -> Profiles<Action> {
     let mut p = profiles();
     p.list.push(Profile::new("media"));
     p
 }
 
-fn gesture(gesture: Gesture, palm: Palm) -> Output<String> {
+fn gesture(gesture: Gesture, palm: Palm) -> Output<Action> {
     Output::Gesture { gesture, palm }
 }
 
-fn lines(out: &[Output<String>], profiles: &Profiles<String>) -> Vec<String> {
+fn lines(out: &[Output<Action>], profiles: &Profiles<Action>) -> Vec<String> {
     Outcomes::default().lines(out, profiles, &DialConfig::default())
 }
 
@@ -92,10 +92,10 @@ fn a_stepping_pinch_names_what_it_stepped_when_it_ends() {
     let dial = DialConfig::default();
     let mut outcomes = Outcomes::default();
     let ended = |practiced| Output::PinchEnded { finger: Finger::Index, class: Class::Turn, palm: Palm::Up, up: 2, down: 1, practiced };
-    assert!(outcomes.lines(&[Output::Run(dial.volume_up.clone()), Output::Run(dial.volume_up.clone())], &profiles(), &dial).is_empty());
-    let out = [Output::Run(dial.volume_down.clone()), ended(false)];
+    assert!(outcomes.lines(&[Output::Run(dial.volume_up.as_str().into()), Output::Run(dial.volume_up.as_str().into())], &profiles(), &dial).is_empty());
+    let out = [Output::Run(dial.volume_down.as_str().into()), ended(false)];
     assert_eq!(outcomes.lines(&out, &profiles(), &dial), ["index dial · palm up → volume up ×2, volume down ×1"]);
-    let out = [Output::Practiced(dial.brightness_up.clone()), ended(true)];
+    let out = [Output::Practiced(dial.brightness_up.as_str().into()), ended(true)];
     assert_eq!(outcomes.lines(&out, &profiles(), &dial), ["index dial · palm up → would: brightness up ×1"]);
     let slider = Output::PinchEnded { finger: Finger::Middle, class: Class::Drag(Drag::Left), palm: Palm::Down, up: 0, down: 1, practiced: false };
     let out = [Output::Run("echo left".into()), slider];

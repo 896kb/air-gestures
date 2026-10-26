@@ -2,6 +2,7 @@
 
 use band_core::controls::{Finger, Invalid, Place, Profiles, Warning};
 
+use super::Action;
 use super::band::{band_key, palm_suffix};
 use super::profile::{SLIDER_PAIRS, palm_section};
 
@@ -26,7 +27,7 @@ impl Note {
     }
 }
 
-fn place_text(profiles: &Profiles<String>, place: Place) -> String {
+fn place_text(profiles: &Profiles<Action>, place: Place) -> String {
     match place {
         Place::Profile(index) => format!("profile \"{}\"", profiles.list[index].name),
         Place::Calls => "the call layer".into(),
@@ -36,7 +37,7 @@ fn place_text(profiles: &Profiles<String>, place: Place) -> String {
 /// What to log on every config load: the core's warnings (no lock gesture is Linux's
 /// default, so that one is info), what's invalid (errors), and every entry a band control
 /// pauses (warnings).
-pub fn notes(profiles: &Profiles<String>) -> Vec<Note> {
+pub fn notes(profiles: &Profiles<Action>) -> Vec<Note> {
     let mut notes = Vec::new();
     for warning in profiles.warnings() {
         notes.push(match warning {
@@ -88,7 +89,7 @@ pub fn notes(profiles: &Profiles<String>) -> Vec<Note> {
 }
 
 /// Drawings with an action whose template isn't taught (yet).
-pub fn missing_drawings(profiles: &Profiles<String>, taught: &[&str]) -> Vec<Note> {
+pub fn missing_drawings(profiles: &Profiles<Action>, taught: &[&str]) -> Vec<Note> {
     let named: std::collections::BTreeSet<&str> = profiles
         .drawings
         .keys()

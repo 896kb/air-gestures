@@ -4,7 +4,7 @@
 
 use band_core::controls::{Class, Finger, Output, Palm, Profiles, Unused};
 
-use crate::config::{DialConfig, band_key};
+use crate::config::{Action, DialConfig, band_key};
 
 /// The longest a command is shown (in characters).
 const SHOWN: usize = 60;
@@ -77,7 +77,7 @@ pub struct Outcomes {
 impl Outcomes {
     /// One line per gesture and per drawing in `outputs` (and per stepping pinch that ended),
     /// in order.
-    pub fn lines(&mut self, outputs: &[Output<String>], profiles: &Profiles<String>, dial: &DialConfig) -> Vec<String> {
+    pub fn lines(&mut self, outputs: &[Output<Action>], profiles: &Profiles<Action>, dial: &DialConfig) -> Vec<String> {
         let mut lines = Vec::new();
         // What's being described ("index tap · palm up", "drawing \"z\""), and what it did.
         let mut current: Option<(String, Vec<String>)> = None;
@@ -111,7 +111,7 @@ impl Outcomes {
                     continue;
                 }
                 Output::Run(command) | Output::Practiced(command) => {
-                    let shown = short(command, dial);
+                    let shown = short(command.command(), dial);
                     if current.is_none() {
                         // A dial's or slider's step: named when its pinch ends.
                         self.steps.push(shown);

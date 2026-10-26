@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 use band_core::controls::{BandControls, Binding, Builtin, DragMode, FingerSetup, Gesture, Palm, Profile, Profiles};
 
 use super::band::{BandConfig, band_key};
-use super::{DialConfig, DialTarget};
+use super::{Action, DialConfig, DialTarget};
 
 /// The slider keys' pair names, in `DragMode::Sliders` order.
 pub(super) const SLIDER_PAIRS: [&str; 3] = ["left_right", "toward_away", "up_down"];
@@ -50,7 +50,7 @@ enum On {
 }
 
 /// A command value at `key` in `at`: blank = nothing. `@…` was the first build's built-in syntax.
-fn command(at: &str, key: &str, value: &str, on: On) -> Result<Option<String>, String> {
+fn command(at: &str, key: &str, value: &str, on: On) -> Result<Option<Action>, String> {
     let trimmed = value.trim();
     if let Some(name) = trimmed.strip_prefix('@') {
         let start = format!("{at} {key} = \"{trimmed}\"");
@@ -68,7 +68,7 @@ fn command(at: &str, key: &str, value: &str, on: On) -> Result<Option<String>, S
             ),
         });
     }
-    Ok((!trimmed.is_empty()).then(|| value.to_owned()))
+    Ok((!trimmed.is_empty()).then(|| value.into()))
 }
 
 fn text<'a>(at: &str, key: &str, value: &'a toml::Value) -> Result<&'a str, String> {
@@ -153,7 +153,7 @@ impl Fingers {
     }
 
     /// Both fingers' setups, and what the index dial turns.
-    fn setups(&self, dial: &DialConfig) -> (FingerSetup<String>, FingerSetup<String>, DialTarget) {
+    fn setups(&self, dial: &DialConfig) -> (FingerSetup<Action>, FingerSetup<Action>, DialTarget) {
         let index = self.dial[0].unwrap_or(dial.target);
         let middle = self.dial[1].unwrap_or(DialTarget::Off);
         let setup = |slot: usize, target: DialTarget| FingerSetup {
@@ -168,7 +168,7 @@ impl Fingers {
     }
 }
 
-fn drawing_actions(at: &str, table: &toml::Table) -> Result<BTreeMap<String, String>, String> {
+fn drawing_actions(at: &str, table: &toml::Table) -> Result<BTreeMap<String, Action>, String> {
     let mut actions = BTreeMap::new();
     for (name, value) in table {
         check_name("drawing", name).map_err(|e| format!("{at} {e}"))?;
@@ -186,13 +186,13 @@ fn is_sub_table(key: &str) -> bool {
 
 /// One profile from its table (`base` names it in errors: `gestures` or `profile "<name>"`).
 /// `first` starts from the defaults. Also returns what its index dial turns.
-fn profile_from(dial: &DialConfig, name: &str, table: &toml::Table, base: &str, first: bool) -> Result<(Profile<String>, DialTarget), String> {
+fn profile_from(dial: &DialConfig, name: &str, table: &toml::Table, base: &str, first: bool) -> Result<(Profile<Action>, DialTarget), String> {
     let at = section(base, None);
     let mut profile = Profile::new(name);
     if first {
         for gesture in Gesture::ALL {
             if let Some(command) = default_gesture(gesture) {
-                profile.gestures.insert(gesture, Binding::from(command.to_owned()));
+                profile.gestures.insert(gesture, Binding::from(Action::from(command)));
             }
         }
     }
@@ -275,7 +275,7 @@ pub(super) fn build(
     gestures: &toml::Table,
     tables: &[toml::Table],
     drawings: &toml::Table,
-) -> Result<(Profiles<String>, Vec<DialTarget>), String> {
+) -> Result<(Profiles<Action>, Vec<DialTarget>), String> {
     let controls: BandControls = band.band_controls()?;
     check_name("profile", &band.profile).map_err(|e| format!("[band] profile: {e}"))?;
     let (first, target) = profile_from(dial, &band.profile, gestures, "gestures", true)?;
@@ -288,7 +288,7 @@ pub(super) fn build(
             Some(name) => name.as_str().ok_or_else(|| format!("{at} name: a profile's name must be text"))?,
         };
         check_name("profile", name).map_err(|e| format!("{at} name: {e}"))?;
-        if list.iter().any(|p: &Profile<String>| p.name == name) {
+        if list.iter().any(|p: &Profile<Action>| p.name == name) {
             return Err(format!("{at} name: two profiles are called \"{name}\""));
         }
         let (profile, target) = profile_from(dial, name, table, &format!("profile \"{name}\""), false)?;

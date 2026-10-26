@@ -19,7 +19,7 @@ use tokio::task::JoinHandle;
 
 use crate::actions::Runner;
 use crate::clock::Clock;
-use crate::config::{Config, DialTarget, HandSetting, Level};
+use crate::config::{Action, Config, DialTarget, HandSetting, Level};
 use crate::drawings;
 use crate::ipc::{Call, HandChoice, Request, Response, Taught};
 use crate::link::{LinkCommand, LinkEnd, LinkEvent, LinkOutcome, run_link};
@@ -97,7 +97,7 @@ pub struct Daemon<T: Transport, R: Runner, F: ClientFactory> {
     waiting: Option<Waiting>,
     /// What gestures did, for the log (see `outcome`).
     outcomes: crate::outcome::Outcomes,
-    controls: Controls<String>,
+    controls: Controls<Action>,
     /// The loaded config (hooks, dial commands, profiles).
     config: Config,
     /// The IPC dial choice, while `controls.dial_overridden()`.
@@ -293,7 +293,7 @@ impl<T: Transport, R: Runner, F: ClientFactory> Daemon<T, R, F> {
                 Some(palm) => format!("{gesture} · palm {}", palm.key()),
                 None => gesture.to_owned(),
             }),
-            last_action: controls.last_action.clone(),
+            last_action: controls.last_action.as_ref().map(|action| action.command().to_owned()),
             gestures: controls.gestures,
             profile: (self.controls.profiles().list.len() > 1).then(|| {
                 self.controls.profiles().list[self.controls.active()]
@@ -344,7 +344,7 @@ impl<T: Transport, R: Runner, F: ClientFactory> Daemon<T, R, F> {
 
     /// Do what the controls asked. `from_band`: caused by a band gesture, not a request
     /// (`on_toggle` only runs for those, as before).
-    fn apply(&mut self, outputs: Vec<Output<String>>, from_band: bool) {
+    fn apply(&mut self, outputs: Vec<Output<Action>>, from_band: bool) {
         let lines = self.outcomes.lines(&outputs, self.controls.profiles(), &self.config.dial);
         // A gesture's line already says what it switched.
         let described = !lines.is_empty();
@@ -356,7 +356,7 @@ impl<T: Transport, R: Runner, F: ClientFactory> Daemon<T, R, F> {
                 self.end_wait(|_| done);
             }
             match output {
-                Output::Run(command) => {
+                Output::Run(Action::Command(command)) => {
                     tracing::debug!(%command, "action");
                     self.runner.run(command);
                 }
@@ -1059,7 +1059,7 @@ impl<T: Transport, R: Runner, F: ClientFactory> Daemon<T, R, F> {
     }
 }
 
-fn log_notes(profiles: &Profiles<String>) {
+fn log_notes(profiles: &Profiles<Action>) {
     for note in crate::config::notes(profiles) {
         match note.level {
             Level::Info => tracing::info!("config: {}", note.text),
@@ -1098,7 +1098,7 @@ fn calibration_for(store: &Store, hand: Option<Hand>) -> (Option<PalmCalibration
 }
 
 /// Some gesture or band control depends on the palm position.
-fn uses_palm(profiles: &Profiles<String>) -> bool {
+fn uses_palm(profiles: &Profiles<Action>) -> bool {
     profiles.list.iter().any(|p| p.gestures.values().any(|b| !b.overrides.is_empty()))
         || Builtin::ALL.into_iter().any(|b| profiles.band.control(b).is_some_and(|c| c.palm != PalmSet::All))
 }

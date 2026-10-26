@@ -7,6 +7,7 @@ use band_core::controls::pinch::{TaughtError, roll_or, up_in_band};
 use band_core::controls::{Controls, Finger, Output};
 use band_core::events::Event;
 
+use crate::config::Action;
 use crate::ipc::Taught;
 
 pub fn drag_name(drag: Drag) -> &'static str {
@@ -68,7 +69,7 @@ impl Step {
     }
 
     /// Teaching on in `controls` for this step.
-    pub fn enter(self, controls: &mut Controls<String>, now: f64) -> Vec<Output<String>> {
+    pub fn enter(self, controls: &mut Controls<Action>, now: f64) -> Vec<Output<Action>> {
         match self {
             Step::Rolls => Vec::new(),
             Step::Drag => controls.set_drag_teaching(true),
@@ -82,7 +83,7 @@ impl Step {
     }
 
     /// Teaching off again (whatever ended the step).
-    pub fn leave(self, controls: &mut Controls<String>) -> Vec<Output<String>> {
+    pub fn leave(self, controls: &mut Controls<Action>) -> Vec<Output<Action>> {
         match self {
             Step::Rolls => Vec::new(),
             Step::Drag => controls.set_drag_teaching(false),
@@ -138,7 +139,7 @@ impl Wait {
     }
 
     /// An output of the controls: done when it's this step's.
-    pub fn on_output(&mut self, output: &Output<String>) -> Option<Done> {
+    pub fn on_output(&mut self, output: &Output<Action>) -> Option<Done> {
         match (self.step, output) {
             (Step::Drag, Output::DragSample { finger, direction }) => {
                 let finger = match finger {

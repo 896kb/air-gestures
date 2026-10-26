@@ -17,6 +17,33 @@ pub use band::{BandConfig, DEFAULT_ON_DRAW, band_key};
 pub use notes::{Level, Note, missing_drawings, notes};
 pub use profile::{check_name, palm_section};
 
+/// What a binding does.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Action {
+    Command(String),
+}
+
+impl Action {
+    /// The shell command it runs.
+    pub fn command(&self) -> &str {
+        match self {
+            Action::Command(command) => command,
+        }
+    }
+}
+
+impl From<&str> for Action {
+    fn from(command: &str) -> Self {
+        Action::Command(command.to_owned())
+    }
+}
+
+impl From<String> for Action {
+    fn from(command: String) -> Self {
+        Action::Command(command)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum HandSetting {
@@ -85,10 +112,10 @@ impl DialConfig {
     }
 
     /// Both commands for this target, or `None` when it's off or either is unassigned.
-    pub fn dial(&self, target: DialTarget) -> Option<Dial<String>> {
+    pub fn dial(&self, target: DialTarget) -> Option<Dial<Action>> {
         Some(Dial {
-            up: self.command(target, true)?.to_owned(),
-            down: self.command(target, false)?.to_owned(),
+            up: self.command(target, true)?.into(),
+            down: self.command(target, false)?.into(),
         })
     }
 }
@@ -180,7 +207,7 @@ impl Raw {
 pub struct Config {
     pub band: BandConfig,
     pub dial: DialConfig,
-    profiles: Profiles<String>,
+    profiles: Profiles<Action>,
     /// What each profile's index dial turns, in profile order.
     index_dials: Vec<DialTarget>,
 }
@@ -219,7 +246,7 @@ impl Config {
     }
 
     /// Every profile.
-    pub fn profiles(&self) -> &Profiles<String> {
+    pub fn profiles(&self) -> &Profiles<Action> {
         &self.profiles
     }
 

@@ -1,8 +1,8 @@
-use air_gesturesd::config::{Config, DialTarget, HandSetting, Level, notes};
+use air_gesturesd::config::{Action, Config, DialTarget, HandSetting, Level, notes};
 use band_core::controls::{BandControl, BandControls, Binding, DragMode, Gesture, Palm, PalmSet, Palms};
 
-fn run(command: &str) -> Option<Binding<String>> {
-    Some(Binding::from(command.to_owned()))
+fn run(command: &str) -> Option<Binding<Action>> {
+    Some(Binding::from(Action::from(command)))
 }
 
 fn texts(config: &Config) -> Vec<(Level, String)> {
@@ -33,7 +33,7 @@ fn defaults_match_the_design() {
     assert_eq!(config.dial.sensitivity, 1.0);
     assert_eq!(config.band.on_draw, r#"notify-send -a air-gestures "Drawing" "${AIR_GESTURES_DRAWING:-not recognised}""#);
     let first = &config.profiles().list[0];
-    assert_eq!(first.index.dial.clone().unwrap().up, "wpctl set-volume -l 1.0 @DEFAULT_AUDIO_SINK@ 2%+");
+    assert_eq!(first.index.dial.clone().unwrap().up.command(), "wpctl set-volume -l 1.0 @DEFAULT_AUDIO_SINK@ 2%+");
     assert!(first.middle.dial.is_none());
     assert_eq!(first.index.drags, DragMode::Gestures);
     assert_eq!(config.index_dials(), [DialTarget::Volume]);
@@ -346,14 +346,14 @@ fn palm_sub_tables_override_a_gesture_in_that_position() {
     .unwrap();
     let profiles = config.profiles();
     let tap = &profiles.list[0].gestures[&Gesture::IndexTap];
-    assert_eq!(tap.action(Palm::Down).map(String::as_str), Some("echo tap"));
-    assert_eq!(tap.action(Palm::Up).map(String::as_str), Some("echo up"));
+    assert_eq!(tap.action(Palm::Down).map(Action::command), Some("echo tap"));
+    assert_eq!(tap.action(Palm::Up).map(Action::command), Some("echo up"));
     let left = &profiles.list[0].gestures[&Gesture::SwipeLeft];
     assert_eq!(left.action(Palm::Up), None, "\"\" = nothing with the palm up");
-    assert_eq!(left.action(Palm::Side).map(String::as_str), Some("hyprctl dispatch workspace e-1"));
+    assert_eq!(left.action(Palm::Side).map(Action::command), Some("hyprctl dispatch workspace e-1"));
     let side = &profiles.list[1].gestures[&Gesture::MiddleTap];
     assert_eq!(side.normal, None);
-    assert_eq!(side.action(Palm::Side).map(String::as_str), Some("echo side"));
+    assert_eq!(side.action(Palm::Side).map(Action::command), Some("echo side"));
 }
 
 #[test]
@@ -400,9 +400,9 @@ fn drawings_have_shared_and_profile_actions() {
     )
     .unwrap();
     let p = config.profiles();
-    assert_eq!(p.drawing_action(0, "z").map(String::as_str), Some("echo z"));
-    assert_eq!(p.drawing_action(1, "z").map(String::as_str), Some("playerctl next"), "a profile's own wins");
-    assert_eq!(p.drawing_action(1, "lightbulb").map(String::as_str), Some("hass-cli light toggle"));
+    assert_eq!(p.drawing_action(0, "z").map(Action::command), Some("echo z"));
+    assert_eq!(p.drawing_action(1, "z").map(Action::command), Some("playerctl next"), "a profile's own wins");
+    assert_eq!(p.drawing_action(1, "lightbulb").map(Action::command), Some("hass-cli light toggle"));
     assert_eq!(p.drawing_action(0, "nothing"), None);
 }
 
@@ -422,8 +422,8 @@ fn the_first_profiles_own_drawings_are_in_gestures_drawings() {
     )
     .unwrap();
     let p = config.profiles();
-    assert_eq!(p.drawing_action(0, "z").map(String::as_str), Some("echo first"));
-    assert_eq!(p.drawing_action(1, "z").map(String::as_str), Some("echo shared"));
+    assert_eq!(p.drawing_action(0, "z").map(Action::command), Some("echo first"));
+    assert_eq!(p.drawing_action(1, "z").map(Action::command), Some("echo shared"));
 }
 
 #[test]
