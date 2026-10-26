@@ -86,7 +86,7 @@ pub struct Daemon<T: Transport, R: Runner, F: ClientFactory> {
     factory: Arc<F>,
     store: Store,
     config_path: PathBuf,
-    config_stamp: Option<SystemTime>,
+    config_stamp: Option<u64>,
     config_error: Option<String>,
     drawings_dir: PathBuf,
     drawings_stamp: Option<SystemTime>,
@@ -133,10 +133,14 @@ pub struct Daemon<T: Transport, R: Runner, F: ClientFactory> {
     band_name: Option<String>,
 }
 
-fn modified(path: &Path) -> Option<SystemTime> {
-    std::fs::metadata(path)
-        .and_then(|metadata| metadata.modified())
-        .ok()
+/// What the config file holds, as a hash (None: unreadable). Its contents, not its modified
+/// time: two saves within one tick of a coarse filesystem clock keep the same time.
+fn contents_stamp(path: &Path) -> Option<u64> {
+    use std::hash::{Hash, Hasher};
+    let bytes = std::fs::read(path).ok()?;
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    bytes.hash(&mut hasher);
+    Some(hasher.finish())
 }
 
 async fn next_event(link: &mut Option<ActiveLink>) -> Option<LinkEvent> {
@@ -166,7 +170,7 @@ impl<T: Transport, R: Runner, F: ClientFactory> Daemon<T, R, F> {
             Ok(config) => (config, None),
             Err(error) => (Config::default(), Some(format!("config: {error}"))),
         };
-        let config_stamp = modified(&config_path);
+        let config_stamp = contents_stamp(&config_path);
         let wants_connection = config.band.autostart;
         let index_dials = config.index_dials().to_vec();
         let options_hand = configured_hand(&config);
@@ -798,7 +802,7 @@ impl<T: Transport, R: Runner, F: ClientFactory> Daemon<T, R, F> {
     }
 
     fn reload_config(&mut self) {
-        let stamp = modified(&self.config_path);
+        let stamp = contents_stamp(&self.config_path);
         if stamp == self.config_stamp {
             return;
         }
@@ -1158,5 +1162,26 @@ async fn until(deadline: Option<f64>, clock: Clock) {
     match deadline {
         Some(at) => tokio::time::sleep(Duration::from_secs_f64((at - clock.now()).max(0.0))).await,
         None => std::future::pending().await,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_config_change_is_seen_even_with_the_same_modified_time() {
+        let dir = std::env::temp_dir().join(format!("air-gestures-stamp-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        std::fs::write(&path, "[gestures]\nindex_dial = \"volume\"\n").unwrap();
+        let time = std::fs::metadata(&path).unwrap().modified().unwrap();
+        let before = contents_stamp(&path);
+        std::fs::write(&path, "[gestures]\nindex_dial = \"off\"\n   ").unwrap();
+        std::fs::File::options().write(true).open(&path).unwrap().set_modified(time).unwrap();
+        assert_eq!(std::fs::metadata(&path).unwrap().modified().unwrap(), time);
+        assert_ne!(contents_stamp(&path), before);
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(contents_stamp(&path), None);
     }
 }
