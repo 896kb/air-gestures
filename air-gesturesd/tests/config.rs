@@ -1,5 +1,5 @@
-use air_gesturesd::config::{Action, Config, DialTarget, HandSetting, Level, notes};
-use band_core::controls::{BandControl, BandControls, Binding, DragMode, Gesture, Palm, PalmSet, Palms};
+use air_gesturesd::config::{Action, Config, DialTarget, HandSetting, Level, SliderStep, notes};
+use band_core::controls::{BandControl, BandControls, Binding, Dial, DragMode, Gesture, Palm, PalmSet, Palms};
 
 fn run(command: &str) -> Option<Binding<Action>> {
     Some(Binding::from(Action::from(command)))
@@ -312,6 +312,47 @@ fn fingers_have_dials_drag_modes_and_sliders() {
     assert_eq!(b.index.dial, dial(DialTarget::Volume), "[dial] target is every profile's index default");
     assert!(b.middle.dial.is_none());
     assert_eq!(config.index_dials(), [DialTarget::Brightness, DialTarget::Volume]);
+}
+
+/// The slider `<finger>_<pair>` in `profile`, running `command` with its steps.
+fn command_slider(slider: &str, command: &str, profile: &str) -> Option<Dial<Action>> {
+    let step = |step| Action::Slider(SliderStep { slider: slider.into(), command: command.into(), profile: profile.into(), step });
+    Some(Dial { up: step(1), down: step(-1) })
+}
+
+#[test]
+fn a_slider_can_run_its_own_command() {
+    let config = Config::parse(
+        r#"
+        [gestures]
+        index_drags = "sliders"
+        index_slider_left_right = "~/bin/lights"
+        index_slider_toward_away = ""
+        index_slider_up_down = "volume"
+        [[profile]]
+        name = "Living room"
+        middle_drags = "sliders"
+        middle_slider_left_right = "loud"
+        middle_slider_up_down = "hass-light up-down"
+        "#,
+    )
+    .unwrap();
+    let profiles = config.profiles();
+    assert_eq!(
+        profiles.list[0].index.drags,
+        DragMode::Sliders([command_slider("index_left_right", "~/bin/lights", "default"), None, config.dial.dial(DialTarget::Volume)]),
+        "\"\" is off; the presets stay presets"
+    );
+    assert_eq!(
+        profiles.list[1].middle.drags,
+        DragMode::Sliders([
+            command_slider("middle_left_right", "loud", "Living room"),
+            None,
+            command_slider("middle_up_down", "hass-light up-down", "Living room"),
+        ]),
+        "any other word is a command"
+    );
+    assert!(!texts(&config).iter().any(|(_, text)| text.contains("slider")), "{:?}", texts(&config));
 }
 
 #[test]

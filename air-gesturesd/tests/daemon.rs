@@ -1214,3 +1214,58 @@ async fn the_status_shows_the_last_gestures_palm() {
     daemon.transport.inject(SimInject::Gesture { action: 9, finger: 1, derived: 0 });
     daemon.wait("palm up", |s| s.last_gesture.as_deref() == Some("swipe right · palm up")).await;
 }
+
+const LIGHTS_SLIDER: &str = "[gestures]\nindex_drags = \"sliders\"\nindex_slider_toward_away = \"lights\"\n";
+
+impl Harness {
+    /// The command slider runs so far: each one's `AIR_GESTURES_STEPS`.
+    fn slider_steps(&self) -> Vec<i32> {
+        let start = "export AIR_GESTURES_SLIDER=index_toward_away AIR_GESTURES_STEPS=";
+        self.runner
+            .commands()
+            .iter()
+            .map(|command| {
+                let rest = command.strip_prefix(start).unwrap_or_else(|| panic!("{command}"));
+                let (steps, rest) = rest.split_once(' ').unwrap();
+                assert_eq!(rest, "AIR_GESTURES_PROFILE='default'; lights");
+                steps.parse().unwrap()
+            })
+            .collect()
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_command_slider_runs_its_steps_gathered_at_most_every_quarter_second() {
+    let transport = SimTransport::new(SimMode::Enrolled);
+    let mut daemon = start(transport.clone(), true, fake(&transport));
+    daemon.right_hand().await;
+    daemon.configure(LIGHTS_SLIDER).await;
+    daemon.pinch_moving(600, 200).await; // 2 s
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    let steps = daemon.slider_steps();
+    assert_eq!(steps.first(), Some(&1), "the first step runs at once: {steps:?}");
+    assert!(steps.iter().all(|&s| s > 0), "moving away: {steps:?}");
+    assert!((3..=10).contains(&steps.len()), "about one run per 250 ms: {steps:?}");
+    assert!(steps.iter().sum::<i32>() > steps.len() as i32, "steps gathered: {steps:?}");
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    assert_eq!(daemon.slider_steps(), steps, "nothing left over after the pinch");
+}
+
+#[tokio::test(start_paused = true)]
+async fn pausing_mid_slide_drops_the_waiting_steps() {
+    let transport = SimTransport::new(SimMode::Enrolled);
+    let mut daemon = start(transport.clone(), true, fake(&transport));
+    daemon.right_hand().await;
+    daemon.configure(LIGHTS_SLIDER).await;
+    let pause = async {
+        // Mid-window, between two samples: steps are waiting.
+        tokio::time::sleep(Duration::from_millis(1105)).await;
+        let before = daemon.slider_steps();
+        daemon.call(Request::Pause).await;
+        before
+    };
+    let ((), before) = tokio::join!(daemon.pinch_moving(600, 200), pause);
+    assert!(!before.is_empty());
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    assert_eq!(daemon.slider_steps(), before, "the waiting steps never ran, not even at the pinch's end");
+}

@@ -17,19 +17,34 @@ pub use band::{BandConfig, DEFAULT_ON_DRAW, band_key};
 pub use notes::{Level, Note, missing_drawings, notes};
 pub use profile::{check_name, palm_section};
 
-/// What a binding does.
+/// What a binding does: a shell command, or one step of a slider with its own command.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Action {
     Command(String),
+    /// The daemon gathers a slider's steps and runs its command with them (see `sliders`).
+    Slider(SliderStep),
 }
 
 impl Action {
-    /// The shell command it runs.
+    /// The shell command it runs (a slider step's: its slider's).
     pub fn command(&self) -> &str {
         match self {
             Action::Command(command) => command,
+            Action::Slider(step) => &step.command,
         }
     }
+}
+
+/// One step of a slider set to a command (`index_slider_left_right = "~/bin/lights"`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct SliderStep {
+    /// `<finger>_<pair>`: `index_left_right`, `middle_up_down`, …
+    pub slider: String,
+    pub command: String,
+    /// The profile it's in.
+    pub profile: String,
+    /// +1 (right, away, up) or −1.
+    pub step: i32,
 }
 
 impl From<&str> for Action {

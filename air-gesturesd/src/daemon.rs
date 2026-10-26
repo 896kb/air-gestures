@@ -25,6 +25,7 @@ use crate::ipc::{Call, HandChoice, Request, Response, Taught};
 use crate::link::{LinkCommand, LinkEnd, LinkEvent, LinkOutcome, run_link};
 use crate::meta::ClientFactory;
 use crate::pairing::{PairFailure, pair_band};
+use crate::sliders::Sliders;
 use crate::status::{LinkState, PairResult, Status};
 use crate::store::{BandRecord, IdentitySource, Store, StoredDrags};
 use crate::teach::{Done, Wait};
@@ -97,6 +98,8 @@ pub struct Daemon<T: Transport, R: Runner, F: ClientFactory> {
     waiting: Option<Waiting>,
     /// What gestures did, for the log (see `outcome`).
     outcomes: crate::outcome::Outcomes,
+    /// Command sliders' steps waiting to run.
+    sliders: Sliders,
     controls: Controls<Action>,
     /// The loaded config (hooks, dial commands, profiles).
     config: Config,
@@ -189,6 +192,7 @@ impl<T: Transport, R: Runner, F: ClientFactory> Daemon<T, R, F> {
             options_hand,
             waiting: None,
             outcomes: crate::outcome::Outcomes::default(),
+            sliders: Sliders::default(),
             controls,
             config,
             dial_override: DialTarget::Off,
@@ -264,6 +268,11 @@ impl<T: Transport, R: Runner, F: ClientFactory> Daemon<T, R, F> {
                     let now = self.clock.now();
                     let outputs = self.controls.poll(now);
                     self.apply(outputs, true);
+                }
+                _ = until(self.sliders.due(), self.clock) => {
+                    for run in self.sliders.flush_due(self.clock.now()) {
+                        self.run_slider(run);
+                    }
                 }
                 end = wait_ends(&mut self.waiting, self.clock) => match end {
                     WaitEnd::TimedOut => self.end_wait(Wait::timed_out),
@@ -351,6 +360,11 @@ impl<T: Transport, R: Runner, F: ClientFactory> Daemon<T, R, F> {
         for line in lines {
             tracing::info!("{line}");
         }
+        // The controls going off drop a slider's waiting steps (not run by its pinch's end).
+        if outputs.iter().any(|output| matches!(output, Output::Controls { enabled: false })) {
+            self.sliders.drop_pending();
+        }
+        let now = self.clock.now();
         for output in outputs {
             if let Some(done) = self.waiting.as_mut().and_then(|waiting| waiting.wait.on_output(&output)) {
                 self.end_wait(|_| done);
@@ -360,11 +374,22 @@ impl<T: Transport, R: Runner, F: ClientFactory> Daemon<T, R, F> {
                     tracing::debug!(%command, "action");
                     self.runner.run(command);
                 }
+                Output::Run(Action::Slider(step)) => {
+                    if let Some(run) = self.sliders.step(&step, now) {
+                        self.run_slider(run);
+                    }
+                }
                 Output::SetHand(hand) => {
                     self.send_link(LinkCommand::SetHand(hand));
                 }
                 // Each is one info line above (`Outcomes::lines`).
-                Output::Gesture { .. } | Output::Unused { .. } | Output::PinchEnded { .. } => {}
+                Output::Gesture { .. } | Output::Unused { .. } => {}
+                // Also one line above; what its slider gathered runs now.
+                Output::PinchEnded { .. } => {
+                    for run in self.sliders.flush(now) {
+                        self.run_slider(run);
+                    }
+                }
                 Output::Controls { enabled } => {
                     if !described {
                         tracing::info!(enabled, "controls");
@@ -532,6 +557,12 @@ impl<T: Transport, R: Runner, F: ClientFactory> Daemon<T, R, F> {
         Response::ok(self.status.borrow().clone())
     }
 
+    fn run_slider(&self, run: crate::sliders::Run) {
+        let command = run.shell();
+        tracing::debug!(%command, "slider");
+        self.runner.run(command);
+    }
+
     fn run_draw_hook(&self, name: &str) {
         let hook = self.config.band.on_draw.trim();
         if !hook.is_empty() {
@@ -592,6 +623,7 @@ impl<T: Transport, R: Runner, F: ClientFactory> Daemon<T, R, F> {
             authenticated: false,
         });
         self.controls.on_disconnect();
+        self.sliders.drop_pending();
         self.end_wait(|_| Done::Failed("the band disconnected".into()));
         self.semg_on = false;
         self.state = LinkState::Idle;
@@ -700,6 +732,7 @@ impl<T: Transport, R: Runner, F: ClientFactory> Daemon<T, R, F> {
     async fn stop_link(&mut self) {
         let Some(link) = self.link.take() else { return };
         self.controls.on_disconnect();
+        self.sliders.drop_pending();
         self.end_wait(|_| Done::Failed("the band disconnected".into()));
         self.semg_on = false;
         self.state = LinkState::Idle;

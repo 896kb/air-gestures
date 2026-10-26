@@ -1,4 +1,4 @@
-use air_gesturesd::config::{Action, DialConfig};
+use air_gesturesd::config::{Action, DialConfig, SliderStep};
 use air_gesturesd::outcome::{Outcomes, short};
 use band_core::controls::{Builtin, Class, Drag, Finger, Gesture, Output, Palm, Profile, Profiles, Unused};
 
@@ -100,6 +100,18 @@ fn a_stepping_pinch_names_what_it_stepped_when_it_ends() {
     let slider = Output::PinchEnded { finger: Finger::Middle, class: Class::Drag(Drag::Left), palm: Palm::Down, up: 0, down: 1, practiced: false };
     let out = [Output::Run("echo left".into()), slider];
     assert_eq!(outcomes.lines(&out, &profiles(), &dial), ["middle slider left/right · palm down → echo left ×1"]);
+}
+
+#[test]
+fn a_command_sliders_pinch_names_the_slider_and_its_net_steps() {
+    let dial = DialConfig::default();
+    let mut outcomes = Outcomes::default();
+    let step = |step| Action::Slider(SliderStep { slider: "index_left_right".into(), command: "~/bin/lights".into(), profile: "default".into(), step });
+    let ended = |practiced| Output::PinchEnded { finger: Finger::Index, class: Class::Drag(Drag::Right), palm: Palm::Down, up: 4, down: 1, practiced };
+    let out = [Output::Run(step(1)), Output::Run(step(1)), Output::Run(step(-1)), Output::Run(step(1)), Output::Run(step(1)), ended(false)];
+    assert_eq!(outcomes.lines(&out, &profiles(), &dial), ["index slider left/right · palm down → slider index_left_right +3"]);
+    let out = [Output::Practiced(step(-1)), Output::Practiced(step(-1)), ended(true)];
+    assert_eq!(outcomes.lines(&out, &profiles(), &dial), ["index slider left/right · palm down → would: slider index_left_right -2"]);
 }
 
 #[test]

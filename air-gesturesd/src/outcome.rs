@@ -72,6 +72,8 @@ fn counted(commands: &[String]) -> String {
 pub struct Outcomes {
     /// The steps since the last stepping pinch ended (shown names).
     steps: Vec<String>,
+    /// A command slider's net steps since then, by slider, in the order first stepped.
+    sliders: Vec<(String, i32)>,
 }
 
 impl Outcomes {
@@ -105,9 +107,18 @@ impl Outcomes {
                         Class::Drag(drag) => format!("slider {}", ["left/right", "toward/away", "up/down"][drag.index() / 2]),
                         Class::Unknown => "pinch".to_owned(),
                     };
-                    let steps = counted(&std::mem::take(&mut self.steps));
+                    let mut steps = vec![counted(&std::mem::take(&mut self.steps))];
+                    steps.extend(self.sliders.drain(..).map(|(slider, net)| format!("slider {slider} {net:+}")));
+                    let steps = steps.into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join(", ");
                     let steps = if *practiced { format!("would: {steps}") } else { steps };
                     lines.push(format!("{} {what} · {} → {steps}", finger_text(*finger), palm_text(*palm)));
+                    continue;
+                }
+                Output::Run(Action::Slider(step)) | Output::Practiced(Action::Slider(step)) if current.is_none() => {
+                    match self.sliders.iter_mut().find(|(slider, _)| *slider == step.slider) {
+                        Some((_, net)) => *net += step.step,
+                        None => self.sliders.push((step.slider.clone(), step.step)),
+                    }
                     continue;
                 }
                 Output::Run(command) | Output::Practiced(command) => {

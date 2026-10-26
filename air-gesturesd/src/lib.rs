@@ -12,6 +12,7 @@ pub mod link;
 pub mod meta;
 pub mod outcome;
 pub mod pairing;
+pub mod sliders;
 pub mod status;
 pub mod store;
 pub mod teach;

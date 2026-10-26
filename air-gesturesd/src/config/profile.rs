@@ -3,10 +3,10 @@
 
 use std::collections::BTreeMap;
 
-use band_core::controls::{BandControls, Binding, Builtin, DragMode, FingerSetup, Gesture, Palm, Profile, Profiles};
+use band_core::controls::{BandControls, Binding, Builtin, Dial, DragMode, FingerSetup, Gesture, Palm, Profile, Profiles};
 
 use super::band::{BandConfig, band_key};
-use super::{Action, DialConfig, DialTarget};
+use super::{Action, DialConfig, DialTarget, SliderStep};
 
 /// The slider keys' pair names, in `DragMode::Sliders` order.
 pub(super) const SLIDER_PAIRS: [&str; 3] = ["left_right", "toward_away", "up_down"];
@@ -114,16 +114,24 @@ fn finger_key(key: &str) -> Option<(usize, FingerKey)> {
     Some((slot, kind))
 }
 
+/// What a slider key says: a dial's preset, or a command of its own.
+#[derive(Clone)]
+enum Slider {
+    Preset(DialTarget),
+    Command(String),
+}
+
 /// A profile's per-finger keys.
 struct Fingers {
     dial: [Option<DialTarget>; 2],
     sliders_mode: [bool; 2],
-    sliders: [[DialTarget; 3]; 2],
+    sliders: [[Slider; 3]; 2],
 }
 
 impl Default for Fingers {
     fn default() -> Self {
-        Self { dial: [None; 2], sliders_mode: [false; 2], sliders: [[DialTarget::Off; 3]; 2] }
+        let off = || std::array::from_fn(|_| Slider::Preset(DialTarget::Off));
+        Self { dial: [None; 2], sliders_mode: [false; 2], sliders: [off(), off()] }
     }
 }
 
@@ -133,6 +141,16 @@ fn parse_target(at: &str, key: &str, value: &str) -> Result<DialTarget, String> 
         "brightness" => Ok(DialTarget::Brightness),
         "off" => Ok(DialTarget::Off),
         other => Err(format!("{at} {key}: \"{other}\" isn't a dial (\"volume\", \"brightness\" or \"off\")")),
+    }
+}
+
+/// A slider's value: the dial's presets, `""` (off), or any other text: a command.
+fn parse_slider(value: &str) -> Slider {
+    match value.trim() {
+        "volume" => Slider::Preset(DialTarget::Volume),
+        "brightness" => Slider::Preset(DialTarget::Brightness),
+        "off" | "" => Slider::Preset(DialTarget::Off),
+        _ => Slider::Command(value.to_owned()),
     }
 }
 
@@ -147,19 +165,33 @@ impl Fingers {
                     other => return Err(format!("{at} {key}: \"{other}\" isn't a drag mode (\"gestures\" or \"sliders\")")),
                 }
             }
-            FingerKey::Slider(pair) => self.sliders[slot][pair] = parse_target(at, key, value)?,
+            FingerKey::Slider(pair) => self.sliders[slot][pair] = parse_slider(value),
         }
         Ok(())
     }
 
-    /// Both fingers' setups, and what the index dial turns.
-    fn setups(&self, dial: &DialConfig) -> (FingerSetup<Action>, FingerSetup<Action>, DialTarget) {
+    /// Both fingers' setups in `profile`, and what the index dial turns.
+    fn setups(&self, dial: &DialConfig, profile: &str) -> (FingerSetup<Action>, FingerSetup<Action>, DialTarget) {
         let index = self.dial[0].unwrap_or(dial.target);
         let middle = self.dial[1].unwrap_or(DialTarget::Off);
+        let slider = |slot: usize, pair: usize| match &self.sliders[slot][pair] {
+            Slider::Preset(target) => dial.dial(*target),
+            Slider::Command(command) => {
+                let step = |step| {
+                    Action::Slider(SliderStep {
+                        slider: format!("{}_{}", ["index", "middle"][slot], SLIDER_PAIRS[pair]),
+                        command: command.clone(),
+                        profile: profile.to_owned(),
+                        step,
+                    })
+                };
+                Some(Dial { up: step(1), down: step(-1) })
+            }
+        };
         let setup = |slot: usize, target: DialTarget| FingerSetup {
             dial: dial.dial(target),
             drags: if self.sliders_mode[slot] {
-                DragMode::Sliders(self.sliders[slot].map(|t| dial.dial(t)))
+                DragMode::Sliders(std::array::from_fn(|pair| slider(slot, pair)))
             } else {
                 DragMode::Gestures
             },
@@ -262,7 +294,7 @@ fn profile_from(dial: &DialConfig, name: &str, table: &toml::Table, base: &str, 
     if let Some(sub) = table.get("drawings").and_then(toml::Value::as_table) {
         profile.drawings = drawing_actions(&section(base, Some("drawings")), sub)?;
     }
-    let (index, middle, target) = fingers.setups(dial);
+    let (index, middle, target) = fingers.setups(dial, name);
     profile.index = index;
     profile.middle = middle;
     Ok((profile, target))
