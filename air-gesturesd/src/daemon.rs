@@ -25,7 +25,7 @@ use crate::ipc::{Call, HandChoice, Request, Response, Taught};
 use crate::link::{LinkCommand, LinkEnd, LinkEvent, LinkOutcome, run_link};
 use crate::meta::ClientFactory;
 use crate::pairing::{PairFailure, pair_band};
-use crate::sliders::Sliders;
+use crate::sliders::{Run, Sliders};
 use crate::status::{LinkState, PairResult, Status};
 use crate::store::{BandRecord, IdentitySource, Store, StoredDrags};
 use crate::teach::{Done, Wait};
@@ -271,6 +271,7 @@ impl<T: Transport, R: Runner, F: ClientFactory> Daemon<T, R, F> {
                 }
                 _ = until(self.sliders.due(), self.clock) => {
                     for run in self.sliders.flush_due(self.clock.now()) {
+                        self.outcomes.slider_ran(&run);
                         self.run_slider(run);
                     }
                 }
@@ -354,18 +355,34 @@ impl<T: Transport, R: Runner, F: ClientFactory> Daemon<T, R, F> {
     /// Do what the controls asked. `from_band`: caused by a band gesture, not a request
     /// (`on_toggle` only runs for those, as before).
     fn apply(&mut self, outputs: Vec<Output<Action>>, from_band: bool) {
+        // Command sliders first, so the lines say what ran: the controls going off drop the
+        // waiting steps (not run by the pinch's end), a step may run its slider, a pinch's end
+        // runs what waits. Each output's runs go out in its turn below.
+        if outputs.iter().any(|output| matches!(output, Output::Controls { enabled: false })) {
+            self.sliders.drop_pending();
+        }
+        let now = self.clock.now();
+        let slider_runs: Vec<Vec<Run>> = outputs
+            .iter()
+            .map(|output| match output {
+                Output::Run(Action::Slider(step)) => self.sliders.step(step, now).into_iter().collect(),
+                Output::PinchEnded { .. } => self.sliders.flush(now),
+                _ => Vec::new(),
+            })
+            .collect();
+        for run in slider_runs.iter().flatten() {
+            self.outcomes.slider_ran(run);
+        }
         let lines = self.outcomes.lines(&outputs, self.controls.profiles(), &self.config.dial);
         // A gesture's line already says what it switched.
         let described = !lines.is_empty();
         for line in lines {
             tracing::info!("{line}");
         }
-        // The controls going off drop a slider's waiting steps (not run by its pinch's end).
-        if outputs.iter().any(|output| matches!(output, Output::Controls { enabled: false })) {
-            self.sliders.drop_pending();
-        }
-        let now = self.clock.now();
-        for output in outputs {
+        for (output, runs) in outputs.into_iter().zip(slider_runs) {
+            for run in runs {
+                self.run_slider(run);
+            }
             if let Some(done) = self.waiting.as_mut().and_then(|waiting| waiting.wait.on_output(&output)) {
                 self.end_wait(|_| done);
             }
@@ -374,22 +391,14 @@ impl<T: Transport, R: Runner, F: ClientFactory> Daemon<T, R, F> {
                     tracing::debug!(%command, "action");
                     self.runner.run(command);
                 }
-                Output::Run(Action::Slider(step)) => {
-                    if let Some(run) = self.sliders.step(&step, now) {
-                        self.run_slider(run);
-                    }
-                }
+                // Gathered above.
+                Output::Run(Action::Slider(_)) => {}
                 Output::SetHand(hand) => {
                     self.send_link(LinkCommand::SetHand(hand));
                 }
-                // Each is one info line above (`Outcomes::lines`).
-                Output::Gesture { .. } | Output::Unused { .. } => {}
-                // Also one line above; what its slider gathered runs now.
-                Output::PinchEnded { .. } => {
-                    for run in self.sliders.flush(now) {
-                        self.run_slider(run);
-                    }
-                }
+                // Each is one info line above (`Outcomes::lines`); a pinch's end ran its slider's
+                // waiting steps above.
+                Output::Gesture { .. } | Output::Unused { .. } | Output::PinchEnded { .. } => {}
                 Output::Controls { enabled } => {
                     if !described {
                         tracing::info!(enabled, "controls");
@@ -557,7 +566,14 @@ impl<T: Transport, R: Runner, F: ClientFactory> Daemon<T, R, F> {
         Response::ok(self.status.borrow().clone())
     }
 
-    fn run_slider(&self, run: crate::sliders::Run) {
+    /// The band went: a pinch's waiting slider steps are dropped, and its steps never named
+    /// (no `PinchEnded` comes).
+    fn forget_pinch(&mut self) {
+        self.sliders.drop_pending();
+        self.outcomes.forget_pinch();
+    }
+
+    fn run_slider(&self, run: Run) {
         let command = run.shell();
         tracing::debug!(%command, "slider");
         self.runner.run(command);
@@ -623,7 +639,7 @@ impl<T: Transport, R: Runner, F: ClientFactory> Daemon<T, R, F> {
             authenticated: false,
         });
         self.controls.on_disconnect();
-        self.sliders.drop_pending();
+        self.forget_pinch();
         self.end_wait(|_| Done::Failed("the band disconnected".into()));
         self.semg_on = false;
         self.state = LinkState::Idle;
@@ -732,7 +748,7 @@ impl<T: Transport, R: Runner, F: ClientFactory> Daemon<T, R, F> {
     async fn stop_link(&mut self) {
         let Some(link) = self.link.take() else { return };
         self.controls.on_disconnect();
-        self.sliders.drop_pending();
+        self.forget_pinch();
         self.end_wait(|_| Done::Failed("the band disconnected".into()));
         self.semg_on = false;
         self.state = LinkState::Idle;
@@ -798,6 +814,7 @@ impl<T: Transport, R: Runner, F: ClientFactory> Daemon<T, R, F> {
                 let mut outputs = self.controls.set_options(self.config.options());
                 // Those options carry no calibration: put it back.
                 self.refresh_calibration(true);
+                // A slider's waiting steps still run with the command they were made with.
                 outputs.extend(self.controls.set_profiles(self.config.profiles().clone()));
                 if self.controls.dial_overridden() {
                     // A changed dial in the file wins over a runtime choice, as before.

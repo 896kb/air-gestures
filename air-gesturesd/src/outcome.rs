@@ -5,6 +5,7 @@
 use band_core::controls::{Class, Finger, Output, Palm, Profiles, Unused};
 
 use crate::config::{Action, DialConfig, band_key};
+use crate::sliders::Run;
 
 /// The longest a command is shown (in characters).
 const SHOWN: usize = 60;
@@ -73,11 +74,35 @@ fn counted(commands: &[String]) -> String {
 pub struct Outcomes {
     /// The steps since the last stepping pinch ended (shown names).
     steps: Vec<String>,
-    /// A command slider's net steps since then, by slider, in the order first stepped.
-    sliders: Vec<(String, i32)>,
+    /// What each command slider ran since then (steps + and −), in the order first run; in
+    /// practice, the steps it would have.
+    sliders: Vec<(String, u32, u32)>,
 }
 
 impl Outcomes {
+    /// A command slider ran (its steps are named when its pinch ends).
+    pub fn slider_ran(&mut self, run: &Run) {
+        self.slider_steps(&run.slider, run.steps);
+    }
+
+    fn slider_steps(&mut self, slider: &str, steps: i32) {
+        let at = match self.sliders.iter().position(|(s, ..)| s == slider) {
+            Some(at) => at,
+            None => {
+                self.sliders.push((slider.to_owned(), 0, 0));
+                self.sliders.len() - 1
+            }
+        };
+        let (_, up, down) = &mut self.sliders[at];
+        if steps > 0 { *up += steps.unsigned_abs() } else { *down += steps.unsigned_abs() }
+    }
+
+    /// The pinch is gone without a `PinchEnded` (the band went): its steps aren't named.
+    pub fn forget_pinch(&mut self) {
+        self.steps.clear();
+        self.sliders.clear();
+    }
+
     /// One line per gesture and per drawing in `outputs` (and per stepping pinch that ended),
     /// in order.
     pub fn lines(&mut self, outputs: &[Output<Action>], profiles: &Profiles<Action>, dial: &DialConfig) -> Vec<String> {
@@ -109,17 +134,29 @@ impl Outcomes {
                         Class::Unknown => "pinch".to_owned(),
                     };
                     let mut steps = vec![counted(&std::mem::take(&mut self.steps))];
-                    steps.extend(self.sliders.drain(..).map(|(slider, net)| format!("slider {slider} {net:+}")));
+                    steps.extend(self.sliders.drain(..).map(|(slider, up, down)| {
+                        let mut text = format!("slider {slider}");
+                        if up > 0 {
+                            text += &format!(" +{up}");
+                        }
+                        if down > 0 {
+                            text += &format!(" -{down}");
+                        }
+                        text
+                    }));
                     let steps = steps.into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join(", ");
-                    let steps = if *practiced { format!("would: {steps}") } else { steps };
+                    let steps = match (steps.is_empty(), *practiced) {
+                        (true, _) => "nothing".to_owned(),
+                        (false, true) => format!("would: {steps}"),
+                        (false, false) => steps,
+                    };
                     lines.push(format!("{} {what} · {} → {steps}", finger_text(*finger), palm_text(*palm)));
                     continue;
                 }
-                Output::Run(Action::Slider(step)) | Output::Practiced(Action::Slider(step)) if current.is_none() => {
-                    match self.sliders.iter_mut().find(|(slider, _)| *slider == step.slider) {
-                        Some((_, net)) => *net += step.step,
-                        None => self.sliders.push((step.slider.clone(), step.step)),
-                    }
+                // Counted as they run (`slider_ran`): gathered, or dropped.
+                Output::Run(Action::Slider(_)) => continue,
+                Output::Practiced(Action::Slider(step)) => {
+                    self.slider_steps(&step.slider, step.step);
                     continue;
                 }
                 Output::Run(command) | Output::Practiced(command) => {
@@ -131,7 +168,13 @@ impl Outcomes {
                     }
                     if matches!(output, Output::Practiced(_)) { format!("would: {shown}") } else { shown }
                 }
-                Output::Controls { enabled } => format!("controls {}", if *enabled { "on" } else { "off" }),
+                Output::Controls { enabled } => {
+                    if !enabled {
+                        // A pinch's end came first; anything left is from steps that were dropped.
+                        self.forget_pinch();
+                    }
+                    format!("controls {}", if *enabled { "on" } else { "off" })
+                }
                 Output::Profile { index, .. } => {
                     format!("profile \"{}\"", profiles.list.get(*index).map_or("?", |p| p.name.as_str()))
                 }

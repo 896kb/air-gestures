@@ -1,5 +1,6 @@
 use air_gesturesd::config::{Action, DialConfig, SliderStep};
 use air_gesturesd::outcome::{Outcomes, short};
+use air_gesturesd::sliders::Run;
 use band_core::controls::{Builtin, Class, Drag, Finger, Gesture, Output, Palm, Profile, Profiles, Unused};
 
 fn profiles() -> Profiles<Action> {
@@ -106,15 +107,40 @@ fn a_stepping_pinch_names_what_it_stepped_when_it_ends() {
 }
 
 #[test]
-fn a_command_sliders_pinch_names_the_slider_and_its_net_steps() {
+fn a_command_sliders_pinch_names_the_slider_and_what_ran() {
     let dial = DialConfig::default();
     let mut outcomes = Outcomes::default();
     let step = |step| Action::Slider(SliderStep { slider: "index_left_right".into(), command: "~/bin/lights".into(), profile: "default".into(), step });
+    let ran = |steps| Run { slider: "index_left_right".into(), command: "~/bin/lights".into(), profile: "default".into(), steps };
     let ended = |practiced| Output::PinchEnded { finger: Finger::Index, class: Class::Drag(Drag::Right), palm: Palm::Down, up: 4, down: 1, practiced };
-    let out = [Output::Run(step(1)), Output::Run(step(1)), Output::Run(step(-1)), Output::Run(step(1)), Output::Run(step(1)), ended(false)];
+    // The steps are counted as they run (gathered), not as they're made.
+    outcomes.slider_ran(&ran(1));
+    outcomes.slider_ran(&ran(2));
+    let out = [Output::Run(step(1)), Output::Run(step(-1)), Output::Run(step(1)), ended(false)];
     assert_eq!(outcomes.lines(&out, &profiles(), &dial), ["index slider left/right · palm down → slider index_left_right +3"]);
+    outcomes.slider_ran(&ran(2));
+    outcomes.slider_ran(&ran(-2));
+    assert_eq!(outcomes.lines(&[ended(false)], &profiles(), &dial), ["index slider left/right · palm down → slider index_left_right +2 -2"]);
+    assert_eq!(outcomes.lines(&[ended(false)], &profiles(), &dial), ["index slider left/right · palm down → nothing"], "its steps were dropped");
     let out = [Output::Practiced(step(-1)), Output::Practiced(step(-1)), ended(true)];
     assert_eq!(outcomes.lines(&out, &profiles(), &dial), ["index slider left/right · palm down → would: slider index_left_right -2"]);
+}
+
+#[test]
+fn a_pinch_the_band_or_the_controls_dropped_leaves_nothing_for_the_next() {
+    let dial = DialConfig::default();
+    let mut outcomes = Outcomes::default();
+    let ran = Run { slider: "index_left_right".into(), command: "x".into(), profile: "default".into(), steps: 3 };
+    let turn = Output::PinchEnded { finger: Finger::Index, class: Class::Turn, palm: Palm::Up, up: 1, down: 0, practiced: false };
+    outcomes.slider_ran(&ran);
+    assert!(outcomes.lines(&[Output::Run(dial.volume_up.as_str().into())], &profiles(), &dial).is_empty());
+    outcomes.forget_pinch(); // the band went: no `PinchEnded`
+    let out = [Output::Run(dial.volume_down.as_str().into()), turn.clone()];
+    assert_eq!(outcomes.lines(&out, &profiles(), &dial), ["index dial · palm up → volume down ×1"]);
+    outcomes.slider_ran(&ran);
+    outcomes.lines(&[Output::Run(dial.volume_up.as_str().into()), Output::Controls { enabled: false }], &profiles(), &dial);
+    let out = [Output::Run(dial.volume_down.as_str().into()), turn];
+    assert_eq!(outcomes.lines(&out, &profiles(), &dial), ["index dial · palm up → volume down ×1"], "the controls went off");
 }
 
 #[test]

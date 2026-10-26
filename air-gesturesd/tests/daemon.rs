@@ -1251,21 +1251,39 @@ async fn a_command_slider_runs_its_steps_gathered_at_most_every_quarter_second()
     assert_eq!(daemon.slider_steps(), steps, "nothing left over after the pinch");
 }
 
+impl Harness {
+    /// An index pinch sliding away for `samples` × 10 ms, then held still (not let go).
+    async fn slide(&self, samples: usize) {
+        self.transport.inject(SimInject::Gesture { action: PRESS, finger: INDEX, derived: 0 });
+        for _ in 0..samples {
+            self.transport.inject(SimInject::Gyro3(away_raw(600.0)));
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+}
+
 #[tokio::test(start_paused = true)]
 async fn pausing_mid_slide_drops_the_waiting_steps() {
-    let transport = SimTransport::new(SimMode::Enrolled);
-    let mut daemon = start(transport.clone(), true, fake(&transport));
-    daemon.right_hand().await;
-    daemon.configure(LIGHTS_SLIDER).await;
-    let pause = async {
-        // Mid-window, between two samples: steps are waiting.
-        tokio::time::sleep(Duration::from_millis(1105)).await;
+    // The same slide twice, to the same moment: let go there, the waiting steps run; paused
+    // there, they never do.
+    for pause in [false, true] {
+        let transport = SimTransport::new(SimMode::Enrolled);
+        let mut daemon = start(transport.clone(), true, fake(&transport));
+        daemon.right_hand().await;
+        daemon.configure(LIGHTS_SLIDER).await;
+        daemon.slide(110).await;
         let before = daemon.slider_steps();
-        daemon.call(Request::Pause).await;
-        before
-    };
-    let ((), before) = tokio::join!(daemon.pinch_moving(600, 200), pause);
-    assert!(!before.is_empty());
-    tokio::time::sleep(Duration::from_secs(2)).await;
-    assert_eq!(daemon.slider_steps(), before, "the waiting steps never ran, not even at the pinch's end");
+        assert!(!before.is_empty());
+        if pause {
+            daemon.call(Request::Pause).await;
+        }
+        daemon.transport.inject(SimInject::Gesture { action: RELEASE, finger: INDEX, derived: 0 });
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        let after = daemon.slider_steps();
+        if pause {
+            assert_eq!(after, before, "the waiting steps never ran, not even at the pinch's end");
+        } else {
+            assert!(after.len() > before.len(), "steps were waiting: {before:?} → {after:?}");
+        }
+    }
 }
