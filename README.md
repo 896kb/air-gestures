@@ -139,15 +139,46 @@ A pinch (thumb + finger) is one of three things, decided once you've moved 15°:
 - move your hand: a **drag**. With `index_drags = "gestures"` (the default) each drag runs its
   `index_drag_*` command once; with `"sliders"`, the pair you start along (left/right,
   toward/away, up/down) moves `index_slider_left_right|toward_away|up_down` (`"volume"`,
-  `"brightness"` or `"off"`) for as long as you hold the pinch.
+  `"brightness"`, `"off"`, or a command: see below) for as long as you hold the pinch.
 
 When a finger's dial and drags do nothing, its hold acts as soon as the band reports it
 (the middle hold, by default); otherwise when you let go. `air-gestures dial
 volume|brightness|off|cycle` changes the index dial until the profile changes.
 
-**Teach your drags:** `air-gestures teach-drags` takes one pinch per move (the turn, then the
-six drags) and keeps them for this band and hand; `--reset` forgets them (with the band
-connected: it's for the hand the band is on).
+**Teach your drags:** drags and sliders work best taught to your own hand.
+`air-gestures teach-drags` takes one pinch per move (the turn, then the six drags) and keeps
+them for this band and hand; `--reset` forgets them (with the band connected: it's for the hand
+the band is on).
+
+**Slider commands:** any slider value other than `"volume"`, `"brightness"`, `"off"` and `""`
+is a shell command. While you slide, its steps are gathered: the first runs it at once, then it
+runs at most every 250 ms with the steps since, and once more when you let go. It gets
+`AIR_GESTURES_SLIDER` (`index_left_right`, `middle_up_down`, …), `AIR_GESTURES_STEPS` (the
+net steps, `+3` or `-2`) and `AIR_GESTURES_PROFILE`. One script can serve every slider, e.g.
+Home Assistant lights through its REST API:
+
+```toml
+[[profile]]
+name = "Living room"
+index_drags = "sliders"
+index_slider_left_right = "~/bin/lights"
+index_slider_up_down = "~/bin/lights"
+```
+
+```sh
+#!/bin/sh
+# ~/bin/lights: one script for every slider
+light() {  # light <entity> <brightness change in %>
+  curl -s -X POST http://homeassistant.local:8123/api/services/light/turn_on \
+    -H "Authorization: Bearer $(cat ~/.config/hass-token)" \
+    -H "Content-Type: application/json" \
+    -d "{\"entity_id\": \"$1\", \"brightness_step_pct\": $2}"
+}
+case "$AIR_GESTURES_PROFILE:$AIR_GESTURES_SLIDER" in
+  "Living room:index_left_right") light light.sofa_lamp $((AIR_GESTURES_STEPS * 5)) ;;
+  "Living room:index_up_down")    light light.ceiling $((AIR_GESTURES_STEPS * 5)) ;;
+esac
+```
 
 ### Band controls
 

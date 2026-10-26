@@ -38,7 +38,10 @@ middle_hold   = ""
 # index_dial  = "volume"   # the turn: "volume" | "brightness" | "off" (default: [dial] target)
 # middle_dial = "off"      # with a middle dial, the middle hold acts when you let go
 # index_drags = "gestures" # or "sliders": each pair moves a slider while you hold the pinch
-# index_slider_left_right = "off"  # also _toward_away, _up_down: "volume" | "brightness" | "off"
+# index_slider_left_right = "off"  # also _toward_away, _up_down: "volume" | "brightness" | "off",
+#   or a command, run at most every 250 ms with AIR_GESTURES_SLIDER=index_left_right,
+#   AIR_GESTURES_STEPS=+3 (the net steps since) and AIR_GESTURES_PROFILE=<name>, e.g.
+# index_slider_up_down = "~/bin/lights"   # case "$AIR_GESTURES_PROFILE:$AIR_GESTURES_SLIDER" in …
 
 # Palm overrides: the same gesture keys, for one position; at most 2 positions per gesture.
 # [gestures.palm_up]       # also [gestures.sideways], [gestures.palm_down]
