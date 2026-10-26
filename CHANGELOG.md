@@ -3,10 +3,20 @@
 Each release's section becomes its GitLab release notes. Add a section for the version
 before tagging it; the release job fails without one.
 
-## Unreleased
+## 0.9.17
 
+- **New installs start with band controls:** the sample config (`/usr/share/air-gestures/config.toml`,
+  `contrib/config.toml`) puts `toggle` on the middle hold, `next_profile` and
+  `previous_profile` on the index and middle triple taps, `draw` on the middle tap, and the
+  middle dial on brightness, as in the Android app; with no config file the daemon runs it.
+  A config that leaves these keys out works as before (no band controls, no middle dial).
+- **Slider commands:** a slider set to anything but `"volume"`, `"brightness"` or `"off"` runs
+  that command as you slide, at most every 250 ms, with `AIR_GESTURES_SLIDER`
+  (`index_left_right` …), `AIR_GESTURES_STEPS` (the net steps since, `+3` or `-2`) and
+  `AIR_GESTURES_PROFILE`, and once more when you let go: one script can drive smart lights
+  from every slider (README has a Home Assistant example).
 - **Band controls:** `[band] toggle`, `next_profile`, `previous_profile` and `draw` each sit on
-  one gesture you pick (any gesture, `"none"` by default), above every profile, optionally only
+  one gesture you pick (any gesture, or `"none"`), above every profile, optionally only
   in some palm positions (`toggle_palm = ["up"]`). A profile's command on that gesture is kept
   and paused; the daemon logs each one. `toggle = "middle_hold"` from older configs keeps working.
 - **Profiles:** `[[profile]]` tables in config.toml, each with its own gestures. Switch with
