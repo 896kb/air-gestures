@@ -355,7 +355,7 @@ pub async fn teach_drawing_within(socket: &Path, dir: &Path, name: &str, guide: 
     let (existing, _) = drawings::load(dir);
     connected_hand(&client::status(socket).await?)?;
     guide.say(&format!(
-        "Draw \"{name}\" {TRIES} times, the way you'll draw it later (in the air, or pen grip on a table). \
+        "Draw \"{name}\" {TRIES} times, the way you'll draw it later (in the air). \
          Pinch to put the pen down, let go to lift it; each try ends 1 s after your last stroke."
     ));
     let mut tries: Vec<Option<Vec<Stroke>>> = vec![None; TRIES];

@@ -243,8 +243,8 @@ for the hand the band is on).
 
 ### Drawings
 
-Put Draw on a gesture (`[band] draw = "swipe_up"`), make it, and draw with a pinch as the pen,
-in the air or pen grip on a table; the drawing ends 1 s after your last stroke. Teach drawings
+Put Draw on a gesture (`[band] draw = "swipe_up"`), make it, and draw in the air with a pinch as
+the pen; the drawing ends 1 s after your last stroke. Teach drawings
 first, three tries each: `air-gestures draw teach lightbulb` (`draw list`, `draw delete
 <name>`). Then give them actions:
 
