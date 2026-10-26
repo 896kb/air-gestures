@@ -136,6 +136,12 @@ fn a_template_that_cant_be_turned_over_on_disk_says_teach_it_again() {
     std::fs::create_dir(&dir).unwrap();
     std::fs::write(dir.join("z.json"), r#"{"version":1,"tries":[[[[0.0,0.0],[0.0,10.0]]]]}"#).unwrap();
     std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+    // Root (as in CI containers) writes into a read-only directory anyway: nothing to test.
+    if std::fs::write(dir.join(".probe"), "").is_ok() {
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        eprintln!("skipped: this user can write into a read-only directory");
+        return;
+    }
     let loaded = drawings::load_all(&dir);
     std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
     assert!(loaded.problems.iter().any(|p| p.contains("teach z again")), "{:?}", loaded.problems);
