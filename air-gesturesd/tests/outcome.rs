@@ -60,6 +60,8 @@ fn band_controls_profiles_drawings_and_reasons_read_plainly() {
         Output::Unused { gesture: Gesture::SwipeLeft, why: Unused::Teaching },
         gesture(Gesture::SwipeLeft, Palm::Down),
         Output::Unused { gesture: Gesture::SwipeLeft, why: Unused::Drawing },
+        gesture(Gesture::SwipeLeft, Palm::Down),
+        Output::Unused { gesture: Gesture::SwipeLeft, why: Unused::Writing },
     ];
     assert_eq!(
         lines(&out, &two()),
@@ -71,6 +73,7 @@ fn band_controls_profiles_drawings_and_reasons_read_plainly() {
             "index double tap · palm down → nothing (too soon after another action)",
             "swipe left · palm down → teaching drags",
             "swipe left · palm down → drawing",
+            "swipe left · palm down → writing",
         ]
     );
 }

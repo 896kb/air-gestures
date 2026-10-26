@@ -50,6 +50,7 @@ fn unused_text(why: Unused) -> String {
         }
         Unused::TooSoon => "nothing (too soon after another action)".into(),
         Unused::Teaching => "teaching drags".into(),
+        Unused::Writing => "writing".into(),
         Unused::Drawing => "drawing".into(),
     }
 }

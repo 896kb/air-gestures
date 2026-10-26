@@ -187,10 +187,10 @@ esac
 Four controls sit above every profile, each on one gesture you pick in `[band]`:
 `toggle` (controls off/on; works while they're off), `next_profile`, `previous_profile` and
 `draw`. Each is any gesture key or `"none"`. The sample config puts them on the middle hold, the
-index triple tap, the middle triple tap and the middle tap (with Draw on the middle tap, draw
-with the index pinch: a short middle pinch is that tap and cancels); a config that leaves a key
-out has none there, as before. `<key>_palm = ["up"]` limits one to one or two palm positions; in
-the others the gesture does what the profile says.
+index triple tap, the middle triple tap and the index hold (a drawing ends by itself 1 s after
+the last stroke); a config that leaves a key out has none there, as before. `<key>_palm =
+["up"]` limits one to one or two palm positions; in the others the gesture does what the
+profile says.
 
 A profile's command on a band-control gesture is kept but doesn't run ("paused"); the daemon
 logs each one, e.g. `middle_double in profile "media" is overridden by [band] next_profile`,

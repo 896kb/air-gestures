@@ -275,7 +275,7 @@ impl Config {
     }
 
     /// The sample config new installs start from: the defaults, plus band controls (toggle on
-    /// the middle hold, next and previous profile on the triple taps, Draw on the middle tap)
+    /// the middle hold, next and previous profile on the triple taps, Draw on the index hold)
     /// and the middle dial on brightness. A config that leaves those out doesn't get them.
     pub fn sample() -> Self {
         Self::parse(SAMPLE).expect("contrib/config.toml is a valid config")

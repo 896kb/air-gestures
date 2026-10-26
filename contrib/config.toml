@@ -13,7 +13,7 @@ profile = "default"        # the name of the [gestures] profile
 toggle = "middle_hold"              # controls off/on (works while they're off)
 next_profile = "index_triple"       # next profile (needs 2+ profiles)
 previous_profile = "middle_triple"  # previous profile
-draw = "middle_tap"                 # open a drawing (draw with the index pinch); again: cancel it
+draw = "index_hold"                 # open a drawing; it ends by itself 1 s after the last stroke
 # <key>_palm limits a band control to 1–2 palm positions ("down", "sideways", "up"), e.g.:
 # toggle_palm = ["down"]   # the middle hold locks only palm down; palm up it's the profile's
 on_toggle = ""             # after a gesture toggled controls, with AIR_GESTURES_ENABLED=1|0
@@ -28,8 +28,8 @@ swipe_down    = "hyprctl dispatch sendshortcut , Escape, activewindow"
 index_tap     = ""
 index_double  = "playerctl play-pause"
 index_triple  = ""           # [band] next_profile
-index_hold    = ""
-middle_tap    = ""           # [band] draw
+index_hold    = ""           # [band] draw
+middle_tap    = ""
 middle_double = "wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle"
 middle_triple = ""           # [band] previous_profile
 middle_hold   = ""           # [band] toggle

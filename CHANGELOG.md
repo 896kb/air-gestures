@@ -7,7 +7,7 @@ before tagging it; the release job fails without one.
 
 - **New installs start with band controls:** the sample config (`/usr/share/air-gestures/config.toml`,
   `contrib/config.toml`) puts `toggle` on the middle hold, `next_profile` and
-  `previous_profile` on the index and middle triple taps, `draw` on the middle tap, and the
+  `previous_profile` on the index and middle triple taps, `draw` on the index hold, and the
   middle dial on brightness, as in the Android app; with no config file the daemon runs it.
   A config that leaves these keys out works as before (no band controls, no middle dial).
 - **Slider commands:** a slider set to anything but `"volume"`, `"brightness"` or `"off"` runs

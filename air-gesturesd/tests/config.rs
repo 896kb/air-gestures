@@ -170,8 +170,10 @@ fn every_config_load_notes_warnings_and_paused_entries() {
     assert!(two.iter().any(|(l, t)| *l == Level::Warn && t.contains("air-gestures profile next") && t.contains("[band] next_profile")), "{two:?}");
     let tap = texts_of("[band]\ndraw = \"index_tap\"\n");
     assert!(tap.iter().any(|(l, t)| *l == Level::Warn && t.contains("single tap")), "{tap:?}");
+    let triple = texts_of("[band]\ndraw = \"index_triple\"\n");
+    assert!(triple.iter().any(|(l, t)| *l == Level::Error && t.contains("index_triple") && t.contains("can't cancel")), "{triple:?}");
     let hold = texts_of("[band]\ndraw = \"index_hold\"\n");
-    assert!(hold.iter().any(|(l, t)| *l == Level::Error && t.contains("index_hold") && t.contains("can't cancel")), "{hold:?}");
+    assert!(!hold.iter().any(|(_, t)| t.contains("draw")), "a hold is fine for Draw: {hold:?}");
 }
 
 fn texts_of(text: &str) -> Vec<(Level, String)> {
@@ -270,7 +272,7 @@ fn the_sample_config_is_the_defaults_plus_band_controls_and_a_middle_dial() {
     assert_eq!(band.controls, Some(BandControl::on(Gesture::MiddleHold)));
     assert_eq!(band.next, Some(BandControl::on(Gesture::IndexTriple)));
     assert_eq!(band.previous, Some(BandControl::on(Gesture::MiddleTriple)));
-    assert_eq!(band.draw, Some(BandControl::on(Gesture::MiddleTap)));
+    assert_eq!(band.draw, Some(BandControl::on(Gesture::IndexHold)));
     let mut band = sample.band.clone();
     (band.toggle, band.next_profile, band.previous_profile, band.draw) = ("none".into(), "none".into(), "none".into(), "none".into());
     assert_eq!(band, default.band, "nothing else in [band] differs");
@@ -286,9 +288,8 @@ fn the_sample_config_is_the_defaults_plus_band_controls_and_a_middle_dial() {
 }
 
 #[test]
-fn the_sample_configs_band_controls_pause_none_of_its_gestures() {
-    let texts = texts(&Config::sample());
-    assert!(!texts.iter().any(|(level, text)| *level == Level::Error || text.contains("overridden")), "{texts:?}");
+fn the_sample_config_has_nothing_to_note() {
+    assert_eq!(texts(&Config::sample()), [], "no warnings, and its band controls pause none of its gestures");
 }
 
 #[test]
