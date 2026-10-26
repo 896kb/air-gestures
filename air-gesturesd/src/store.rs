@@ -8,6 +8,7 @@ use std::io::{self, Write};
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
+use band_core::controls::palm::{RIGHT_PALM_DOWN_ROLL, SWAPPED_RIGHT_PALM_DOWN_ROLL};
 use band_core::controls::pinch::{Prototypes, TaughtError};
 use band_core::controls::PalmCalibration;
 use band_core::events::Hand;
@@ -98,9 +99,15 @@ impl StoredDrags {
         Some(Self { palm_down_roll: p.palm_down_roll, turn: p.turn, drags: p.drags? })
     }
 
-    /// Checked again on the way in: a hand-edited file can't make lookalike drags.
+    /// Checked again on the way in: a hand-edited file can't make lookalike drags. Drags
+    /// taught at band-core's old right-hand palm down (`SWAPPED_RIGHT_PALM_DOWN_ROLL`, really
+    /// palm up; before 2026-10-26, without a calibration) are read as taught at palm down.
     pub fn prototypes(&self) -> Result<Prototypes, TaughtError> {
-        Prototypes::taught(self.turn, self.drags, self.palm_down_roll)
+        let palm_down_roll = match self.palm_down_roll {
+            SWAPPED_RIGHT_PALM_DOWN_ROLL => RIGHT_PALM_DOWN_ROLL,
+            roll => roll,
+        };
+        Prototypes::taught(self.turn, self.drags, palm_down_roll)
     }
 }
 

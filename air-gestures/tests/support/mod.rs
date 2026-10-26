@@ -158,12 +158,20 @@ pub async fn feed_roll(transport: SimTransport, roll: std::sync::Arc<std::sync::
     }
 }
 
-/// An index pinch turning the wrist about the band's x axis (see the daemon tests).
+/// The right hand's measured drag away (forearm frame, unit).
+pub fn away() -> [f64; 3] {
+    band_core::controls::pinch::Prototypes::right_hand().drags.unwrap()[band_core::controls::Drag::Away.index()]
+}
+
+/// An index pinch moving `raw` gyro units along the drag away, the band palm down (no fresh
+/// orientation): outside a drawing a drag away, in one a straight stroke.
 pub async fn pinch_moving(transport: &SimTransport, raw: i16, samples: usize) {
     use air_gesturesd::transport::SimInject;
+    use band_core::controls::palm::RIGHT_PALM_DOWN_ROLL;
+    let axes = band_core::controls::pinch::from_forearm(away(), RIGHT_PALM_DOWN_ROLL).map(|v| (v * f64::from(raw)).round() as i16);
     transport.inject(SimInject::Gesture { action: 1, finger: 2, derived: 0 });
     for _ in 0..samples {
-        transport.inject(SimInject::Gyro(raw));
+        transport.inject(SimInject::Gyro3(axes));
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
     transport.inject(SimInject::Gesture { action: 2, finger: 2, derived: 0 });

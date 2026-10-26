@@ -8,7 +8,9 @@ use air_gesturesd::daemon::Daemon;
 use air_gesturesd::ipc::{Call, HandChoice, Request, Response};
 use air_gesturesd::ipc::{Taught, TaughtDrags};
 use air_gesturesd::store::{HandCalibration, StoredPalm};
-use band_core::controls::pinch::Prototypes;
+use band_core::controls::Drag;
+use band_core::controls::palm::{RIGHT_PALM_DOWN_ROLL, RIGHT_PALM_UP_ROLL};
+use band_core::controls::pinch::{Prototypes, from_forearm};
 use band_core::events::Hand;
 use air_gesturesd::meta::{
     ClientFactory, FakeFactory, Final, HttpFactory, MetaSession, PairClient, PairError, Pending,
@@ -821,13 +823,13 @@ const INDEX: u64 = 2;
 const SWIPE_UP: SimInject = SimInject::Gesture { action: 6, finger: 1, derived: 0 };
 
 impl Harness {
-    /// An index pinch turning the wrist about the band's x axis: `raw` gyro units for
-    /// `samples` × 10 ms. With no fresh orientation that's a vertical stroke in a drawing,
-    /// and a drag away from you outside one.
+    /// An index pinch moving the way the right hand's measured drag away does, read palm down
+    /// (no fresh orientation): `raw` gyro units for `samples` × 10 ms. Outside a drawing it's a
+    /// drag away from you; in one, a straight stroke (`teach_line`'s).
     async fn pinch_moving(&self, raw: i16, samples: usize) {
         self.transport.inject(SimInject::Gesture { action: PRESS, finger: INDEX, derived: 0 });
         for _ in 0..samples {
-            self.transport.inject(SimInject::Gyro(raw));
+            self.transport.inject(SimInject::Gyro3(away_raw(f64::from(raw))));
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
         self.transport.inject(SimInject::Gesture { action: RELEASE, finger: INDEX, derived: 0 });
@@ -841,9 +843,11 @@ impl Harness {
         }
     }
 
-    /// A taught drawing called `name`: three vertical lines.
+    /// A taught drawing called `name`: three straight lines the way `pinch_moving` draws.
     fn teach_line(&self, name: &str) {
-        let line = vec![vec![[0.0, 0.0], [0.0, 15.0]]];
+        let [dx, dy] = band_core::controls::draw::project(from_forearm(away(), PALM_DOWN), PALM_DOWN);
+        let length = dx.hypot(dy);
+        let line = vec![vec![[0.0, 0.0], [15.0 * dx / length, 15.0 * dy / length]]];
         let drawing = band_core::controls::draw::Drawing { name: name.into(), tries: vec![line.clone(), line.clone(), line] };
         air_gesturesd::drawings::save(&self.drawings, &drawing).unwrap();
     }
@@ -858,8 +862,18 @@ fn rolled(degrees: f64) -> [f32; 4] {
 }
 
 /// The right hand's measured palm down and palm up (band-core's `PalmCalibration::right_hand`).
-const PALM_DOWN: f64 = -142.3;
-const PALM_UP: f64 = -11.3;
+const PALM_DOWN: f64 = RIGHT_PALM_DOWN_ROLL;
+const PALM_UP: f64 = RIGHT_PALM_UP_ROLL;
+
+/// The right hand's measured drag away (forearm frame, unit).
+fn away() -> [f64; 3] {
+    Prototypes::right_hand().drags.unwrap()[Drag::Away.index()]
+}
+
+/// Raw gyro moving `raw` units along `away()`, the band palm down.
+fn away_raw(raw: f64) -> [i16; 3] {
+    from_forearm(away(), PALM_DOWN).map(|v| (v * raw).round() as i16)
+}
 
 #[tokio::test(start_paused = true)]
 async fn a_palm_override_runs_with_the_palm_that_way() {
@@ -880,8 +894,8 @@ async fn a_palm_override_runs_with_the_palm_that_way() {
 async fn a_stored_calibration_applies_to_the_hand_in_use() {
     let transport = SimTransport::new(SimMode::Enrolled);
     let mut daemon = start_seeded(transport.clone(), true, fake(&transport), |store| {
-        // A wrist where -11.3° is palm down: the measured palm-up roll no longer reads as up.
-        let palm = air_gesturesd::store::StoredPalm { down_roll: -11.3, up_roll: 120.0 };
+        // The defaults the wrong way round: the measured palm-up roll reads as palm down.
+        let palm = air_gesturesd::store::StoredPalm { down_roll: PALM_UP, up_roll: PALM_DOWN };
         let calibration = air_gesturesd::store::HandCalibration { palm: Some(palm), drags: None };
         store.save_calibration(SIM_ADDRESS, band_core::events::Hand::Right, &calibration).unwrap();
     });
@@ -964,8 +978,9 @@ async fn teaching_a_drag_answers_with_the_pinchs_direction_and_runs_nothing() {
     let response = answer.await.unwrap();
     let Some(Taught::Drag { finger, direction }) = response.teach else { panic!("{response:?}") };
     assert_eq!(finger, "index");
-    // Band x, palm down (roll −142.3°), in the forearm frame.
-    assert!(direction[0] < -0.75 && direction[1].abs() < 0.05 && direction[2] < -0.55, "{direction:?}");
+    // The drag away it was made along, in the forearm frame.
+    let along: f64 = (0..3).map(|i| direction[i] * away()[i]).sum();
+    assert!(along > 0.99, "{direction:?}");
     tokio::time::sleep(Duration::from_secs(1)).await;
     assert!(daemon.runner.commands().is_empty(), "teaching acts on nothing");
     // Teaching is off again: the same pinch is the drag gesture.

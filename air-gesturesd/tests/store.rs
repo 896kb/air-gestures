@@ -382,3 +382,18 @@ fn one_bad_field_spoils_nothing_else_and_stays_until_changed() {
     store.save_palm("AA", Hand::Right, None).unwrap();
     assert!(read()["bands"].get("AA").is_none(), "an empty entry goes");
 }
+
+/// Drags taught before band-core put palm down and up the right way round (2026-10-26), with
+/// no palm calibration, carry the old palm down (−142.3°, really palm up): they're read as
+/// taught at palm down. The directions themselves don't change.
+#[test]
+fn drags_taught_at_the_old_palm_down_read_as_palm_down() {
+    use band_core::controls::palm::{RIGHT_PALM_DOWN_ROLL, SWAPPED_RIGHT_PALM_DOWN_ROLL};
+    let mut stored = StoredDrags::from_prototypes(&Prototypes::right_hand()).unwrap();
+    stored.palm_down_roll = SWAPPED_RIGHT_PALM_DOWN_ROLL;
+    let prototypes = stored.prototypes().unwrap();
+    assert_eq!(prototypes.palm_down_roll, RIGHT_PALM_DOWN_ROLL);
+    assert_eq!(prototypes.drags, Prototypes::taught(stored.turn, stored.drags, RIGHT_PALM_DOWN_ROLL).unwrap().drags);
+    stored.palm_down_roll = 2.3;
+    assert_eq!(stored.prototypes().unwrap().palm_down_roll, 2.3, "a calibrated palm down stays");
+}

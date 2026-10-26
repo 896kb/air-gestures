@@ -110,7 +110,8 @@ async fn one_drag_sample_comes_back_from_the_band() {
     tokio::time::sleep(Duration::from_millis(300)).await;
     support::pinch_moving(&daemon.transport, 600, 50).await;
     let teach::Try::Got(direction) = sample.await.unwrap().unwrap() else { panic!("no sample") };
-    assert!(direction[0] < -0.75, "{direction:?}");
+    let along: f64 = (0..3).map(|i| direction[i] * support::away()[i]).sum();
+    assert!(along > 0.99, "the drag away it was made along: {direction:?}");
 }
 
 use air_gesturesd::drawings;
