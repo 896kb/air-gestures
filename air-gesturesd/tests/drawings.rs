@@ -81,6 +81,7 @@ fn the_file_is_versioned_json_of_strokes() {
     drawings::save(root.path(), &drawing("z")).unwrap();
     let json: serde_json::Value = serde_json::from_slice(&std::fs::read(root.path().join("z.json")).unwrap()).unwrap();
     assert_eq!(json["version"], 1);
+    assert_eq!(json["frame"], 2, "drawn in band-core's frame since 2026-10-26");
     assert_eq!(json["tries"][0][0][1], serde_json::json!([0.0, 10.0]));
 }
 
@@ -101,4 +102,52 @@ fn loading_while_saving_never_loses_a_save() {
     done.store(true, std::sync::atomic::Ordering::Relaxed);
     loader.join().unwrap();
     assert_eq!(failed, 0, "saves lost to a concurrent load");
+}
+
+/// Templates taught before band-core turned its drawings the right way up (no `frame`): the
+/// projection is the old one negated, so their points are negated once, the file rewritten
+/// with `"frame": 2` and the original kept as `<name>.json.bak`.
+#[test]
+fn templates_from_before_the_frame_change_are_turned_over_once() {
+    let root = tempfile::tempdir().unwrap();
+    let dir = root.path();
+    let old = r#"{"version":1,"tries":[[[[0.0,0.0],[0.0,10.0]]],[[[1.0,2.0],[3.0,-4.0]]]]}"#;
+    std::fs::write(dir.join("z.json"), old).unwrap();
+    drawings::save(dir, &drawing("new")).unwrap();
+    let loaded = drawings::load_all(dir);
+    assert!(loaded.problems.is_empty(), "{:?}", loaded.problems);
+    assert_eq!(loaded.migrated, ["z"]);
+    let z = loaded.drawings.iter().find(|d| d.name == "z").unwrap();
+    assert_eq!(z.tries, [vec![vec![[0.0, 0.0], [0.0, -10.0]]], vec![vec![[-1.0, -2.0], [-3.0, 4.0]]]]);
+    assert_eq!(loaded.drawings.iter().find(|d| d.name == "new").unwrap(), &drawing("new"), "already in the new frame");
+    assert_eq!(std::fs::read_to_string(dir.join("z.json.bak")).unwrap(), old);
+    let json: serde_json::Value = serde_json::from_slice(&std::fs::read(dir.join("z.json")).unwrap()).unwrap();
+    assert_eq!(json["frame"], 2);
+    let again = drawings::load_all(dir);
+    assert!(again.migrated.is_empty(), "once");
+    assert_eq!(again.drawings, loaded.drawings);
+}
+
+#[test]
+fn a_template_that_cant_be_turned_over_on_disk_says_teach_it_again() {
+    use std::os::unix::fs::PermissionsExt;
+    let root = tempfile::tempdir().unwrap();
+    let dir = root.path().join("drawings");
+    std::fs::create_dir(&dir).unwrap();
+    std::fs::write(dir.join("z.json"), r#"{"version":1,"tries":[[[[0.0,0.0],[0.0,10.0]]]]}"#).unwrap();
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+    let loaded = drawings::load_all(&dir);
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(loaded.problems.iter().any(|p| p.contains("teach z again")), "{:?}", loaded.problems);
+    assert_eq!(loaded.drawings[0].tries, [vec![vec![[0.0, 0.0], [0.0, -10.0]]]], "still used, the right way up");
+    assert!(loaded.migrated.is_empty());
+}
+
+#[test]
+fn a_template_from_a_newer_frame_is_skipped() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::write(root.path().join("z.json"), r#"{"version":1,"frame":3,"tries":[]}"#).unwrap();
+    let loaded = drawings::load_all(root.path());
+    assert!(loaded.drawings.is_empty());
+    assert!(loaded.problems.iter().any(|p| p.contains("frame 3")), "{:?}", loaded.problems);
 }

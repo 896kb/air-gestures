@@ -24,6 +24,14 @@ before tagging it; the release job fails without one.
   what was drawn.
 - Every config load logs warnings (no way to switch profiles, Draw on a tap) and each paused
   command.
+- Palm down and up the right way round (band-core's right-hand defaults had them swapped), and
+  drawings the right way up. Drawings taught before are turned over when the daemon loads them
+  (exact for those taught without a palm calibration; the originals are kept as
+  `<name>.json.bak`): teach one again if it still doesn't match well.
+- The log says what each gesture did, with its palm: `index tap · palm up → <command>`, a
+  band control, or why nothing ran (`nothing bound here`, `the controls are off`, …); a dial or
+  slider pinch as `index dial · palm up → volume up ×2`; `air-gestures status` shows the last
+  gesture's palm.
 - A slow triple tap no longer runs its finger's single tap first.
 - Gestures, the dial and the controls now come from band-core's shared controls layer, the
   same code as the Android app.

@@ -95,6 +95,8 @@ pub struct Daemon<T: Transport, R: Runner, F: ClientFactory> {
     options_hand: Option<Hand>,
     /// The teaching step waiting for the band.
     waiting: Option<Waiting>,
+    /// What gestures did, for the log (see `outcome`).
+    outcomes: crate::outcome::Outcomes,
     controls: Controls<String>,
     /// The loaded config (hooks, dial commands, profiles).
     config: Config,
@@ -186,6 +188,7 @@ impl<T: Transport, R: Runner, F: ClientFactory> Daemon<T, R, F> {
             drawing_names: Vec::new(),
             options_hand,
             waiting: None,
+            outcomes: crate::outcome::Outcomes::default(),
             controls,
             config,
             dial_override: DialTarget::Off,
@@ -342,7 +345,10 @@ impl<T: Transport, R: Runner, F: ClientFactory> Daemon<T, R, F> {
     /// Do what the controls asked. `from_band`: caused by a band gesture, not a request
     /// (`on_toggle` only runs for those, as before).
     fn apply(&mut self, outputs: Vec<Output<String>>, from_band: bool) {
-        for line in crate::outcome::describe(&outputs, self.controls.profiles()) {
+        let lines = self.outcomes.lines(&outputs, self.controls.profiles(), &self.config.dial);
+        // A gesture's line already says what it switched.
+        let described = !lines.is_empty();
+        for line in lines {
             tracing::info!("{line}");
         }
         for output in outputs {
@@ -357,10 +363,12 @@ impl<T: Transport, R: Runner, F: ClientFactory> Daemon<T, R, F> {
                 Output::SetHand(hand) => {
                     self.send_link(LinkCommand::SetHand(hand));
                 }
-                // Each is one info line above (`outcome::describe`).
+                // Each is one info line above (`Outcomes::lines`).
                 Output::Gesture { .. } | Output::Unused { .. } | Output::PinchEnded { .. } => {}
                 Output::Controls { enabled } => {
-                    tracing::info!(enabled, "controls");
+                    if !described {
+                        tracing::info!(enabled, "controls");
+                    }
                     let hook = self.config.band.on_toggle.trim();
                     if from_band && !hook.is_empty() {
                         // Exported, not a prefix assignment: the hook's own `$AIR_GESTURES_ENABLED`
@@ -373,7 +381,9 @@ impl<T: Transport, R: Runner, F: ClientFactory> Daemon<T, R, F> {
                 }
                 Output::Profile { index, .. } => {
                     let name = self.controls.profiles().list[index].name.clone();
-                    tracing::info!(profile = %name, "profile");
+                    if !described {
+                        tracing::info!(profile = %name, "profile");
+                    }
                     let hook = self.config.band.on_profile.trim();
                     if !hook.is_empty() {
                         // Names are checked when the config loads: no quotes inside.
@@ -388,11 +398,11 @@ impl<T: Transport, R: Runner, F: ClientFactory> Daemon<T, R, F> {
                 Output::DrawPoint { stroke, x, y } => tracing::trace!(stroke, x, y, "draw point"),
                 Output::Pen { down } => tracing::trace!(down, "pen"),
                 Output::Drawn { name, distance } => {
-                    tracing::info!(drawing = %name, distance, "drawn");
+                    tracing::debug!(drawing = %name, distance, "drawn");
                     self.run_draw_hook(&name);
                 }
                 Output::NotDrawn => {
-                    tracing::info!("drawing not recognised");
+                    tracing::debug!("drawing not recognised");
                     self.run_draw_hook("");
                 }
                 other @ (Output::DrawStarted
@@ -444,9 +454,15 @@ impl<T: Transport, R: Runner, F: ClientFactory> Daemon<T, R, F> {
             return;
         }
         self.drawings_stamp = stamp;
-        let (drawings, problems) = drawings::load(&self.drawings_dir);
+        let drawings::Loaded { drawings, problems, migrated } = drawings::load_all(&self.drawings_dir);
         for problem in problems {
             tracing::warn!("drawings: {problem}");
+        }
+        if !migrated.is_empty() {
+            tracing::info!(
+                "drawings: turned the right way up (taught before the drawing frame changed; the originals are kept as .json.bak): {}",
+                migrated.join(", ")
+            );
         }
         tracing::info!(count = drawings.len(), "drawings loaded");
         self.drawing_names = drawings.iter().map(|d| d.name.clone()).collect();
