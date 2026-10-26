@@ -1201,3 +1201,16 @@ async fn drags_are_taught_under_the_controls_palm_down() {
     // No calibration now: the controls read drags under the taught drags' own palm down.
     assert_eq!(palm_down_roll(&daemon), -100.0);
 }
+
+#[tokio::test(start_paused = true)]
+async fn the_status_shows_the_last_gestures_palm() {
+    let transport = SimTransport::new(SimMode::Enrolled);
+    let mut daemon = start(transport.clone(), true, fake(&transport));
+    daemon.right_hand().await;
+    daemon.transport.inject(SWIPE_LEFT);
+    daemon.wait("palm down", |s| s.last_gesture.as_deref() == Some("swipe left · palm down")).await;
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    daemon.hold_roll(PALM_UP, 0.3).await;
+    daemon.transport.inject(SimInject::Gesture { action: 9, finger: 1, derived: 0 });
+    daemon.wait("palm up", |s| s.last_gesture.as_deref() == Some("swipe right · palm up")).await;
+}

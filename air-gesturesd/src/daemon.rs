@@ -286,7 +286,10 @@ impl<T: Transport, R: Runner, F: ClientFactory> Daemon<T, R, F> {
                 Hand::Right => "right".to_owned(),
             }),
             dial: self.dial_target(),
-            last_gesture: controls.last_gesture.map(str::to_owned),
+            last_gesture: controls.last_gesture.map(|gesture| match controls.last_palm {
+                Some(palm) => format!("{gesture} · palm {}", palm.key()),
+                None => gesture.to_owned(),
+            }),
             last_action: controls.last_action.clone(),
             gestures: controls.gestures,
             profile: (self.controls.profiles().list.len() > 1).then(|| {
@@ -339,25 +342,23 @@ impl<T: Transport, R: Runner, F: ClientFactory> Daemon<T, R, F> {
     /// Do what the controls asked. `from_band`: caused by a band gesture, not a request
     /// (`on_toggle` only runs for those, as before).
     fn apply(&mut self, outputs: Vec<Output<String>>, from_band: bool) {
+        for line in crate::outcome::describe(&outputs, self.controls.profiles()) {
+            tracing::info!("{line}");
+        }
         for output in outputs {
             if let Some(done) = self.waiting.as_mut().and_then(|waiting| waiting.wait.on_output(&output)) {
                 self.end_wait(|_| done);
             }
             match output {
                 Output::Run(command) => {
-                    tracing::info!(%command, "action");
+                    tracing::debug!(%command, "action");
                     self.runner.run(command);
                 }
                 Output::SetHand(hand) => {
                     self.send_link(LinkCommand::SetHand(hand));
                 }
-                Output::Gesture(gesture) => {
-                    tracing::debug!(
-                        gesture = gesture.label(),
-                        enabled = self.controls.enabled(),
-                        "recognized"
-                    );
-                }
+                // Each is one info line above (`outcome::describe`).
+                Output::Gesture { .. } | Output::Unused { .. } | Output::PinchEnded { .. } => {}
                 Output::Controls { enabled } => {
                     tracing::info!(enabled, "controls");
                     let hook = self.config.band.on_toggle.trim();

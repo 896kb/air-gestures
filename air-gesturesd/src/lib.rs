@@ -10,6 +10,7 @@ pub mod drawings;
 pub mod ipc;
 pub mod link;
 pub mod meta;
+pub mod outcome;
 pub mod pairing;
 pub mod status;
 pub mod store;
