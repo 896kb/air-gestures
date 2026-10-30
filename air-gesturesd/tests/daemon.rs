@@ -867,7 +867,7 @@ const PALM_UP: f64 = RIGHT_PALM_UP_ROLL;
 
 /// The right hand's measured drag away (forearm frame, unit).
 fn away() -> [f64; 3] {
-    Prototypes::right_hand().drags.unwrap()[Drag::Away.index()]
+    Prototypes::right_hand().drags.unwrap()[Drag::Away.index()].unwrap()
 }
 
 /// Raw gyro moving `raw` units along `away()`, the band palm down.

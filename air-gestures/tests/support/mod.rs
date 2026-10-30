@@ -160,7 +160,7 @@ pub async fn feed_roll(transport: SimTransport, roll: std::sync::Arc<std::sync::
 
 /// The right hand's measured drag away (forearm frame, unit).
 pub fn away() -> [f64; 3] {
-    band_core::controls::pinch::Prototypes::right_hand().drags.unwrap()[band_core::controls::Drag::Away.index()]
+    band_core::controls::pinch::Prototypes::right_hand().drags.unwrap()[band_core::controls::Drag::Away.index()].unwrap()
 }
 
 /// An index pinch moving `raw` gyro units along the drag away, the band palm down (no fresh

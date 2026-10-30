@@ -113,6 +113,10 @@ enum Command {
         /// measured right-hand ones, turns only for the left hand.
         #[arg(long)]
         reset: bool,
+        /// Drags you can't make, not taught (comma-separated): a move like one does nothing.
+        #[arg(long, value_delimiter = ',', value_name = "DRAGS", conflicts_with = "reset",
+              value_parser = ["left", "right", "toward", "away", "up", "down"])]
+        skip: Vec<String>,
     },
     /// Drawings: teach one (three tries), list them, delete one.
     Draw {
@@ -535,11 +539,12 @@ fn main() -> ExitCode {
         Command::Calibrate { reset: false } => report(
             runtime().block_on(air_gestures::teach::calibrate(&socket, &mut air_gestures::teach::Terminal::default())).map(|_| ()),
         ),
-        Command::TeachDrags { reset: true } => {
+        Command::TeachDrags { reset: true, .. } => {
             report(runtime().block_on(air_gestures::teach::reset_drags(&socket)).map(|forgot| println!("{forgot}")))
         }
-        Command::TeachDrags { reset: false } => {
-            report(runtime().block_on(air_gestures::teach::teach_drags(&socket, &mut air_gestures::teach::Terminal::default())))
+        Command::TeachDrags { reset: false, skip } => {
+            let skip: Vec<_> = skip.iter().filter_map(|name| air_gestures::teach::drag_named(name)).collect();
+            report(runtime().block_on(air_gestures::teach::teach_drags(&socket, &mut air_gestures::teach::Terminal::default(), &skip)))
         }
         Command::Draw { what } => {
             let dir = air_gesturesd::drawings::default_dir(cli.dry_run);
@@ -596,8 +601,12 @@ mod tests {
         assert!(matches!(parse(&["calibrate"]), Command::Calibrate { reset: false }));
         assert!(matches!(parse(&["calibrate", "--reset"]), Command::Calibrate { reset: true }));
         assert!(matches!(parse(&["--dry-run", "calibrate"]), Command::Calibrate { .. }));
-        assert!(matches!(parse(&["teach-drags"]), Command::TeachDrags { reset: false }));
-        assert!(matches!(parse(&["teach-drags", "--reset"]), Command::TeachDrags { reset: true }));
+        assert!(matches!(parse(&["teach-drags"]), Command::TeachDrags { reset: false, skip } if skip.is_empty()));
+        assert!(matches!(parse(&["teach-drags", "--reset"]), Command::TeachDrags { reset: true, .. }));
+        assert!(matches!(parse(&["teach-drags", "--skip", "up,down"]), Command::TeachDrags { skip, .. } if skip == ["up", "down"]));
+        assert!(Cli::try_parse_from(["air-gestures", "teach-drags", "--skip", "sideways"]).is_err(), "not a drag");
+        assert!(Cli::try_parse_from(["air-gestures", "teach-drags", "--skip", "turn"]).is_err(), "the turn is always taught");
+        assert!(Cli::try_parse_from(["air-gestures", "teach-drags", "--reset", "--skip", "up"]).is_err());
         assert!(matches!(parse(&["draw", "teach", "lightbulb"]), Command::Draw { what: DrawCommand::Teach { name } } if name == "lightbulb"));
         assert!(matches!(parse(&["draw", "list"]), Command::Draw { what: DrawCommand::List }));
         assert!(matches!(parse(&["draw", "delete", "z"]), Command::Draw { what: DrawCommand::Delete { name } } if name == "z"));

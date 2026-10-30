@@ -150,7 +150,8 @@ volume|brightness|off|cycle` changes the index dial until the profile changes.
 **Teach your drags:** drags and sliders work best taught to your own hand.
 `air-gestures teach-drags` takes one pinch per move (the turn, then the six drags) and keeps
 them for this band and hand; `--reset` forgets them (with the band connected: it's for the hand
-the band is on).
+the band is on). `--skip up,down` leaves out drags you can't make: they're never read, and a move
+like one does nothing instead of being taken for its neighbour.
 
 **Slider commands:** any slider value other than `"volume"`, `"brightness"`, `"off"` and `""`
 is a shell command. While you slide, its steps are gathered: the first runs it at once, then it

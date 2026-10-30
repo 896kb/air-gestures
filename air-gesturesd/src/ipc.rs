@@ -116,11 +116,12 @@ impl Request {
     }
 }
 
-/// Taught drag samples: the turn, then the six drags in `Drag::ALL` order (forearm frame).
+/// Taught drag samples: the turn, then the six drags in `Drag::ALL` order (forearm frame),
+/// `None` for a drag skipped.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TaughtDrags {
     pub turn: [f64; 3],
-    pub drags: [[f64; 3]; 6],
+    pub drags: [Option<[f64; 3]>; 6],
 }
 
 /// What a teaching step brought back.

@@ -85,12 +85,13 @@ impl From<PalmCalibration> for StoredPalm {
 }
 
 /// Taught drag directions (forearm frame, unit): the turn, then the six drags in
-/// `Drag::ALL` order.
+/// `Drag::ALL` order, `null` for a drag skipped while teaching. Files from before skipping
+/// (six plain directions) read as all six taught.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct StoredDrags {
     pub palm_down_roll: f64,
     pub turn: [f64; 3],
-    pub drags: [[f64; 3]; 6],
+    pub drags: [Option<[f64; 3]>; 6],
 }
 
 impl StoredDrags {
