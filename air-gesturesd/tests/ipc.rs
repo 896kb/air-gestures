@@ -86,10 +86,14 @@ fn requests_use_kebab_case_commands() {
         parse(r#"{"cmd":"set-palm","palm":{"down_roll":-140.0,"up_roll":-10.0}}"#),
         Request::SetPalm { palm: Some(StoredPalm { down_roll: -140.0, up_roll: -10.0 }) }
     );
-    let drags = TaughtDrags { turn: [0.0, 1.0, 0.0], drags: [[1.0, 0.0, 0.0]; 6] };
+    let drags = TaughtDrags { turn: [0.0, 1.0, 0.0], drags: [Some([1.0, 0.0, 0.0]); 6] };
     let line = serde_json::to_string(&Request::SetDrags { drags: Some(drags.clone()) }).unwrap();
     assert!(line.starts_with(r#"{"cmd":"set-drags""#), "{line}");
     assert_eq!(parse(&line), Request::SetDrags { drags: Some(drags) });
+    let skipped = TaughtDrags { turn: [0.0, 1.0, 0.0], drags: [Some([1.0, 0.0, 0.0]), None, None, None, None, None] };
+    let line = serde_json::to_string(&Request::SetDrags { drags: Some(skipped.clone()) }).unwrap();
+    assert!(line.contains("null"), "a skipped drag is null: {line}");
+    assert_eq!(parse(&line), Request::SetDrags { drags: Some(skipped) });
     assert_eq!(parse(r#"{"cmd":"palm"}"#), Request::Palm);
     assert_eq!(Request::DrawTry { seconds: 500.0 }.teach_step(), Some((Step::Draw, 120.0)), "clamped");
     assert_eq!(Request::PalmRolls { seconds: 0.1 }.teach_step(), Some((Step::Rolls, 0.5)));

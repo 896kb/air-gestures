@@ -291,7 +291,7 @@ pub async fn teach_drags_within(socket: &Path, guide: &mut impl Guide, seconds: 
             continue;
         }
         let all = samples.map(|s| s.unwrap_or_default());
-        let drags: [[f64; 3]; 6] = std::array::from_fn(|i| all[i + 1]);
+        let drags: [Option<[f64; 3]>; 6] = std::array::from_fn(|i| Some(all[i + 1]));
         // The palm-down roll doesn't change the check; the daemon sets the real one.
         match Prototypes::taught(all[0], drags, 0.0) {
             Ok(_) => {

@@ -270,6 +270,7 @@ fn forget_also_removes_leftover_temp_files() {
 
 use air_gesturesd::store::{HandCalibration, StoredDrags, StoredPalm};
 use band_core::controls::palm::PalmCalibration;
+use band_core::controls::Drag;
 use band_core::controls::pinch::Prototypes;
 use band_core::events::Hand;
 
@@ -337,12 +338,37 @@ fn the_calibration_file_is_versioned_and_one_bad_entry_spoils_nothing_else() {
 }
 
 #[test]
+fn drags_saved_before_skipping_read_as_all_six_taught_and_a_skipped_one_round_trips() {
+    let root = tempfile::tempdir().unwrap();
+    let store = Store::open(root.path()).unwrap();
+    store.save_calibration("AA", Hand::Right, &taught()).unwrap();
+    let path = root.path().join("calibration.json");
+    let mut json: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    // The old shape: six plain directions.
+    let measured = Prototypes::right_hand().drags.unwrap().map(Option::unwrap);
+    json["bands"]["AA"]["right"]["drags"]["drags"] = serde_json::json!(measured);
+    std::fs::write(&path, serde_json::to_vec(&json).unwrap()).unwrap();
+    assert_eq!(store.load_calibration("AA", Hand::Right).unwrap(), taught());
+
+    let mut skipped = taught();
+    skipped.drags.as_mut().unwrap().drags[Drag::Up.index()] = None;
+    store.save_calibration("AA", Hand::Right, &skipped).unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    assert!(json["bands"]["AA"]["right"]["drags"]["drags"][Drag::Up.index()].is_null());
+    let loaded = store.load_calibration("AA", Hand::Right).unwrap();
+    assert_eq!(loaded, skipped);
+    let (_, drags, problems) = loaded.apply();
+    assert!(problems.is_empty(), "{problems:?}");
+    assert_eq!(drags.unwrap().slider_axis(Drag::Up), None, "a skipped drag isn't read");
+}
+
+#[test]
 fn a_calibration_is_checked_on_the_way_in() {
     let (palm, drags, problems) = taught().apply();
     assert!(problems.is_empty(), "{problems:?}");
     assert_eq!(palm, Some(PalmCalibration { down_roll: -140.0, up_roll: -10.0 }));
-    let measured = Prototypes::right_hand().drags.unwrap();
-    for (a, b) in drags.unwrap().drags.unwrap().iter().zip(measured) {
+    let measured = Prototypes::right_hand().drags.unwrap().map(Option::unwrap);
+    for (a, b) in drags.unwrap().drags.unwrap().map(Option::unwrap).iter().zip(measured) {
         assert!((0..3).all(|k| (a[k] - b[k]).abs() < 1e-12));
     }
     let mut bad = taught();
