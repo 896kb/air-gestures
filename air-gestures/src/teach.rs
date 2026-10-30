@@ -18,7 +18,7 @@ use air_gesturesd::store::StoredPalm;
 use air_gesturesd::teach::{calibration_error_text, taught_error_text};
 use band_core::controls::draw::{self, Drawing, Library, Stroke, TeachError};
 use band_core::controls::palm::{CalibrationError, Palm, PalmCalibration};
-use band_core::controls::pinch::{Prototypes, TaughtError};
+use band_core::controls::pinch::{Drag, Prototypes, TaughtError};
 
 use crate::client::{self, RequestError};
 
@@ -227,6 +227,11 @@ pub const MOVES: [(&str, &str); 7] = [
     ("down", "lower your hand"),
 ];
 
+/// The drag `MOVES` calls `name` (`"left"` … `"down"`; not the turn).
+pub fn drag_named(name: &str) -> Option<Drag> {
+    MOVES[1..].iter().position(|(n, _)| *n == name).map(|i| Drag::ALL[i])
+}
+
 /// Which moves (indexes into `MOVES`) to teach again.
 pub fn redo(error: TaughtError) -> Vec<usize> {
     match error {
@@ -261,22 +266,28 @@ pub async fn drag_sample(socket: &Path, guide: &mut impl Guide, index: usize, se
     }
 }
 
-/// The turn and six drags, one pinch each: the hand's prototypes, stored and applied.
-pub async fn teach_drags(socket: &Path, guide: &mut impl Guide) -> Result<(), String> {
-    teach_drags_within(socket, guide, TRY_WAIT).await
+/// The turn and six drags, one pinch each: the hand's prototypes, stored and applied. The
+/// drags in `skip` aren't taught: they're never read (a move like one does nothing).
+pub async fn teach_drags(socket: &Path, guide: &mut impl Guide, skip: &[Drag]) -> Result<(), String> {
+    teach_drags_within(socket, guide, skip, TRY_WAIT).await
 }
 
 /// `teach_drags`, each pinch waited for `seconds`.
-pub async fn teach_drags_within(socket: &Path, guide: &mut impl Guide, seconds: f64) -> Result<(), String> {
+pub async fn teach_drags_within(socket: &Path, guide: &mut impl Guide, skip: &[Drag], seconds: f64) -> Result<(), String> {
     let status = client::status(socket).await?;
     let hand = connected_hand(&status)?.to_owned();
     guide.say(&format!("Teach your drags ({hand} hand): one pinch for each move, the way you'll make it."));
+    let skipped: [bool; 7] = std::array::from_fn(|index| index > 0 && skip.contains(&Drag::ALL[index - 1]));
+    if skipped.contains(&true) {
+        let names: Vec<&str> = (0..MOVES.len()).filter(|&i| skipped[i]).map(|i| MOVES[i].0).collect();
+        guide.say(&format!("Skipped: {} (never read; that move does nothing).", names.join(", ")));
+    }
     let mut samples: [Option<[f64; 3]>; 7] = [None; 7];
     let mut last = String::new();
     let mut refused = None;
     for _ in 0..ROUNDS {
         for (index, sample) in samples.iter_mut().enumerate() {
-            if sample.is_some() {
+            if sample.is_some() || skipped[index] {
                 continue;
             }
             match drag_sample(socket, guide, index, seconds).await.map_err(unchanged)? {
@@ -287,15 +298,15 @@ pub async fn teach_drags_within(socket: &Path, guide: &mut impl Guide, seconds: 
                 }
             }
         }
-        if samples.iter().any(Option::is_none) {
+        if (0..MOVES.len()).any(|i| samples[i].is_none() && !skipped[i]) {
             continue;
         }
-        let all = samples.map(|s| s.unwrap_or_default());
-        let drags: [Option<[f64; 3]>; 6] = std::array::from_fn(|i| Some(all[i + 1]));
+        let turn = samples[0].unwrap_or_default();
+        let drags: [Option<[f64; 3]>; 6] = std::array::from_fn(|i| samples[i + 1]);
         // The palm-down roll doesn't change the check; the daemon sets the real one.
-        match Prototypes::taught(all[0], drags, 0.0) {
+        match Prototypes::taught(turn, drags, 0.0) {
             Ok(_) => {
-                client::request(socket, &Request::SetDrags { drags: Some(TaughtDrags { turn: all[0], drags }) })
+                client::request(socket, &Request::SetDrags { drags: Some(TaughtDrags { turn, drags }) })
                     .await
                     .map_err(unchanged)?;
                 guide.say("Saved: drags now read the way you make them.");

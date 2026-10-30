@@ -3,6 +3,12 @@
 Each release's section becomes its GitLab release notes. Add a section for the version
 before tagging it; the release job fails without one.
 
+## Unreleased
+
+- **Skip a drag you can't make:** `air-gestures teach-drags --skip up,down` teaches the turn and
+  the other drags; a skipped drag is never read, and a move like it does nothing. Calibrations
+  saved before read as all six drags taught.
+
 ## 0.9.18
 
 - **New installs start with band controls:** the sample config (`/usr/share/air-gestures/config.toml`,

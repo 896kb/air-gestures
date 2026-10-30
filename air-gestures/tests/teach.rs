@@ -246,7 +246,7 @@ async fn a_missed_drag_is_taught_again() {
     daemon.wait("the hand", |s| s.state == LinkState::Connected && s.hand.as_deref() == Some("right")).await;
     let (mut guide, mut cues) = guide();
     let socket = daemon.socket.clone();
-    let teach = tokio::spawn(async move { teach::teach_drags_within(&socket, &mut guide, 3.0).await.map(|()| guide.said) });
+    let teach = tokio::spawn(async move { teach::teach_drags_within(&socket, &mut guide, &[], 3.0).await.map(|()| guide.said) });
     // The turn, then six clearly different drags; the second drag is missed once.
     let turn = [350, 350, 350];
     let drags = [[600, 0, 0], [-600, 0, 0], [0, 600, 0], [0, -600, 0], [0, 0, 600], [0, 0, -600]];
@@ -265,6 +265,34 @@ async fn a_missed_drag_is_taught_again() {
 }
 
 #[tokio::test]
+async fn skipped_drags_are_not_asked_for_and_are_saved_as_skipped() {
+    let daemon = support::start(SimMode::Enrolled, true).await;
+    daemon.wait("the hand", |s| s.state == LinkState::Connected && s.hand.as_deref() == Some("right")).await;
+    let (mut guide, mut cues) = guide();
+    let socket = daemon.socket.clone();
+    let skip = [Drag::Up, Drag::Down];
+    let teach = tokio::spawn(async move { teach::teach_drags_within(&socket, &mut guide, &skip, 3.0).await.map(|()| guide.said) });
+    // The turn, then the four drags not skipped.
+    let moves = [[350, 350, 350], [600, 0, 0], [-600, 0, 0], [0, 600, 0], [0, -600, 0]];
+    for axes in moves {
+        on_cue(&mut cues).await;
+        support::pinch_moving3(&daemon.transport, axes, 50).await;
+    }
+    let said = teach.await.unwrap().unwrap();
+    assert!(said.iter().any(|s| s.starts_with("Skipped: up, down")), "{said:?}");
+    assert!(!said.iter().any(|s| s.contains(" up: pinch") || s.contains(" down: pinch")), "{said:?}");
+    let stored = daemon.store.load_calibration(SIM_ADDRESS, Hand::Right).unwrap().drags.unwrap();
+    assert_eq!(stored.drags.map(|d| d.is_some()), [true, true, true, true, false, false]);
+}
+
+#[test]
+fn drags_are_named_as_taught() {
+    assert_eq!(teach::drag_named("toward"), Some(Drag::Toward));
+    assert_eq!(teach::drag_named("down"), Some(Drag::Down));
+    assert_eq!(teach::drag_named("turn"), None);
+}
+
+#[tokio::test]
 async fn a_busy_daemon_ends_the_flow_and_changes_nothing() {
     let daemon = support::start(SimMode::Enrolled, true).await;
     daemon.wait("the hand", |s| s.state == LinkState::Connected && s.hand.is_some()).await;
@@ -274,7 +302,7 @@ async fn a_busy_daemon_ends_the_flow_and_changes_nothing() {
     });
     tokio::time::sleep(Duration::from_millis(300)).await;
     let (mut guide, _cues) = guide();
-    let error = teach::teach_drags(&daemon.socket, &mut guide).await.unwrap_err();
+    let error = teach::teach_drags(&daemon.socket, &mut guide, &[]).await.unwrap_err();
     assert!(error.contains("another teaching step") && error.contains("nothing was changed"), "{error}");
     other.abort();
 }
